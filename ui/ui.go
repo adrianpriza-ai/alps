@@ -63,7 +63,7 @@ func PrintHeader(cfg *config.Config) {
 	// Default ALPS header
 	fmt.Print("\033[0m\033[97m                   *\n")
 	fmt.Print("\033[97m                  /^\\ \033[37m *          \033[97mMost customizable\033[37m\n")
-	fmt.Print(" \033[97mALPS\033[37m        /^\\ /   \\/^\\\n")
+	fmt.Print(" \033[97mALPS v0.5\033[37m   /^\\ /   \\/^\\\n")
 	fmt.Print("            /   \\   /^\\  \\         \033[97mpackage manager\033[37m\n")
 	fmt.Print("\033[1;32m           /_____\\_/___\\__\\\033[0m\n\n")
 }
