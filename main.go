@@ -8,9 +8,12 @@ import (
 	"time"
 
 	"alps/aur"
+	"alps/completion"
 	"alps/config"
 	"alps/ui"
 )
+
+const version = "v0.5"
 
 func main() {
 	cfg := config.Load()
@@ -24,14 +27,20 @@ func main() {
 	args := os.Args[2:]
 
 	switch cmd {
+	case "version", "--version":
+    fmt.Printf("%salps%s %s\n", cfg.Style.ColorPrimary, cfg.Style.ColorReset, version)
+	case "completion":
+		if len(args) == 0 {
+			fmt.Fprintln(os.Stderr, "Usage: alps completion <fish|bash|zsh>")
+			os.Exit(1)
+		}
+		completion.Generate(args[0], cfg)
 	case "help", "--help", "-h":
 		ui.PrintHelp(cfg)
 	case "aliases":
 		ui.PrintAliases(cfg)
 	case "config-show":
 		ui.PrintConfigShow(cfg)
-	case "version", "--version":
-		fmt.Printf("%salps%s v1.0.0\n", cfg.Style.ColorPrimary, cfg.Style.ColorReset)
 	default:
 		resolved := resolveAlias(cmd, cfg)
 		runPkg(resolved, args, cfg)
@@ -56,18 +65,18 @@ func detectBackend() string {
 
 var cmdMap = map[string]map[string][]string{
 	"apt": {
-		"install":      {"apt-get", "install"},
-		"remove":       {"apt-get", "remove"},
-		"purge":        {"apt-get", "purge"},
-		"update":       {"apt-get", "update"},
-		"upgrade":      {"apt-get", "upgrade"},
-		"full-upgrade": {"apt-get", "dist-upgrade"},
-		"search":       {"apt-cache", "search"},
-		"show":         {"apt-cache", "show"},
-		"list":         {"dpkg", "-l"},
-		"autoremove":   {"apt-get", "autoremove"},
-		"autoclean":    {"apt-get", "autoclean"},
-		"clean":        {"apt-get", "clean"},
+		"install":      {"apt", "install"},
+		"remove":       {"apt", "remove"},
+		"purge":        {"apt", "purge"},
+		"update":       {"apt", "update"},
+		"upgrade":      {"apt", "upgrade"},
+		"full-upgrade": {"apt", "full-upgrade"},
+		"search":       {"apt", "search"},
+		"show":         {"apt", "show"},
+		"list":         {"apt", "list"},
+		"autoremove":   {"apt", "autoremove"},
+		"autoclean":    {"apt", "autoclean"},
+		"clean":        {"apt", "clean"},
 	},
 	"dnf": {
 		"install":    {"dnf", "install"},
@@ -236,7 +245,7 @@ func runWithBackend(cmdArgs []string, args []string, cfg *config.Config, backend
 
 	var stop func()
 	if needsProgress {
-		stop = ui.StartProgress(cfg, "Running "+backend+" "+subcmd)
+		stop = ui.StartProgressFor(cfg, "Running "+backend+" "+subcmd, backend)
 	}
 
 	var cmd *exec.Cmd
