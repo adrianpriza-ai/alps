@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/alps.png" alt="ALPS" width="400"/>
+  <img src="assets/alps.png" alt="ALPS" width="800"/>
 
   # ALPS
   **Advanced Linux Package System**
