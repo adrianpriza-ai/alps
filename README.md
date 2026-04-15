@@ -7,7 +7,7 @@
   *The most customizable package manager frontend*
 
   ![Release](https://img.shields.io/github/v/release/adrianpriza-ai/alps?include_prereleases&style=flat-square&color=red)
-  [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat-square&logo=go)](https://go.dev)
+  [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat-square&logo=go)](https://go.dev)
   [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
   [![AUR](https://img.shields.io/badge/AUR-built--in-1793D1?style=flat-square&logo=archlinux)](https://aur.archlinux.org)
 
