@@ -4,7 +4,7 @@
   # ALPS
   **Advanced Linux Package System**
 
-  *The most customizable package manager frontend*
+  *The customizable package manager frontend*
 
   ![Release](https://img.shields.io/github/v/release/adrianpriza-ai/alps?include_prereleases&style=flat-square&color=red)
   [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat-square&logo=go)](https://go.dev)
@@ -15,12 +15,13 @@
 
 ---
 
-ALPS is a Go-based frontend for `apt-get`, `dnf`, and `pacman` with built-in AUR support, fully customizable output styling, shell completion, and a unified command interface across distros.
+ALPS is a Go-based frontend for `apt`, `dnf`, and `pacman` with built-in AUR support, a custom cross-distro script repo (alps-more), fully customizable output styling, shell completion, and a unified command interface across distros.
 
 ## Features
 
-- **Multi-distro** — works with `apt-get`, `dnf`, and `pacman`, auto-detected
-- **Built-in AUR helper** — no dependency on `yay` or `paru`; queries AUR API, clones, and builds with `makepkg`
+- **Multi-distro** — works with `apt`, `dnf`, and `pacman`, auto-detected
+- **Built-in AUR helper** — uses `yay` if available, falls back to cloning and building with `makepkg`
+- **alps-more repo** — install scripts and tools not in any distro repo, with arch/os/deps validation
 - **Fully customizable** — colors, symbols, progress style, header, aliases — all via config file
 - **Custom title** — default ASCII mountain logo or define your own multi-line header
 - **Per-backend progress** — different progress style for apt, dnf, pacman, and AUR
@@ -65,8 +66,9 @@ alps <command> [args]
 | `config-show` | Show active config and paths |
 | `version` | Show version |
 | `completion <shell>` | Generate shell completion (fish/bash/zsh) |
+| `repo <subcommand>` | Manage alps-more repo |
 
-All other commands are mapped to the active backend (apt-get / dnf / pacman).
+All other commands are mapped to the active backend (apt / dnf / pacman).
 
 ### Default aliases
 
@@ -109,24 +111,6 @@ User config overrides global. Both are optional.
 # sym_err    = "✗"
 # sym_warn   = "⚠"
 # sym_info   = "◆"
-# sym_pkg    = "::"
-# sym_arrow  = "->"
-# sym_bullet = "::"
-
-# ── Progress ──────────────────────────────────────────────────────
-# Presets: pacman | bar | spinner | dots | none
-# progress_style   = "pacman"   # global default
-
-# Per-backend override (leave empty to use progress_style)
-# progress_apt     = "bar"
-# progress_dnf     = "dots"
-# progress_pacman  = "pacman"
-# progress_aur     = "spinner"  # default for AUR
-
-# progress_bar_char   = "#"
-# progress_bar_empty  = "-"
-# progress_bar_width  = 30
-# progress_spin_chars = "\|/-"
 
 # ── Header ────────────────────────────────────────────────────────
 # show_header = true
@@ -147,39 +131,57 @@ User config overrides global. Both are optional.
 
 ## AUR Support (Arch Linux only)
 
-ALPS has a built-in AUR helper — no `yay` or `paru` needed.
-
 When on Arch and running `alps install <package>`:
 1. Tries `pacman -S` first
 2. If not found in repo, queries AUR automatically
-3. Shows PKGBUILD summary for review
-4. Builds and installs with `makepkg -si`
+3. Uses `yay` if installed, otherwise clones and builds with `makepkg -si`
+4. Shows PKGBUILD summary for review (makepkg fallback only)
 
 Search also queries both repo and AUR simultaneously:
 ```bash
 alps search neovim
 ```
 
-**Requirements for AUR:**
+**Requirements for AUR (makepkg fallback):**
 ```bash
 sudo pacman -S git base-devel
 ```
+
+## alps-more Repo
+
+alps-more is a cross-distro script repo for tools not available in standard package managers.
+Cache is stored globally at `/var/cache/alps/more/` and expires after 90 days.
+
+```bash
+alps repo update          # download/refresh repo (requires sudo)
+alps repo list            # list all available packages
+alps repo install <pkg>   # install a package
+alps repo remove <pkg>    # remove a package
+```
+
+Each entry in the repo specifies supported architectures, OS/distro, optional dependencies,
+and install/remove commands. ALPS validates all of these before running anything.
+
+**alps-more repo:** [codeberg.org/moreland/alps-more](https://codeberg.org/moreland/alps-more)
 
 ## Project Structure
 
 ```
 alps/
-├── main.go          # entry point, backend dispatch
+├── main.go               # entry point, backend dispatch
 ├── config/
-│   └── config.go    # config loading and parsing
+│   └── config.go         # config loading and parsing
 ├── ui/
-│   └── ui.go        # output, header, progress styles
+│   └── ui.go             # output, header, progress styles
 ├── aur/
-│   └── aur.go       # built-in AUR helper
+│   └── aur.go            # built-in AUR helper (yay + makepkg fallback)
+├── more/
+│   ├── more.go           # alps-more parser, validation, install logic
+│   └── fetch.go          # cache download and management
 ├── completion/
-│   └── completion.go # shell completion generator
+│   └── completion.go     # shell completion generator
 ├── assets/
-│   └── alps.png     # logo
+│   └── alps.png          # logo
 ├── go.mod
 ├── LICENSE
 └── README.md

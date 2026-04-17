@@ -35,11 +35,22 @@ func sym(cfg *config.Config, l Level) (string, string) {
 
 func Msg(cfg *config.Config, l Level, text string) {
 	color, symbol := sym(cfg, l)
-	fmt.Printf("  %s%s%s  %s\n", color, symbol, cfg.Style.ColorReset, text)
+	fmt.Printf("  %s%s%s  %s%s\n", color, symbol, cfg.Style.ColorReset, text, cfg.Style.ColorReset)
 }
 
 func Msgf(cfg *config.Config, l Level, format string, a ...any) {
-	Msg(cfg, l, fmt.Sprintf(format, a...))
+	color, symbol := sym(cfg, l)
+	text := fmt.Sprintf(format, a...)
+	fmt.Printf("  %s%s%s  %s%s\n", color, symbol, cfg.Style.ColorReset, text, cfg.Style.ColorReset)
+}
+
+// Confirm prints "[Y/n]" and returns true unless user explicitly says no.
+func Confirm() bool {
+	fmt.Print("  Continue? [Y/n] ")
+	var input string
+	fmt.Scanln(&input)
+	input = strings.ToLower(strings.TrimSpace(input))
+	return input == "" || input == "y" || input == "yes"
 }
 
 // ──────────────────────────────────────────
@@ -60,11 +71,10 @@ func PrintHeader(cfg *config.Config) {
 		return
 	}
 
-	// Default ALPS header
 	fmt.Print("\033[0m\033[97m                   *\n")
-	fmt.Print("\033[97m                  /^\\ \033[37m *          \033[97mMost customizable\033[37m\n")
-	fmt.Print(" \033[97mALPS v0.5\033[37m   /^\\ /   \\/^\\\n")
-	fmt.Print("            /   \\   /^\\  \\         \033[97mpackage manager\033[37m\n")
+	fmt.Print("\033[97m                  /^\\ \033[37m *            \033[97mCustomizable\033[37m\n")
+	fmt.Print(" \033[97mALPS     \033[37m   /^\\ /   \\/^\\\n")
+	fmt.Print("   v0.6     /   \\   /^\\  \\         \033[97mpackage manager\033[37m\n")
 	fmt.Print("\033[1;32m           /_____\\_/___\\__\\\033[0m\n\n")
 }
 
@@ -138,7 +148,6 @@ func PrintConfigShow(cfg *config.Config) {
 	fmt.Printf("  %sProgress default:%s %s%s%s\n",
 		s.ColorBold, s.ColorReset, s.ColorPrimary, s.ProgressStyle, s.ColorReset)
 
-	// Per-backend overrides
 	overrides := [][2]string{
 		{"apt", s.ProgressApt},
 		{"dnf", s.ProgressDnf},
@@ -157,8 +166,7 @@ func PrintConfigShow(cfg *config.Config) {
 
 func printConfigPath(cfg *config.Config, path string) {
 	s := cfg.Style
-	_, err := os.Stat(path)
-	if err == nil {
+	if _, err := os.Stat(path); err == nil {
 		fmt.Printf("  %s%s%s  %s [loaded]\n", s.ColorSuccess, s.SymOK, s.ColorReset, path)
 	} else {
 		fmt.Printf("  %s%s%s  %s%s (not found)%s\n",
@@ -170,8 +178,6 @@ func printConfigPath(cfg *config.Config, path string) {
 // PROGRESS
 // ──────────────────────────────────────────
 
-// ProgressForBackend returns the progress style for a given backend,
-// falling back to the global progress_style.
 func ProgressForBackend(cfg *config.Config, backend string) string {
 	s := cfg.Style
 	switch backend {
@@ -199,10 +205,8 @@ func StartProgress(cfg *config.Config, msg string) func() {
 	return StartProgressFor(cfg, msg, "")
 }
 
-// StartProgressFor starts progress for a specific backend.
 func StartProgressFor(cfg *config.Config, msg string, backend string) func() {
-	style := ProgressForBackend(cfg, backend)
-	switch style {
+	switch ProgressForBackend(cfg, backend) {
 	case "pacman":
 		return startPacman(cfg, msg)
 	case "bar":
@@ -216,7 +220,6 @@ func StartProgressFor(cfg *config.Config, msg string, backend string) func() {
 	}
 }
 
-// Pacman style: :: msg [######----] xx%
 func startPacman(cfg *config.Config, msg string) func() {
 	s := cfg.Style
 	done := make(chan struct{})
@@ -230,9 +233,8 @@ func startPacman(cfg *config.Config, msg string) func() {
 			default:
 				pct := step % 101
 				filled := pct * width / 100
-				empty := width - filled
 				bar := strings.Repeat(s.ProgressBarChar, filled) +
-					strings.Repeat(s.ProgressBarEmpty, empty)
+					strings.Repeat(s.ProgressBarEmpty, width-filled)
 				fmt.Printf("\r  %s%s%s %s [%s%s%s%s] %3d%%",
 					s.ColorPrimary, s.SymBullet, s.ColorReset,
 					msg,
@@ -243,13 +245,9 @@ func startPacman(cfg *config.Config, msg string) func() {
 			}
 		}
 	}()
-	return func() {
-		close(done)
-		fmt.Print("\r\033[K")
-	}
+	return func() { close(done); fmt.Print("\r\033[K") }
 }
 
-// Bar style: [=====>    ] 60%
 func startBar(cfg *config.Config, msg string) func() {
 	s := cfg.Style
 	done := make(chan struct{})
@@ -275,13 +273,9 @@ func startBar(cfg *config.Config, msg string) func() {
 			}
 		}
 	}()
-	return func() {
-		close(done)
-		fmt.Print("\r\033[K")
-	}
+	return func() { close(done); fmt.Print("\r\033[K") }
 }
 
-// Spinner style
 func startSpinner(cfg *config.Config, msg string) func() {
 	s := cfg.Style
 	chars := []rune(s.ProgressSpinChars)
@@ -302,13 +296,9 @@ func startSpinner(cfg *config.Config, msg string) func() {
 			}
 		}
 	}()
-	return func() {
-		close(done)
-		fmt.Print("\r\033[K")
-	}
+	return func() { close(done); fmt.Print("\r\033[K") }
 }
 
-// Dots style
 func startDots(cfg *config.Config, msg string) func() {
 	s := cfg.Style
 	done := make(chan struct{})
@@ -327,10 +317,7 @@ func startDots(cfg *config.Config, msg string) func() {
 			}
 		}
 	}()
-	return func() {
-		close(done)
-		fmt.Print("\r\033[K")
-	}
+	return func() { close(done); fmt.Print("\r\033[K") }
 }
 
 func sortedKeys(m map[string]string) []string {

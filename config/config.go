@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -24,25 +25,21 @@ type Style struct {
 	SymPkg    string
 	SymArrow  string
 	SymBullet string
-
-	// Progress: preset name
-	// presets: pacman | bar | spinner | dots | none
-	// per-backend override: progress_apt | progress_dnf | progress_pacman | progress_aur
-	ProgressStyle       string
-	ProgressApt         string
-	ProgressDnf         string
-	ProgressPacman      string
-	ProgressAur         string
-	ProgressBarChar     string
-	ProgressBarEmpty    string
-	ProgressBarWidth    int
-	ProgressSpinChars   string
+	ProgressStyle     string
+	ProgressApt       string
+	ProgressDnf       string
+	ProgressPacman    string
+	ProgressAur       string
+	ProgressBarChar   string
+	ProgressBarEmpty  string
+	ProgressBarWidth  int
+	ProgressSpinChars string
 
 	// Header
 	ShowHeader  bool
-	TitleStyle  string // "default" | "custom"
+	TitleStyle  string   // "default" | "custom"
 	HeaderLines []string // used when TitleStyle == "custom"
-	HeaderText  string   // fallback / shown in config-show
+	HeaderText  string
 }
 
 type Config struct {
@@ -53,14 +50,14 @@ type Config struct {
 }
 
 var defaults = map[string]string{
-	"color_primary":       "\033[36m",
-	"color_success":       "\033[32m",
-	"color_warning":       "\033[33m",
-	"color_error":         "\033[31m",
-	"color_info":          "\033[34m",
-	"color_dim":           "\033[2m",
-	"color_reset":         "\033[0m",
-	"color_bold":          "\033[1m",
+	"color_primary":       `\e[36m`,
+	"color_success":       `\e[32m`,
+	"color_warning":       `\e[33m`,
+	"color_error":         `\e[31m`,
+	"color_info":          `\e[34m`,
+	"color_dim":           `\e[2m`,
+	"color_reset":         `\e[0m`,
+	"color_bold":          `\e[1m`,
 	"sym_ok":              "✓",
 	"sym_err":             "✗",
 	"sym_warn":            "⚠",
@@ -82,6 +79,22 @@ var defaults = map[string]string{
 	"header_text":         "alps",
 }
 
+var defaultAliases = map[string]string{
+	"ins": "install",
+	"rm":  "remove",
+	"pu":  "purge",
+	"up":  "update",
+	"ug":  "upgrade",
+	"fug": "full-upgrade",
+	"se":  "search",
+	"sh":  "show",
+	"ls":  "list",
+	"au":  "autoremove",
+	"ac":  "autoclean",
+	"cl":  "clean",
+	"ed":  "edit-sources",
+}
+
 func globalConfigPath() string { return "/etc/alps/config" }
 
 func userConfigPath() string {
@@ -94,13 +107,13 @@ func userConfigPath() string {
 }
 
 func Load() *Config {
-	kv := make(map[string]string)
-	aliases := make(map[string]string)
-	headerLines := []string{}
-
+	kv := make(map[string]string, len(defaults))
 	for k, v := range defaults {
 		kv[k] = v
 	}
+
+	aliases := make(map[string]string)
+	headerLines := []string{}
 
 	globalPath := globalConfigPath()
 	userPath := userConfigPath()
@@ -108,21 +121,7 @@ func Load() *Config {
 	parseFile(globalPath, kv, aliases, &headerLines)
 	parseFile(userPath, kv, aliases, &headerLines)
 
-	defaultAliases := map[string]string{
-		"ins": "install",
-		"rm":  "remove",
-		"pu":  "purge",
-		"up":  "update",
-		"ug":  "upgrade",
-		"fug": "full-upgrade",
-		"se":  "search",
-		"sh":  "show",
-		"ls":  "list",
-		"au":  "autoremove",
-		"ac":  "autoclean",
-		"cl":  "clean",
-		"ed":  "edit-sources",
-	}
+	// Fill in default aliases only if not overridden by config
 	for k, v := range defaultAliases {
 		if _, exists := aliases[k]; !exists {
 			aliases[k] = v
@@ -130,40 +129,40 @@ func Load() *Config {
 	}
 
 	width := 30
-	if w := parseInt(kv["progress_bar_width"]); w > 0 {
+	if w, err := strconv.Atoi(kv["progress_bar_width"]); err == nil && w > 0 {
 		width = w
 	}
 
 	return &Config{
 		Style: Style{
-			ColorPrimary:    unescape(kv["color_primary"]),
-			ColorSuccess:    unescape(kv["color_success"]),
-			ColorWarning:    unescape(kv["color_warning"]),
-			ColorError:      unescape(kv["color_error"]),
-			ColorInfo:       unescape(kv["color_info"]),
-			ColorDim:        unescape(kv["color_dim"]),
-			ColorReset:      unescape(kv["color_reset"]),
-			ColorBold:       unescape(kv["color_bold"]),
-			SymOK:           kv["sym_ok"],
-			SymErr:          kv["sym_err"],
-			SymWarn:         kv["sym_warn"],
-			SymInfo:         kv["sym_info"],
-			SymPkg:          kv["sym_pkg"],
-			SymArrow:        kv["sym_arrow"],
-			SymBullet:       kv["sym_bullet"],
-			ProgressStyle:   kv["progress_style"],
-			ProgressApt:     kv["progress_apt"],
-			ProgressDnf:     kv["progress_dnf"],
-			ProgressPacman:  kv["progress_pacman"],
-			ProgressAur:     kv["progress_aur"],
-			ProgressBarChar:  kv["progress_bar_char"],
-			ProgressBarEmpty: kv["progress_bar_empty"],
-			ProgressBarWidth: width,
+			ColorPrimary:      unescape(kv["color_primary"]),
+			ColorSuccess:      unescape(kv["color_success"]),
+			ColorWarning:      unescape(kv["color_warning"]),
+			ColorError:        unescape(kv["color_error"]),
+			ColorInfo:         unescape(kv["color_info"]),
+			ColorDim:          unescape(kv["color_dim"]),
+			ColorReset:        unescape(kv["color_reset"]),
+			ColorBold:         unescape(kv["color_bold"]),
+			SymOK:             kv["sym_ok"],
+			SymErr:            kv["sym_err"],
+			SymWarn:           kv["sym_warn"],
+			SymInfo:           kv["sym_info"],
+			SymPkg:            kv["sym_pkg"],
+			SymArrow:          kv["sym_arrow"],
+			SymBullet:         kv["sym_bullet"],
+			ProgressStyle:     kv["progress_style"],
+			ProgressApt:       kv["progress_apt"],
+			ProgressDnf:       kv["progress_dnf"],
+			ProgressPacman:    kv["progress_pacman"],
+			ProgressAur:       kv["progress_aur"],
+			ProgressBarChar:   kv["progress_bar_char"],
+			ProgressBarEmpty:  kv["progress_bar_empty"],
+			ProgressBarWidth:  width,
 			ProgressSpinChars: kv["progress_spin_chars"],
-			ShowHeader:      kv["show_header"] == "true",
-			TitleStyle:      kv["title_style"],
-			HeaderLines:     headerLines,
-			HeaderText:      kv["header_text"],
+			ShowHeader:        kv["show_header"] == "true",
+			TitleStyle:        kv["title_style"],
+			HeaderLines:       headerLines,
+			HeaderText:        kv["header_text"],
 		},
 		Aliases:    aliases,
 		GlobalPath: globalPath,
@@ -174,7 +173,7 @@ func Load() *Config {
 func parseFile(path string, kv map[string]string, aliases map[string]string, headerLines *[]string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return
+		return // file not found is normal (e.g. no global config)
 	}
 	defer f.Close()
 
@@ -196,36 +195,28 @@ func parseFile(path string, kv map[string]string, aliases map[string]string, hea
 		if ci := strings.Index(val, " #"); ci >= 0 {
 			val = strings.TrimSpace(val[:ci])
 		}
-		// Strip quotes
-		if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') ||
-			(val[0] == '\'' && val[len(val)-1] == '\'')) {
+		// Strip surrounding quotes
+		if len(val) >= 2 &&
+			((val[0] == '"' && val[len(val)-1] == '"') ||
+				(val[0] == '\'' && val[len(val)-1] == '\'')) {
 			val = val[1 : len(val)-1]
 		}
 
-		// Preserve case for alias_ keys (for -S, -R etc)
 		lowerKey := strings.ToLower(rawKey)
 
-		if strings.HasPrefix(lowerKey, "alias_") {
-			aliasName := rawKey[len("alias_"):]
-			aliases[aliasName] = val
-		} else if strings.HasPrefix(lowerKey, "title_line") {
+		switch {
+		case strings.HasPrefix(lowerKey, "alias_"):
+			// Preserve original case for alias name (e.g. alias_-S stays -S)
+			aliases[rawKey[len("alias_"):]] = val
+		case strings.HasPrefix(lowerKey, "title_line"):
 			*headerLines = append(*headerLines, unescape(val))
-		} else {
+		default:
 			kv[lowerKey] = val
 		}
 	}
 }
 
-func parseInt(s string) int {
-	n := 0
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			n = n*10 + int(c-'0')
-		}
-	}
-	return n
-}
-
+// unescape converts \e and \033 literals into the actual ESC byte.
 func unescape(s string) string {
 	s = strings.ReplaceAll(s, `\e`, "\033")
 	s = strings.ReplaceAll(s, `\033`, "\033")

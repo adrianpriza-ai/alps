@@ -1,6 +1,7 @@
 package aur
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,9 +12,10 @@ import (
 	"strings"
 )
 
-const aurRPC = "https://aur.archlinux.org/rpc/v5/search/"
-const aurInfo = "https://aur.archlinux.org/rpc/v5/info/"
-const aurGit = "https://aur.archlinux.org/"
+const (
+	aurRPCSearch = "https://aur.archlinux.org/rpc/v5/search/"
+	aurRPCInfo   = "https://aur.archlinux.org/rpc/v5/info/"
+)
 
 type Package struct {
 	Name        string  `json:"Name"`
@@ -31,84 +33,136 @@ type rpcResponse struct {
 	Error   string    `json:"error"`
 }
 
-// Search mencari package di AUR
-func Search(query string) ([]Package, error) {
-	resp, err := http.Get(aurRPC + query)
+// DetectHelper returns "yay" if available, otherwise "".
+func DetectHelper() string {
+	if _, err := exec.LookPath("yay"); err == nil {
+		return "yay"
+	}
+	return ""
+}
+
+// fetchRPC is a shared helper for AUR RPC calls.
+func fetchRPC(url string) (*rpcResponse, error) {
+	resp, err := http.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("gagal koneksi ke AUR: %v", err)
+		return nil, fmt.Errorf("AUR request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("AUR returned HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read AUR response: %w", err)
+	}
+
 	var result rpcResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("gagal parse response AUR: %v", err)
+		return nil, fmt.Errorf("failed to parse AUR response: %w", err)
 	}
 	if result.Error != "" {
 		return nil, fmt.Errorf("AUR error: %s", result.Error)
+	}
+	return &result, nil
+}
+
+// Search searches for packages in AUR by keyword.
+func Search(query string) ([]Package, error) {
+	result, err := fetchRPC(aurRPCSearch + query)
+	if err != nil {
+		return nil, err
 	}
 	return result.Results, nil
 }
 
-// Info mengambil info detail satu package
+// Info fetches detailed info for a single package by exact name.
 func Info(name string) (*Package, error) {
-	resp, err := http.Get(aurInfo + name)
+	result, err := fetchRPC(aurRPCInfo + name)
 	if err != nil {
-		return nil, fmt.Errorf("gagal koneksi ke AUR: %v", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	var result rpcResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("gagal parse response AUR: %v", err)
-	}
-	if result.Error != "" {
-		return nil, fmt.Errorf("AUR error: %s", result.Error)
+		return nil, err
 	}
 	if len(result.Results) == 0 {
-		return nil, fmt.Errorf("package '%s' tidak ditemukan di AUR", name)
+		return nil, fmt.Errorf("package %q not found in AUR", name)
 	}
 	return &result.Results[0], nil
 }
 
-// Install clone PKGBUILD dari AUR lalu makepkg -si
-func Install(pkgName string, noConfirm bool) error {
-	// Cek package ada di AUR
+// Exists reports whether a package exists in AUR.
+func Exists(name string) bool {
+	_, err := Info(name)
+	return err == nil
+}
+
+// Install installs one or more AUR packages.
+// Uses yay if available, otherwise falls back to manual makepkg.
+func Install(pkgNames []string, noConfirm bool) error {
+	if len(pkgNames) == 0 {
+		return nil
+	}
+
+	if helper := DetectHelper(); helper == "yay" {
+		return installWithYay(pkgNames, noConfirm)
+	}
+	// Fallback: install satu-satu dengan makepkg
+	for _, name := range pkgNames {
+		if err := installWithMakepkg(name, noConfirm); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// installWithYay delegates install to yay.
+func installWithYay(pkgNames []string, noConfirm bool) error {
+	args := append([]string{"-S"}, pkgNames...)
+	if noConfirm {
+		args = append(args, "--noconfirm")
+	}
+	fmt.Printf("  Using yay for: %s\n", strings.Join(pkgNames, " "))
+	cmd := exec.Command("yay", args...)
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("yay failed: %w", err)
+	}
+	return nil
+}
+
+// installWithMakepkg clones PKGBUILD and builds with makepkg -si.
+func installWithMakepkg(pkgName string, noConfirm bool) error {
 	pkg, err := Info(pkgName)
 	if err != nil {
 		return err
 	}
 
-	// Buat temp dir
 	tmpDir, err := os.MkdirTemp("", "alps-aur-*")
 	if err != nil {
-		return fmt.Errorf("gagal buat temp dir: %v", err)
+		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	cloneURL := aurGit + pkg.URLPath
-	// URLPath biasanya /cgit/aur.git/snapshot/pkgname.tar.gz
-	// Tapi lebih reliable pakai git clone
 	gitURL := fmt.Sprintf("https://aur.archlinux.org/%s.git", pkg.Name)
+	pkgDir := filepath.Join(tmpDir, pkg.Name)
 
 	fmt.Printf("  Cloning %s...\n", gitURL)
-	cloneCmd := exec.Command("git", "clone", "--depth=1", gitURL, filepath.Join(tmpDir, pkg.Name))
+	cloneCmd := exec.Command("git", "clone", "--depth=1", gitURL, pkgDir)
+	cloneCmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	cloneCmd.Stdout = os.Stdout
 	cloneCmd.Stderr = os.Stderr
 	if err := cloneCmd.Run(); err != nil {
-		return fmt.Errorf("gagal clone: %v", err)
+		return fmt.Errorf("git clone failed: %w", err)
 	}
 
-	pkgDir := filepath.Join(tmpDir, pkg.Name)
-
-	// Tampilkan PKGBUILD untuk review
-	pkgbuild := filepath.Join(pkgDir, "PKGBUILD")
-	if err := reviewPKGBUILD(pkgbuild); err != nil {
-		return err
+	if !noConfirm {
+		if err := reviewPKGBUILD(filepath.Join(pkgDir, "PKGBUILD")); err != nil {
+			return err
+		}
 	}
 
-	// makepkg -si
 	makepkgArgs := []string{"-si"}
 	if noConfirm {
 		makepkgArgs = append(makepkgArgs, "--noconfirm")
@@ -116,56 +170,69 @@ func Install(pkgName string, noConfirm bool) error {
 
 	fmt.Printf("\n  Building %s %s...\n", pkg.Name, pkg.Version)
 	makepkg := exec.Command("makepkg", makepkgArgs...)
+	makepkg.Env = append(os.Environ(), "TERM=xterm-256color")
 	makepkg.Dir = pkgDir
 	makepkg.Stdout = os.Stdout
 	makepkg.Stderr = os.Stderr
 	makepkg.Stdin = os.Stdin
 	if err := makepkg.Run(); err != nil {
-		return fmt.Errorf("makepkg gagal: %v", err)
+		return fmt.Errorf("makepkg failed: %w", err)
 	}
 
-	_ = cloneURL
 	return nil
 }
 
-// Remove pakai pacman -R
+// Remove removes a package using pacman -R.
 func Remove(pkgName string, noConfirm bool) error {
-	args := []string{"-R", pkgName}
+	args := []string{"pacman", "-R", pkgName}
 	if noConfirm {
 		args = append(args, "--noconfirm")
 	}
-	cmd := exec.Command("sudo", append([]string{"pacman"}, args...)...)
+	cmd := exec.Command("sudo", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("pacman -R %s failed: %w", pkgName, err)
+	}
+	return nil
 }
 
-// Exists cek apakah package ada di AUR
-func Exists(name string) bool {
-	_, err := Info(name)
-	return err == nil
+// GetInstalledAUR returns a map of AUR-installed packages: name → version.
+func GetInstalledAUR() (map[string]string, error) {
+	out, err := exec.Command("pacman", "-Qm").Output()
+	if err != nil {
+		return nil, fmt.Errorf("pacman -Qm failed: %w", err)
+	}
+
+	installed := make(map[string]string)
+	for _, line := range strings.Split(string(out), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) == 2 {
+			installed[parts[0]] = parts[1]
+		}
+	}
+	return installed, nil
 }
 
 func reviewPKGBUILD(path string) error {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("gagal baca PKGBUILD: %v", err)
+		return fmt.Errorf("failed to read PKGBUILD: %w", err)
 	}
 
 	fmt.Println("\n  \033[1;33m⚠  Review PKGBUILD:\033[0m")
 	fmt.Println("  " + strings.Repeat("─", 40))
 
-	lines := strings.Split(string(content), "\n")
-	// Tampilkan hanya baris penting (pkgname, pkgver, source, md5sums)
 	important := []string{"pkgname", "pkgver", "pkgrel", "source", "sha", "md5", "url="}
-	for _, line := range lines {
+	for _, line := range strings.Split(string(content), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
+		lower := strings.ToLower(trimmed)
 		for _, key := range important {
-			if strings.HasPrefix(strings.ToLower(trimmed), key) {
+			if strings.HasPrefix(lower, key) {
 				fmt.Printf("  \033[2m%s\033[0m\n", trimmed)
 				break
 			}
@@ -173,12 +240,11 @@ func reviewPKGBUILD(path string) error {
 	}
 	fmt.Println("  " + strings.Repeat("─", 40))
 
-	fmt.Print("\n  Lanjutkan install? [Y/n] ")
-	var input string
-	fmt.Scanln(&input)
-	input = strings.ToLower(strings.TrimSpace(input))
-	if input == "n" || input == "no" {
-		return fmt.Errorf("install dibatalkan")
+	fmt.Print("\n  Continue with install? [Y/n] ")
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	if strings.ToLower(strings.TrimSpace(scanner.Text())) == "n" {
+		return fmt.Errorf("install cancelled by user")
 	}
 	return nil
 }
