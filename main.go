@@ -13,7 +13,7 @@ import (
 	"alps/ui"
 )
 
-const version = "v0.6"
+const version = "v0.6 by \033]8;;https://github.com/adrianpriza-ai\aadrianpriza-ai\033]8;;\a"
 
 func main() {
 	cfg := config.Load()
