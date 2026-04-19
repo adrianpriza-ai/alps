@@ -96,17 +96,31 @@ func PrintHelp(cfg *config.Config) {
 		{"version", "binary version"},
 	}
 	for _, b := range builtins {
-		fmt.Printf("  %s%s%s  %-14s %s%s%s\n",
+		fmt.Printf("  %s%s%s  %-24s %s%s%s\n",
 			s.ColorDim, s.SymBullet, s.ColorReset,
 			s.ColorPrimary+b[0]+s.ColorReset,
 			s.ColorDim, b[1], s.ColorReset)
 	}
 	fmt.Println()
-
+	fmt.Printf("  %sRepo:%s\n", s.ColorBold, s.ColorReset)
+	repoSubs := [][2]string{
+		{"repo update", "refresh alps-more cache"},
+		{"repo list", "list available packages"},
+		{"repo install <pkg>", "install from alps-more"},
+		{"repo remove <pkg>", "remove from alps-more"},
+	}
+	for _, r := range repoSubs {
+		fmt.Printf("  %s%s%s  %-24s %s%s%s\n",
+			s.ColorDim, s.SymBullet, s.ColorReset,
+			s.ColorPrimary+r[0]+s.ColorReset,
+			s.ColorDim, r[1], s.ColorReset)
+	}
+	fmt.Println()
+	
 	fmt.Printf("  %sAliases:%s\n", s.ColorBold, s.ColorReset)
 	keys := sortedKeys(cfg.Aliases)
 	for _, k := range keys {
-		fmt.Printf("  %s%s%s  %s%-10s%s %s %s\n",
+		fmt.Printf("  %s%s%s  %s%-15s%s %s %s\n",
 			s.ColorDim, s.SymBullet, s.ColorReset,
 			s.ColorPrimary, k, s.ColorReset,
 			s.SymArrow, cfg.Aliases[k])
@@ -135,33 +149,14 @@ func PrintConfigShow(cfg *config.Config) {
 	printConfigPath(cfg, cfg.GlobalPath)
 	printConfigPath(cfg, cfg.UserPath)
 	fmt.Println()
-
 	fmt.Printf("  %sStyle preview:%s\n", s.ColorBold, s.ColorReset)
 	fmt.Printf("  %s%s%s ok    %s%s%s error    %s%s%s warn    %s%s%s info\n\n",
 		s.ColorSuccess, s.SymOK, s.ColorReset,
 		s.ColorError, s.SymErr, s.ColorReset,
 		s.ColorWarning, s.SymWarn, s.ColorReset,
 		s.ColorInfo, s.SymInfo, s.ColorReset)
-
-	fmt.Printf("  %sTitle style:%s    %s%s%s\n",
+	fmt.Printf("  %sTitle style:%s  %s%s%s\n\n",
 		s.ColorBold, s.ColorReset, s.ColorPrimary, s.TitleStyle, s.ColorReset)
-	fmt.Printf("  %sProgress default:%s %s%s%s\n",
-		s.ColorBold, s.ColorReset, s.ColorPrimary, s.ProgressStyle, s.ColorReset)
-
-	overrides := [][2]string{
-		{"apt", s.ProgressApt},
-		{"dnf", s.ProgressDnf},
-		{"pacman", s.ProgressPacman},
-		{"aur", s.ProgressAur},
-	}
-	for _, o := range overrides {
-		if o[1] != "" {
-			fmt.Printf("  %s  progress_%s:%s %s%s%s\n",
-				s.ColorDim, o[0], s.ColorReset,
-				s.ColorPrimary, o[1], s.ColorReset)
-		}
-	}
-	fmt.Println()
 }
 
 func printConfigPath(cfg *config.Config, path string) {

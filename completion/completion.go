@@ -11,8 +11,7 @@ import (
 
 // Generate prints a shell completion script to stdout.
 func Generate(shell string, cfg *config.Config) {
-	cmds := builtinCmds()
-	cmds = append(cmds, aliasKeys(cfg)...)
+	cmds := effectiveCmds(cfg)
 	backend := detectBackend()
 
 	switch shell {
@@ -230,4 +229,38 @@ func cmdDesc(cmd string) string {
 		return d
 	}
 	return cmd
+}
+
+func effectiveCmds(cfg *config.Config) []string {
+	if hasCustomAliases(cfg) {
+		cmds := []string{"help", "aliases", "config-show", "version", "repo"}
+		for k := range cfg.Aliases {
+			cmds = append(cmds, k)
+		}
+		return cmds
+	}
+	return []string{
+		"help", "aliases", "config-show", "version", "repo",
+		"install", "remove", "purge", "update", "upgrade",
+		"full-upgrade", "search", "show", "list",
+		"autoremove", "autoclean", "clean",
+	}
+}
+
+var defaultAliasKeys = map[string]string{
+	"ins": "install", "rm": "remove", "pu": "purge",
+	"up": "update", "ug": "upgrade", "fug": "full-upgrade",
+	"se": "search", "sh": "show", "ls": "list",
+	"au": "autoremove", "ac": "autoclean", "cl": "clean",
+	"ed": "edit-sources",
+}
+
+func hasCustomAliases(cfg *config.Config) bool {
+	for k, v := range cfg.Aliases {
+		def, ok := defaultAliasKeys[k]
+		if !ok || def != v {
+			return true
+		}
+	}
+	return false
 }

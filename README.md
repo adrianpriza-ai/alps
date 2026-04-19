@@ -10,6 +10,7 @@
   [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat-square&logo=go)](https://go.dev)
   [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
   [![AUR](https://img.shields.io/badge/AUR-built--in-1793D1?style=flat-square&logo=archlinux)](https://aur.archlinux.org)
+  [![alps-more](https://img.shields.io/badge/alps--more-repo-orange?style=flat-square)](https://codeberg.org/moreland/alps-more)
 
 </div>
 
@@ -17,24 +18,34 @@
 
 ALPS is a Go-based frontend for `apt`, `dnf`, and `pacman` with built-in AUR support, a custom cross-distro script repo (alps-more), fully customizable output styling, shell completion, and a unified command interface across distros.
 
+> **One tool. Every distro. Your style.**
+
 ## Features
 
-- **Multi-distro** — works with `apt`, `dnf`, and `pacman`, auto-detected
-- **Built-in AUR helper** — uses `yay` if available, falls back to cloning and building with `makepkg`
-- **alps-more repo** — install scripts and tools not in any distro repo, with arch/os/deps validation
-- **Fully customizable** — colors, symbols, progress style, header, aliases — all via config file
-- **Custom title** — default ASCII mountain logo or define your own multi-line header
-- **Per-backend progress** — different progress style for apt, dnf, pacman, and AUR
-- **Shell completion** — fish, bash, and zsh with package name suggestions
-- **Case-sensitive aliases** — supports `-S`, `-R`, and other flag-style shortcuts
+| | |
+|---|---|
+| **Multi-distro** | Auto-detects `apt`, `dnf`, or `pacman` |
+| **Built-in AUR** | Uses `yay` if available, falls back to `makepkg` |
+| **alps-more** | Cross-distro script repo with arch/os/deps validation |
+| **Fully customizable** | Colors, symbols, header, aliases — all via config |
+| **Shell completion** | fish, bash, and zsh — auto-installs via Makefile |
+| **Smart aliases** | Case-sensitive, pacman-style (`-S`, `-R`) supported |
 
 ## Installation
 
-### Build from source
+### Quick install
 
 ```bash
 git clone https://github.com/adrianpriza-ai/alps
 cd alps
+make install
+```
+
+`make install` builds the binary, copies it to `/usr/local/bin`, and auto-installs shell completion for any detected shell (fish/zsh/bash).
+
+### Manual
+
+```bash
 go build -o alps .
 sudo cp alps /usr/local/bin/alps
 ```
@@ -132,12 +143,14 @@ User config overrides global. Both are optional.
 ## AUR Support (Arch Linux only)
 
 When on Arch and running `alps install <package>`:
+
 1. Tries `pacman -S` first
 2. If not found in repo, queries AUR automatically
 3. Uses `yay` if installed, otherwise clones and builds with `makepkg -si`
 4. Shows PKGBUILD summary for review (makepkg fallback only)
 
-Search also queries both repo and AUR simultaneously:
+Search queries both repo and AUR simultaneously:
+
 ```bash
 alps search neovim
 ```
@@ -149,18 +162,39 @@ sudo pacman -S git base-devel
 
 ## alps-more Repo
 
-alps-more is a cross-distro script repo for tools not available in standard package managers.
-Cache is stored globally at `/var/cache/alps/more/` and expires after 90 days.
+alps-more is a cross-distro script repo for tools not available in any standard package manager — install scripts hosted on Codeberg Pages and GitHub Pages.
+
+Cache lives at `/var/cache/alps/more/` and expires after **90 days**.
 
 ```bash
 alps repo update          # download/refresh repo (requires sudo)
 alps repo list            # list all available packages
-alps repo install <pkg>   # install a package
-alps repo remove <pkg>    # remove a package
+alps repo install <pkg>   # validate + install
+alps repo remove <pkg>    # remove
 ```
 
-Each entry in the repo specifies supported architectures, OS/distro, optional dependencies,
-and install/remove commands. ALPS validates all of these before running anything.
+Before installing, ALPS validates:
+-  CPU architecture (`x86_64`, `aarch64`, etc.)
+-  OS / distro (`linux`, `arch`, `debian`, `fedora`, ...)
+-  Required dependencies (cancels with info if missing)
+
+### main.txt format
+
+```ini
+[ollama]
+desc = Run LLMs locally
+arch = x86_64, aarch64
+os = linux
+deps = curl
+sudo = true
+cmd_begin
+curl -fsSL https://ollama.com/install.sh | sh
+cmd_end
+remove_begin
+sudo systemctl disable ollama --now
+sudo rm -f /usr/local/bin/ollama
+remove_end
+```
 
 **alps-more repo:** [codeberg.org/moreland/alps-more](https://codeberg.org/moreland/alps-more)
 
@@ -182,6 +216,7 @@ alps/
 │   └── completion.go     # shell completion generator
 ├── assets/
 │   └── alps.png          # logo
+├── Makefile
 ├── go.mod
 ├── LICENSE
 └── README.md
