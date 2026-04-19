@@ -6,11 +6,11 @@
 
   *The customizable package manager frontend*
 
-  ![Release](https://img.shields.io/github/v/release/adrianpriza-ai/alps?include_prereleases&style=flat-square&color=red)
-  [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat-square&logo=go)](https://go.dev)
-  [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
-  [![AUR](https://img.shields.io/badge/AUR-built--in-1793D1?style=flat-square&logo=archlinux)](https://aur.archlinux.org)
-  [![alps-more](https://img.shields.io/badge/alps--more-repo-orange?style=flat-square)](https://codeberg.org/moreland/alps-more)
+  ![Release](https://img.shields.io/github/v/release/adrianpriza-ai/alps?include_prereleases&style=flat&color=red)
+  [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev)
+  [![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
+  [![AUR](https://img.shields.io/badge/AUR-built--in-1793D1?style=flat&logo=archlinux)](https://aur.archlinux.org)
+  [![alps-more](https://img.shields.io/badge/alps--more-repo-orange?style=flat)](https://codeberg.org/moreland/alps-more)
   [![Build](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml/badge.svg)](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml)
 
 </div>
