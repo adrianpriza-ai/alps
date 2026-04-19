@@ -182,20 +182,22 @@ and install/remove commands. ALPS validates all of these before running anything
 
 ```
 alps/
-├── main.go               # entry point, backend dispatch
+├── main.go             # entry point, backend dispatch
 ├── config/
-│   └── config.go         # config loading and parsing
+│   └── config.go       # config loading and parsing
 ├── ui/
-│   └── ui.go             # output, header, progress styles
+│   └── ui.go           # output, header, progress styles
 ├── aur/
-│   └── aur.go            # built-in AUR helper (yay + makepkg fallback)
+│   └── aur.go          # built-in AUR helper (yay + makepkg fallback)
 ├── more/
-│   ├── more.go           # alps-more parser, validation, install logic
-│   └── fetch.go          # cache download and management
+│   ├── more.go         # alps-more parser, validation, install logic
+│   └── fetch.go        # cache download and management
 ├── completion/
-│   └── completion.go     # shell completion generator
+│   └── completion.go   # shell completion generator
 ├── assets/
-│   └── alps.png          # logo
+│   └── alps.png        # logo
+├── docs/
+│   └── index.html      # website
 ├── Makefile
 ├── go.mod
 ├── LICENSE
