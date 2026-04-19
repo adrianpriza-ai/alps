@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ALPS — Advanced Linux Package System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:       #080d14;
+  --bg2:      #0e1520;
+  --bg3:      #151e2c;
+  --border:   #1e2d42;
+  --border2:  #2a3f5c;
+  --text:     #d8e8f4;
+  --text2:    #6a8aaa;
+  --text3:    #344a60;
+  --accent:   #4da6ff;
+  --accent2:  #2b8ae0;
+  --mono:     'IBM Plex Mono', monospace;
+  --sans:     'DM Sans', sans-serif;
+}
+[data-theme="light"] {
+  --bg:       #f0f6ff;
+  --bg2:      #e4eef8;
+  --bg3:      #d4e4f4;
+  --border:   #b8d0e8;
+  --border2:  #90b4d4;
+  --text:     #0a1828;
+  --text2:    #3a5878;
+  --text3:    #7a9ab8;
+  --accent:   #0070d4;
+  --accent2:  #0058aa;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.6;
+  transition: background .3s, color .3s;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+
+/* NAV */
+nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: 0 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 52px;
+  transition: background .3s;
+}
+.nav-brand {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--accent);
+  letter-spacing: .05em;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.nav-ver {
+  font-size: 10px;
+  color: var(--text3);
+  border: 1px solid var(--border2);
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-weight: 400;
+}
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+.nav-links a {
+  font-size: 13px;
+  color: var(--text2);
+  transition: color .2s;
+}
+.nav-links a:hover { color: var(--text); }
+.theme-toggle {
+  background: none;
+  border: 1px solid var(--border2);
+  border-radius: 20px;
+  padding: 4px 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text2);
+  cursor: pointer;
+  transition: all .2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.theme-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.theme-icon { font-size: 12px; }
+
+/* HERO */
+.hero {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 6rem 2rem 5rem;
+  border-bottom: 1px solid var(--border);
+}
+.hero-ascii {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text3);
+  line-height: 1.45;
+  margin-bottom: 3rem;
+  white-space: pre;
+  opacity: 0;
+  animation: fadeUp .6s ease forwards;
+}
+.hero h1 {
+  font-family: var(--mono);
+  font-size: clamp(28px, 5vw, 46px);
+  font-weight: 300;
+  color: var(--text);
+  line-height: 1.15;
+  letter-spacing: -.02em;
+  margin-bottom: 1.25rem;
+  opacity: 0;
+  animation: fadeUp .6s .1s ease forwards;
+}
+.hero h1 span { color: var(--accent); }
+.hero-sub {
+  font-size: 16px;
+  color: var(--text2);
+  max-width: 480px;
+  margin-bottom: 2.5rem;
+  line-height: 1.7;
+  opacity: 0;
+  animation: fadeUp .6s .2s ease forwards;
+}
+.hero-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 2.5rem;
+  opacity: 0;
+  animation: fadeUp .6s .3s ease forwards;
+}
+.badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 4px 10px;
+  border: 1px solid var(--border2);
+  border-radius: 3px;
+  color: var(--text2);
+  letter-spacing: .04em;
+}
+.badge.green {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.hero-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 3rem;
+  opacity: 0;
+  animation: fadeUp .6s .35s ease forwards;
+}
+.btn {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 10px 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all .2s;
+  letter-spacing: .03em;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.btn-solid {
+  background: var(--accent);
+  color: var(--bg);
+  border: 1px solid var(--accent);
+  font-weight: 500;
+}
+.btn-solid:hover { background: var(--accent2); border-color: var(--accent2); }
+.btn-outline {
+  background: none;
+  color: var(--text2);
+  border: 1px solid var(--border2);
+}
+.btn-outline:hover { border-color: var(--text2); color: var(--text); }
+
+.install-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  opacity: 0;
+  animation: fadeUp .6s .4s ease forwards;
+}
+.install-header {
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border);
+  padding: .5rem 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border2); }
+.install-title { font-family: var(--mono); font-size: 10px; color: var(--text3); margin-left: 4px; letter-spacing: .05em; }
+.install-body { padding: 1rem 1.25rem; }
+.install-line {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  line-height: 2;
+  display: flex;
+  gap: 10px;
+}
+.prompt { color: var(--accent); user-select: none; }
+.cmd-comment { color: var(--text3); }
+
+/* SECTIONS */
+.container { max-width: 860px; margin: 0 auto; padding: 0 2rem; }
+section { padding: 4rem 0; border-bottom: 1px solid var(--border); }
+.sec-eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--accent);
+  letter-spacing: .12em;
+  margin-bottom: 1rem;
+}
+.sec-title {
+  font-size: 22px;
+  font-weight: 400;
+  color: var(--text);
+  margin-bottom: 2rem;
+  letter-spacing: -.01em;
+}
+
+/* FEATURES */
+.feat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.feat {
+  background: var(--bg);
+  padding: 1.5rem;
+  transition: background .2s;
+}
+.feat:hover { background: var(--bg2); }
+.feat-num {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text3);
+  margin-bottom: .75rem;
+}
+.feat-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: .4rem;
+}
+.feat-desc { font-size: 13px; color: var(--text2); line-height: 1.6; }
+
+/* COMMANDS */
+.cmd-table { width: 100%; border-collapse: collapse; }
+.cmd-table tr { border-bottom: 1px solid var(--border); }
+.cmd-table tr:last-child { border-bottom: none; }
+.cmd-table tr:hover td { background: var(--bg2); }
+.cmd-table td {
+  padding: .75rem .5rem;
+  font-size: 13px;
+  vertical-align: middle;
+  transition: background .15s;
+}
+.cmd-table td:first-child {
+  font-family: var(--mono);
+  color: var(--accent);
+  white-space: nowrap;
+  padding-right: 2rem;
+  width: 240px;
+}
+.cmd-table td:last-child { color: var(--text2); }
+
+/* ALPS-MORE */
+.more-format {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1.5rem;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.9;
+  color: var(--text2);
+}
+.tok-bracket { color: var(--accent); }
+.tok-key { color: var(--text); }
+.tok-val { color: var(--text2); }
+.tok-comment { color: var(--text3); }
+.tok-cmd { color: var(--accent2); }
+
+/* CONFIG */
+.config-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+@media (max-width: 600px) { .config-grid { grid-template-columns: 1fr; } }
+.config-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1.25rem;
+}
+.config-card-title {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text3);
+  letter-spacing: .08em;
+  margin-bottom: 1rem;
+}
+.config-line {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 2;
+  display: flex;
+  gap: 8px;
+}
+.ck { color: var(--text); }
+.cv { color: var(--text2); }
+.cc { color: var(--text3); }
+
+/* INSTALL */
+.install-methods {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+@media (max-width: 600px) { .install-methods { grid-template-columns: 1fr; } }
+.method-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.method-header {
+  padding: .75rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.method-title { font-family: var(--mono); font-size: 11px; color: var(--text2); }
+.method-rec {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  padding: 1px 6px;
+  letter-spacing: .06em;
+}
+.method-body { padding: 1rem 1.25rem; }
+.method-line {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.9;
+  display: flex;
+  gap: 8px;
+}
+
+/* FOOTER */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 2rem;
+  max-width: 860px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.footer-left { font-family: var(--mono); font-size: 11px; color: var(--text3); }
+.footer-links { display: flex; gap: 20px; }
+.footer-links a { font-size: 12px; color: var(--text2); transition: color .2s; }
+.footer-links a:hover { color: var(--accent); }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-brand">
+    alps
+    <span class="nav-ver ver">v0.6</span>
+  </div>
+  <div class="nav-links">
+    <a href="#features">features</a>
+    <a href="#commands">commands</a>
+    <a href="#install">install</a>
+    <a href="https://github.com/adrianpriza-ai/alps" target="_blank">github</a>
+    <button class="theme-toggle" onclick="toggleTheme()">
+      <span class="theme-icon" id="themeIcon">☀</span>
+      <span id="themeLabel">light</span>
+    </button>
+  </div>
+</nav>
+
+<div class="hero">
+<img src="https://w.wallhaven.cc/full/0j/wallhaven-0j8w9m.jpg" alt="Alps mountains" style="width:100%;max-height:320px;object-fit:cover;border-radius:8px;margin-bottom:2.5rem;border:1px solid var(--border);opacity:0;animation:fadeUp .6s ease forwards;">
+  <h1>Advanced Linux<br><span>Package System</span></h1>
+  <p class="hero-sub">A unified package manager frontend for apt, dnf, and pacman — with built-in AUR support, a cross-distro script repo, and full customization.</p>
+  <div class="hero-badges">
+    <span class="badge green">Go 1.22+</span>
+    <span class="badge">apt · dnf · pacman</span>
+    <span class="badge">AUR built-in</span>
+    <span class="badge">alps-more</span>
+    <span class="badge">fish · bash · zsh</span>
+    <span class="badge">MIT</span>
+  </div>
+  <div class="hero-actions">
+    <a href="https://github.com/adrianpriza-ai/alps" target="_blank" class="btn btn-solid">view on GitHub</a>
+    <a href="https://github.com/adrianpriza-ai/alps/releases" target="_blank" class="btn btn-outline">releases</a>
+  </div>
+  <div class="install-card">
+    <div class="install-header">
+      <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+      <span class="install-title">TERMINAL — QUICK INSTALL</span>
+    </div>
+    <div class="install-body">
+      <div class="install-line"><span class="prompt">$</span> git clone https://github.com/adrianpriza-ai/alps</div>
+      <div class="install-line"><span class="prompt">$</span> cd alps && make install</div>
+      <div class="install-line"><span class="cmd-comment"># builds binary, installs to /usr/local/bin, sets up shell completion</span></div>
+    </div>
+  </div>
+</div>
+
+<section id="features">
+  <div class="container">
+    <div class="sec-eyebrow">FEATURES</div>
+    <div class="sec-title">Everything you need, nothing you don't.</div>
+    <div class="feat-grid">
+      <div class="feat">
+        <div class="feat-num">01</div>
+        <div class="feat-name">Multi-distro</div>
+        <div class="feat-desc">Auto-detects apt, dnf, or pacman. One command set across every distro.</div>
+      </div>
+      <div class="feat">
+        <div class="feat-num">02</div>
+        <div class="feat-name">Built-in AUR</div>
+        <div class="feat-desc">Uses yay if available, falls back to cloning and building with makepkg -si.</div>
+      </div>
+      <div class="feat">
+        <div class="feat-num">03</div>
+        <div class="feat-name">alps-more repo</div>
+        <div class="feat-desc">Cross-distro script repo with arch, os, and deps validation before running anything.</div>
+      </div>
+      <div class="feat">
+        <div class="feat-num">04</div>
+        <div class="feat-name">Fully customizable</div>
+        <div class="feat-desc">Colors, symbols, header, aliases — all via a simple config file.</div>
+      </div>
+      <div class="feat">
+        <div class="feat-num">05</div>
+        <div class="feat-name">Shell completion</div>
+        <div class="feat-desc">fish, bash, zsh. Auto-installs for detected shells via make install.</div>
+      </div>
+      <div class="feat">
+        <div class="feat-num">06</div>
+        <div class="feat-name">Smart aliases</div>
+        <div class="feat-desc">Case-sensitive aliases — pacman-style -S, -R, and custom shortcuts supported.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="commands">
+  <div class="container">
+    <div class="sec-eyebrow">COMMANDS</div>
+    <div class="sec-title">Unified interface across all backends.</div>
+    <table class="cmd-table">
+      <tr><td>alps install &lt;pkg&gt;</td><td>install from repo, AUR, or alps-more — auto-detected</td></tr>
+      <tr><td>alps search &lt;query&gt;</td><td>search repo and AUR simultaneously</td></tr>
+      <tr><td>alps upgrade</td><td>upgrade system packages and AUR packages</td></tr>
+      <tr><td>alps autoremove</td><td>remove orphaned packages</td></tr>
+      <tr><td>alps repo update</td><td>refresh alps-more cache (requires sudo)</td></tr>
+      <tr><td>alps repo install &lt;pkg&gt;</td><td>validate and install from alps-more</td></tr>
+      <tr><td>alps repo list</td><td>list all available alps-more packages</td></tr>
+      <tr><td>alps completion fish</td><td>generate and print shell completion script</td></tr>
+      <tr><td>alps config-show</td><td>show active config, paths, and style preview</td></tr>
+      <tr><td>alps aliases</td><td>list all active aliases</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="alps-more">
+  <div class="container">
+    <div class="sec-eyebrow">ALPS-MORE</div>
+    <div class="sec-title">A script repo for tools that live outside package managers.</div>
+    <pre class="more-format"><span class="tok-bracket">[</span><span class="tok-key">ollama</span><span class="tok-bracket">]</span>
+<span class="tok-key">desc</span>  = <span class="tok-val">Run LLMs locally</span>
+<span class="tok-key">arch</span>  = <span class="tok-val">x86_64, aarch64</span>
+<span class="tok-key">os</span>    = <span class="tok-val">linux</span>
+<span class="tok-key">deps</span>  = <span class="tok-val">curl</span>
+<span class="tok-key">sudo</span>  = <span class="tok-val">true</span>
+<span class="tok-key">cmd_begin</span>
+<span class="tok-cmd">curl -fsSL https://ollama.com/install.sh | sh</span>
+<span class="tok-key">cmd_end</span>
+<span class="tok-key">remove_begin</span>
+<span class="tok-cmd">sudo systemctl disable ollama --now</span>
+<span class="tok-cmd">sudo rm -f /usr/local/bin/ollama</span>
+<span class="tok-key">remove_end</span></pre>
+    <p style="margin-top:1rem;font-size:13px;color:var(--text2);">Cache stored at <code style="font-family:var(--mono);font-size:12px;color:var(--text)">/var/cache/alps/more/</code> — expires after 90 days. Primary: Codeberg Pages. Fallback: GitHub Pages.</p>
+  </div>
+</section>
+
+<section id="config">
+  <div class="container">
+    <div class="sec-eyebrow">CONFIGURATION</div>
+    <div class="sec-title">Two config files. Infinite customization.</div>
+    <div class="config-grid">
+      <div class="config-card">
+        <div class="config-card-title">~/.config/alps/config</div>
+        <div class="config-line"><span class="ck">color_primary</span> <span class="cv">= \e[36m</span></div>
+        <div class="config-line"><span class="ck">color_success</span> <span class="cv">= \e[32m</span></div>
+        <div class="config-line"><span class="ck">sym_ok</span>        <span class="cv">= ✓</span></div>
+        <div class="config-line"><span class="ck">sym_info</span>      <span class="cv">= ◆</span></div>
+        <div class="config-line"><span class="ck">show_header</span>   <span class="cv">= true</span></div>
+        <div class="config-line"><span class="ck">title_style</span>   <span class="cv">= default</span></div>
+      </div>
+      <div class="config-card">
+        <div class="config-card-title">custom aliases</div>
+        <div class="config-line"><span class="cc"># pacman-style</span></div>
+        <div class="config-line"><span class="ck">alias_-S</span>  <span class="cv">= install</span></div>
+        <div class="config-line"><span class="ck">alias_-R</span>  <span class="cv">= remove</span></div>
+        <div class="config-line"><span class="cc"># short-form</span></div>
+        <div class="config-line"><span class="ck">alias_i</span>   <span class="cv">= install</span></div>
+        <div class="config-line"><span class="ck">alias_fu</span>  <span class="cv">= full-upgrade</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="container">
+    <div class="sec-eyebrow">INSTALL</div>
+    <div class="sec-title">Up and running in seconds.</div>
+    <div class="install-methods">
+      <div class="method-card">
+        <div class="method-header">
+          <span class="method-title">BUILD FROM SOURCE</span>
+          <span class="method-rec">RECOMMENDED</span>
+        </div>
+        <div class="method-body">
+          <div class="method-line"><span class="prompt">$</span> git clone https://github.com/adrianpriza-ai/alps</div>
+          <div class="method-line"><span class="prompt">$</span> cd alps</div>
+          <div class="method-line"><span class="prompt">$</span> make install</div>
+        </div>
+      </div>
+      <div class="method-card">
+        <div class="method-header">
+          <span class="method-title">PRE-COMPILED BINARY</span>
+        </div>
+        <div class="method-body">
+          <div class="method-line"><span class="prompt">$</span> chmod +x alps-linux-amd64</div>
+          <div class="method-line"><span class="prompt">$</span> sudo cp alps-linux-amd64 /usr/local/bin/alps</div>
+          <div class="method-line" style="color:var(--text3);font-size:11px;margin-top:.5rem;">amd64 and arm64 available in releases</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="footer-left">alps <span class="ver">v0.6</span> — MIT License</div>
+  <div class="footer-links">
+    <a href="https://github.com/adrianpriza-ai/alps" target="_blank">GitHub</a>
+    <a href="https://github.com/adrianpriza-ai/alps/releases" target="_blank">Releases</a>
+    <a href="https://codeberg.org/moreland/alps-more" target="_blank">alps-more</a>
+  </div>
+</footer>
+
+<script>
+function toggleTheme() {
+  const html = document.documentElement;
+  const isDark = html.getAttribute('data-theme') === 'dark';
+  html.setAttribute('data-theme', isDark ? 'light' : 'dark');
+  document.getElementById('themeIcon').textContent = isDark ? '☽' : '☀';
+  document.getElementById('themeLabel').textContent = isDark ? 'dark' : 'light';
+}
+
+fetch('https://api.github.com/repos/adrianpriza-ai/alps/releases/latest')
+  .then(r => { if (!r.ok) throw new Error(); return r.json(); })
+  .then(d => {
+    if (d.tag_name) {
+      document.querySelectorAll('.ver').forEach(el => el.textContent = d.tag_name);
+    }
+  })
+  .catch(() => {});
+</script>
+</body>
+</html>
