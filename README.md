@@ -162,39 +162,18 @@ sudo pacman -S git base-devel
 
 ## alps-more Repo
 
-alps-more is a cross-distro script repo for tools not available in any standard package manager — install scripts hosted on Codeberg Pages and GitHub Pages.
-
-Cache lives at `/var/cache/alps/more/` and expires after **90 days**.
+alps-more is a cross-distro script repo for tools not available in standard package managers.
+Cache is stored globally at `/var/cache/alps/more/` and expires after 90 days.
 
 ```bash
 alps repo update          # download/refresh repo (requires sudo)
 alps repo list            # list all available packages
-alps repo install <pkg>   # validate + install
-alps repo remove <pkg>    # remove
+alps repo install <pkg>   # install a package
+alps repo remove <pkg>    # remove a package
 ```
 
-Before installing, ALPS validates:
--  CPU architecture (`x86_64`, `aarch64`, etc.)
--  OS / distro (`linux`, `arch`, `debian`, `fedora`, ...)
--  Required dependencies (cancels with info if missing)
-
-### main.txt format
-
-```ini
-[ollama]
-desc = Run LLMs locally
-arch = x86_64, aarch64
-os = linux
-deps = curl
-sudo = true
-cmd_begin
-curl -fsSL https://ollama.com/install.sh | sh
-cmd_end
-remove_begin
-sudo systemctl disable ollama --now
-sudo rm -f /usr/local/bin/ollama
-remove_end
-```
+Each entry in the repo specifies supported architectures, OS/distro, optional dependencies,
+and install/remove commands. ALPS validates all of these before running anything.
 
 **alps-more repo:** [codeberg.org/moreland/alps-more](https://codeberg.org/moreland/alps-more)
 
