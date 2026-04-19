@@ -115,21 +115,31 @@ nav {
 .theme-icon { font-size: 12px; }
 
 /* HERO */
+.hero-bg {
+  position: relative;
+  width: 100%;
+  min-height: 560px;
+  background-image: url('wallhaven-0j8w9m.jpg');
+  background-size: cover;
+  background-position: center;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0;
+}
+.hero-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to bottom, rgba(8,13,20,.2) 0%, rgba(8,13,20,.55) 55%, rgba(8,13,20,1) 100%);
+}
+[data-theme="light"] .hero-bg::after {
+  background: linear-gradient(to bottom, rgba(240,246,255,.15) 0%, rgba(240,246,255,.55) 55%, rgba(240,246,255,1) 100%);
+}
 .hero {
+  position: relative;
+  z-index: 1;
   max-width: 860px;
   margin: 0 auto;
-  padding: 6rem 2rem 5rem;
-  border-bottom: 1px solid var(--border);
-}
-.hero-ascii {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text3);
-  line-height: 1.45;
-  margin-bottom: 3rem;
-  white-space: pre;
-  opacity: 0;
-  animation: fadeUp .6s ease forwards;
+  padding: 22rem 2rem 5rem;
 }
 .hero h1 {
   font-family: var(--mono);
@@ -435,8 +445,8 @@ footer {
   </div>
 </nav>
 
+<div class="hero-bg">
 <div class="hero">
-<img src="https://w.wallhaven.cc/full/0j/wallhaven-0j8w9m.jpg" alt="Alps mountains" style="width:100%;max-height:320px;object-fit:cover;border-radius:8px;margin-bottom:2.5rem;border:1px solid var(--border);opacity:0;animation:fadeUp .6s ease forwards;">
   <h1>Advanced Linux<br><span>Package System</span></h1>
   <p class="hero-sub">A unified package manager frontend for apt, dnf, and pacman — with built-in AUR support, a cross-distro script repo, and full customization.</p>
   <div class="hero-badges">
@@ -461,6 +471,7 @@ footer {
       <div class="install-line"><span class="prompt">$</span> cd alps && make install</div>
       <div class="install-line"><span class="cmd-comment"># builds binary, installs to /usr/local/bin, sets up shell completion</span></div>
     </div>
+  </div>
   </div>
 </div>
 
