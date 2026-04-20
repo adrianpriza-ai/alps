@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/alps.png" alt="ALPS" width="600"/>
+  <img src="https://adrianpriza-ai.github.io/alps/alps.png" alt="ALPS" width="600"/>
 
   # ALPS
   **Advanced Linux Package System**
