@@ -194,10 +194,6 @@ alps/
 │   └── fetch.go        # cache download and management
 ├── completion/
 │   └── completion.go   # shell completion generator
-├── assets/
-│   └── alps.png        # logo
-├── docs/
-│   └── index.html      # website
 ├── Makefile
 ├── go.mod
 ├── LICENSE
