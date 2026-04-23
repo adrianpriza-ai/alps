@@ -13,7 +13,7 @@ import (
 	"alps/ui"
 )
 
-const version = "v0.6 by \033]8;;https://github.com/adrianpriza-ai\aadrianpriza-ai\033]8;;\a"
+const version = "v0.7 by \033]8;;https://github.com/adrianpriza-ai\aadrianpriza-ai\033]8;;\a"
 
 func main() {
 	cfg := config.Load()
@@ -300,19 +300,8 @@ func runPacmanSearch(args []string, cfg *config.Config) {
 		return
 	}
 
-	max := 10
-	if len(results) < max {
-		max = len(results)
-	}
-	for _, p := range results[:max] {
-		fmt.Printf("  %saur/%s%s %s%s%s\n",
-			cfg.Style.ColorPrimary, p.Name, cfg.Style.ColorReset,
-			cfg.Style.ColorDim, p.Version, cfg.Style.ColorReset)
-		fmt.Printf("    %s%s%s  \033[2m(votes: %d)\033[0m\n",
-			cfg.Style.ColorDim, p.Description, cfg.Style.ColorReset, p.Votes)
-	}
-	if len(results) > 10 {
-		ui.Msgf(cfg, ui.LevelInfo, "...and %d more results", len(results)-10)
+	for i, p := range results {
+		aur.PrintSearchResult(i+1, p, "aur")
 	}
 	fmt.Println()
 }
@@ -391,15 +380,22 @@ func runAURUpgrade(noConfirm bool, cfg *config.Config) {
 	ui.Msgf(cfg, ui.LevelInfo, "Checking %d AUR package(s) for updates...", len(installed))
 	fmt.Println()
 
+	// Fetch all info in parallel
+	names := make([]string, 0, len(installed))
+	for name := range installed {
+		names = append(names, name)
+	}
+	latest := aur.InfoBatch(names)
+
 	var outdated []aur.Package
 	for name, installedVer := range installed {
-		pkg, err := aur.Info(name)
-		if err != nil {
+		pkg, ok := latest[name]
+		if !ok {
 			continue
 		}
 		if pkg.Version != installedVer {
 			outdated = append(outdated, *pkg)
-			fmt.Printf("  %s%s%s  %s%s%s -> %s%s%s\n",
+			fmt.Printf("  %s%s%s  %s%s%s → %s%s%s\n",
 				cfg.Style.ColorPrimary, pkg.Name, cfg.Style.ColorReset,
 				cfg.Style.ColorDim, installedVer, cfg.Style.ColorReset,
 				cfg.Style.ColorSuccess, pkg.Version, cfg.Style.ColorReset)

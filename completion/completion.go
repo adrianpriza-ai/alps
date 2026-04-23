@@ -60,26 +60,12 @@ func installedListCmd(backend string) string {
 	}
 }
 
-func builtinCmds() []string {
-	return []string{
-		"help", "aliases", "config-show", "version",
-		"install", "remove", "purge", "update", "upgrade",
-		"full-upgrade", "search", "show", "list",
-		"autoremove", "autoclean", "clean",
-	}
-}
-
-func aliasKeys(cfg *config.Config) []string {
-	keys := make([]string, 0, len(cfg.Aliases))
-	for k := range cfg.Aliases {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
 // ── Fish ──────────────────────────────────────────────────────────
 
 func genFish(cmds []string, backend string) {
+	pkgList := pkgListCmd(backend)
+	installedList := installedListCmd(backend)
+
 	fmt.Println("# alps fish completion")
 	fmt.Println("# Install: alps completion fish > ~/.config/fish/completions/alps.fish")
 	fmt.Println()
@@ -91,16 +77,22 @@ func genFish(cmds []string, backend string) {
 			cmd, cmdDesc(cmd))
 	}
 
-	pkgList := pkgListCmd(backend)
-	installedList := installedListCmd(backend)
-
 	fmt.Printf(`
+# repo subcommands
+complete -c alps -n '__fish_seen_subcommand_from repo' -a 'update list install remove' -d 'repo subcommand'
+
+# alps-more package completion (live from cache)
+complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' \
+    -a "(grep -oP '(?<=\[)[^\]]+' /var/cache/alps/more/main.txt 2>/dev/null)" -d 'alps-more package'
+complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' \
+    -a "(grep -oP '(?<=\[)[^\]]+' /var/cache/alps/more/main.txt 2>/dev/null)" -d 'alps-more package'
+
 # Available package completion for install/search
-complete -c alps -n '__fish_seen_subcommand_from install ins i search se' \
+complete -c alps -n '__fish_seen_subcommand_from install search' \
     -a '(%s)' -d 'package'
 
 # Installed package completion for remove/purge
-complete -c alps -n '__fish_seen_subcommand_from remove rm purge pu' \
+complete -c alps -n '__fish_seen_subcommand_from remove purge' \
     -a '(%s)' -d 'installed'
 `, pkgList, installedList)
 }
@@ -264,3 +256,5 @@ func hasCustomAliases(cfg *config.Config) bool {
 	}
 	return false
 }
+
+
