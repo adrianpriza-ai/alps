@@ -97,7 +97,18 @@ func Parse(data []byte) (map[string]*Entry, error) {
 	return entries, scanner.Err()
 }
 
-// Find looks up a package by name from cache.
+// baseName returns the package name without @distro suffix.
+// e.g. "ollama@arch" → "ollama", "ollama" → "ollama"
+func baseName(name string) string {
+	if idx := strings.Index(name, "@"); idx != -1 {
+		return name[:idx]
+	}
+	return name
+}
+
+// Find looks up a package by name from cache, matching current distro.
+// Supports @distro suffix: "ollama@arch", "ollama@debian".
+// User always types the base name e.g. "ollama".
 func Find(name string) (*Entry, error) {
 	exists, expired := CacheStatus()
 	if !exists {
@@ -119,14 +130,39 @@ func Find(name string) (*Entry, error) {
 		return nil, fmt.Errorf("failed to parse repo: %w", err)
 	}
 
-	entry, ok := entries[name]
-	if !ok {
+	distro, distroLike := detectDistro()
+
+	// Collect all entries whose base name matches
+	var candidates []*Entry
+	for _, e := range entries {
+		if baseName(e.Name) == name {
+			candidates = append(candidates, e)
+		}
+	}
+
+	if len(candidates) == 0 {
 		return nil, fmt.Errorf("package %q not found in alps-more repo", name)
 	}
-	return entry, nil
+
+	// Filter by os match
+	for _, e := range candidates {
+		if osMatches(e.OS, distro, distroLike) {
+			return e, nil
+		}
+	}
+
+	// No os match found — collect supported distros for error message
+	var supported []string
+	for _, e := range candidates {
+		supported = append(supported, strings.Join(e.OS, "/"))
+	}
+	return nil, fmt.Errorf(
+		"package %q is not available for your distro (%s)\n  available for: %s",
+		name, distro, strings.Join(supported, ", "),
+	)
 }
 
-// List returns all entries from cache.
+// List returns deduplicated entries — one per base name, preferring current distro.
 func List() (map[string]*Entry, error) {
 	exists, expired := CacheStatus()
 	if !exists {
@@ -143,7 +179,28 @@ func List() (map[string]*Entry, error) {
 		return nil, err
 	}
 
-	return Parse(data)
+	all, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+
+	distro, distroLike := detectDistro()
+
+	// Group by base name, prefer distro match
+	deduped := make(map[string]*Entry)
+	for _, e := range all {
+		base := baseName(e.Name)
+		existing, seen := deduped[base]
+		if !seen {
+			deduped[base] = e
+			continue
+		}
+		// Prefer the one that matches current distro
+		if osMatches(e.OS, distro, distroLike) && !osMatches(existing.OS, distro, distroLike) {
+			deduped[base] = e
+		}
+	}
+	return deduped, nil
 }
 
 // Validate checks arch, os, and deps compatibility.
@@ -299,6 +356,9 @@ func normalizeArch(goarch string) string {
 
 // detectDistro reads /etc/os-release and returns (ID, ID_LIKE).
 func detectDistro() (id string, idLike []string) {
+	if strings.Contains(os.Getenv("PREFIX"), "com.termux") {
+		return "termux", nil
+	}
 	data, err := os.ReadFile("/etc/os-release")
 	if err != nil {
 		return "unknown", nil
