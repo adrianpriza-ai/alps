@@ -17,7 +17,7 @@
 
 ---
 
-ALPS is a Go-based frontend for `apt`, `dnf`, and `pacman` with built-in AUR support, a custom cross-distro script repo (alps-more), fully customizable output styling, shell completion, and a unified command interface across distros.
+ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, and `pacman` with built-in AUR, Flatpak, and Snap support, a custom cross-distro script repo (alps-more), fully customizable output styling, shell completion, and a unified command interface across distros.
 
 > **One tool. Every distro. Your style.**
 
@@ -25,11 +25,13 @@ ALPS is a Go-based frontend for `apt`, `dnf`, and `pacman` with built-in AUR sup
 
 | | |
 |---|---|
-| **Multi-distro** | Auto-detects `apt`, `dnf`, or `pacman` |
-| **Built-in AUR** | Uses `yay` if available, falls back to `makepkg` |
+| **Multi-distro** | Auto-detects `apt`, `apt-get`, `dnf`, or `pacman` |
+| **Built-in AUR** | Uses `yay` if available, falls back to `makepkg` with dep resolution |
+| **Snap fallback** | Auto-falls back to snap on Ubuntu/Debian if apt can't find a package |
+| **Flatpak support** | First-class `alps flatpak` subcommand for all distros |
 | **alps-more** | Cross-distro script repo with arch/os/deps validation |
 | **Fully customizable** | Colors, symbols, header, aliases — all via config |
-| **Shell completion** | fish, bash, and zsh — auto-installs via Makefile |
+| **Smart completion** | fish, bash, zsh — auto-configured per distro |
 | **Smart aliases** | Case-sensitive, pacman-style (`-S`, `-R`) supported |
 
 ## Installation
@@ -79,8 +81,11 @@ alps <command> [args]
 | `version` | Show version |
 | `completion <shell>` | Generate shell completion (fish/bash/zsh) |
 | `repo <subcommand>` | Manage alps-more repo |
+| `aur <subcommand>` | Manage AUR packages directly (Arch only) |
+| `flatpak <subcommand>` | Manage Flatpak packages |
+| `snap <subcommand>` | Manage Snap packages |
 
-All other commands are mapped to the active backend (apt / dnf / pacman).
+All other commands are mapped to the active backend (apt / apt-get / dnf / pacman).
 
 ### Default aliases
 
@@ -146,9 +151,20 @@ User config overrides global. Both are optional.
 When on Arch and running `alps install <package>`:
 
 1. Tries `pacman -S` first
-2. If not found in repo, queries AUR automatically
+2. If not found, queries AUR automatically
 3. Uses `yay` if installed, otherwise clones and builds with `makepkg -si`
-4. Shows PKGBUILD summary for review (makepkg fallback only)
+4. Resolves and checks dependencies — stops if any dep is AUR-only (must install manually)
+5. Shows PKGBUILD summary for review (makepkg fallback only)
+6. After build, asks to remove makedepends and build cache
+
+Direct AUR management:
+
+```bash
+alps aur install <pkg>   # install directly from AUR
+alps aur search <query>  # search AUR only
+alps aur list            # list installed AUR packages
+alps aur clean           # remove build cache (~/.cache/alps/aur/)
+```
 
 Search queries both repo and AUR simultaneously:
 
@@ -159,6 +175,32 @@ alps search neovim
 **Requirements for AUR (makepkg fallback):**
 ```bash
 sudo pacman -S git base-devel
+```
+
+## Snap Support (Ubuntu/Debian)
+
+On Ubuntu/Debian, if a package is not found in apt, alps automatically offers to install via snap (if snapd is available and not blocked).
+
+Direct snap management:
+
+```bash
+alps snap install <pkg>
+alps snap search <query>
+alps snap list
+alps snap update
+alps snap remove <pkg>
+```
+
+## Flatpak Support
+
+Available on all distros if flatpak is installed. Uses Flathub by default.
+
+```bash
+alps flatpak install <pkg>
+alps flatpak search <query>
+alps flatpak list
+alps flatpak update
+alps flatpak remove <pkg>
 ```
 
 ## alps-more Repo
@@ -173,8 +215,7 @@ alps repo install <pkg>   # install a package
 alps repo remove <pkg>    # remove a package
 ```
 
-Each entry in the repo specifies supported architectures, OS/distro, optional dependencies,
-and install/remove commands. ALPS validates all of these before running anything.
+Each entry specifies supported architectures, OS/distro, optional dependencies, and install/remove commands. ALPS validates all of these before running anything. Entries support per-distro commands via `@distro` suffix (e.g. `[ollama@arch]`, `[ollama@debian]`).
 
 **alps-more repo:** [codeberg.org/moreland/alps-more](https://codeberg.org/moreland/alps-more)
 
@@ -182,18 +223,22 @@ and install/remove commands. ALPS validates all of these before running anything
 
 ```
 alps/
-├── main.go             # entry point, backend dispatch
+├── main.go               # entry point, backend dispatch
 ├── config/
-│   └── config.go       # config loading and parsing
+│   └── config.go         # config loading and parsing
 ├── ui/
-│   └── ui.go           # output, header, progress styles
+│   └── ui.go             # output, header, progress styles
 ├── aur/
-│   └── aur.go          # built-in AUR helper (yay + makepkg fallback)
+│   └── aur.go            # AUR helper (yay + makepkg, dep resolution)
+├── snap/
+│   └── snap.go           # snap package manager support
+├── flatpak/
+│   └── flatpak.go        # flatpak support
 ├── more/
-│   ├── more.go         # alps-more parser, validation, install logic
-│   └── fetch.go        # cache download and management
+│   ├── more.go           # alps-more parser, validation, install logic
+│   └── fetch.go          # cache download and management
 ├── completion/
-│   └── completion.go   # shell completion generator
+│   └── completion.go     # shell completion generator (distro-aware)
 ├── Makefile
 ├── go.mod
 ├── LICENSE
