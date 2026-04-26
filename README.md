@@ -49,6 +49,8 @@ make install
 ### Manual
 
 ```bash
+git clone https://github.com/adrianpriza-ai/alps
+cd alps
 go build -o alps .
 sudo cp alps /usr/local/bin/alps
 ```
