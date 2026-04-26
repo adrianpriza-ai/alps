@@ -202,6 +202,29 @@ func installWithYay(pkgNames []string, noConfirm bool) error {
 	return nil
 }
 
+// aurCacheDir returns ~/.cache/alps/aur/<pkgname>
+func aurCacheDir(pkgName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".cache", "alps", "aur", pkgName), nil
+}
+
+// AURCacheRoot returns ~/.cache/alps/aur/
+func AURCacheRoot() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".cache", "alps", "aur"), nil
+}
+
+// ListInstalledAUR wraps GetInstalledAUR for external use.
+func ListInstalledAUR() (map[string]string, error) {
+	return GetInstalledAUR()
+}
+
 func installWithMakepkg(pkgName string, noConfirm bool) error {
 	pkg, err := Info(pkgName)
 	if err != nil {
@@ -219,19 +242,56 @@ func installWithMakepkg(pkgName string, noConfirm bool) error {
 		}
 	}
 
-	// Resolve AUR dependencies before building
-	if err := resolveAURDeps(pkg, noConfirm); err != nil {
+	// Check deps — stop if any are in AUR only
+	missingRepo, aurOnly, err := checkDeps(pkg)
+	if err != nil {
 		return err
 	}
 
-	tmpDir, err := os.MkdirTemp("", "alps-aur-*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp dir: %w", err)
+	if len(aurOnly) > 0 {
+		return fmt.Errorf(
+			"the following dependencies are only available in AUR — install them manually first:\n  %s",
+			strings.Join(aurOnly, "\n  "),
+		)
 	}
-	defer os.RemoveAll(tmpDir)
+
+	if len(missingRepo) > 0 {
+		fmt.Printf("  :: Missing deps (will be installed from repo): %s\n", strings.Join(missingRepo, "  "))
+		if !noConfirm {
+			fmt.Print("  Install missing deps? [Y/n] ")
+			var inp string
+			fmt.Scanln(&inp)
+			if strings.ToLower(strings.TrimSpace(inp)) == "n" {
+				return fmt.Errorf("install cancelled")
+			}
+		}
+		fmt.Println()
+	}
+
+	// Track makedepends not installed before build
+	var toRemove []string
+	for _, dep := range pkg.MakeDepends {
+		name := stripVerConstraint(dep)
+		if !isInstalled(name) {
+			toRemove = append(toRemove, name)
+		}
+	}
+
+	// Use ~/.cache/alps/aur/<pkgname> instead of /tmp
+	pkgDir, err := aurCacheDir(pkg.Name)
+	if err != nil {
+		return fmt.Errorf("failed to resolve cache dir: %w", err)
+	}
+
+	// Clean previous cache if exists
+	if _, err := os.Stat(pkgDir); err == nil {
+		os.RemoveAll(pkgDir)
+	}
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		return fmt.Errorf("failed to create cache dir: %w", err)
+	}
 
 	gitURL := fmt.Sprintf("https://aur.archlinux.org/%s.git", pkg.Name)
-	pkgDir := filepath.Join(tmpDir, pkg.Name)
 
 	fmt.Printf("  → cloning %s...\n", gitURL)
 	cloneCmd := exec.Command("git", "clone", "--depth=1", gitURL, pkgDir)
@@ -264,74 +324,73 @@ func installWithMakepkg(pkgName string, noConfirm bool) error {
 	if err := makepkg.Run(); err != nil {
 		return fmt.Errorf("makepkg failed: %w", err)
 	}
+
+	// Ask to remove makedepends installed during build
+	if len(toRemove) > 0 {
+		fmt.Printf("\n  :: Build dependencies installed: %s\n", strings.Join(toRemove, "  "))
+		fmt.Print("  Remove build dependencies? [y/N] ")
+		var inp string
+		fmt.Scanln(&inp)
+		if strings.ToLower(strings.TrimSpace(inp)) == "y" {
+			rmArgs := append([]string{"pacman", "-Rns", "--noconfirm"}, toRemove...)
+			rmCmd := exec.Command("sudo", rmArgs...)
+			rmCmd.Stdout = os.Stdout
+			rmCmd.Stderr = os.Stderr
+			rmCmd.Stdin = os.Stdin
+			if err := rmCmd.Run(); err != nil {
+				fmt.Printf("  ⚠  failed to remove build deps: %v\n", err)
+			} else {
+				fmt.Printf("  ✓  build dependencies removed\n")
+			}
+		}
+	}
+
+	// Ask to keep or remove build cache
+	fmt.Printf("\n  :: Build cache: %s\n", pkgDir)
+	fmt.Print("  Keep build cache? [y/N] ")
+	var keep string
+	fmt.Scanln(&keep)
+	if strings.ToLower(strings.TrimSpace(keep)) != "y" {
+		os.RemoveAll(pkgDir)
+		fmt.Printf("  ✓  cache removed\n")
+	}
+
 	return nil
 }
 
-// resolveAURDeps checks depends+makedepends of pkg.
-// If a dep is not in pacman repo, checks AUR and installs it first (one level only).
-// If a dep is not found anywhere, returns error.
-func resolveAURDeps(pkg *Package, noConfirm bool) error {
+// checkDeps checks all depends+makedepends of pkg.
+// Returns: missingRepo (not installed, but in repo), aurOnly (only in AUR — must stop).
+func checkDeps(pkg *Package) (missingRepo []string, aurOnly []string, err error) {
 	allDeps := append(pkg.Depends, pkg.MakeDepends...)
-	if len(allDeps) == 0 {
-		return nil
-	}
-
-	var aurDeps []string
 	var missing []string
 
 	for _, dep := range allDeps {
-		// Strip version constraints e.g. "curl>=7.0" → "curl"
 		name := stripVerConstraint(dep)
-
-		// Check if already installed
 		if isInstalled(name) {
 			continue
 		}
-
-		// Check pacman repo
 		if inPacmanRepo(name) {
-			continue // makepkg -si will install it
+			missingRepo = append(missingRepo, name)
+			continue
 		}
-
-		// Check AUR
 		if Exists(name) {
-			// Check if this AUR dep itself has AUR deps (one level check)
-			depPkg, err := Info(name)
-			if err == nil {
-				for _, d := range append(depPkg.Depends, depPkg.MakeDepends...) {
-					n := stripVerConstraint(d)
-					if !isInstalled(n) && !inPacmanRepo(n) && Exists(n) {
-						return fmt.Errorf(
-							"dependency %q of %q requires AUR package %q — install %q manually first, then retry",
-							name, pkg.Name, n, n,
-						)
-					}
-				}
-			}
-			aurDeps = append(aurDeps, name)
+			aurOnly = append(aurOnly, name)
 		} else {
 			missing = append(missing, name)
 		}
 	}
 
 	if len(missing) > 0 {
-		return fmt.Errorf(
-			"missing dependencies not found in repo or AUR: %s",
+		err = fmt.Errorf(
+			"missing dependencies not found anywhere: %s",
 			strings.Join(missing, ", "),
 		)
 	}
+	return
+}
 
-	if len(aurDeps) > 0 {
-		fmt.Printf("  :: AUR dependencies needed: %s\n\n", strings.Join(aurDeps, "  "))
-		for _, dep := range aurDeps {
-			fmt.Printf("  → installing AUR dependency: %s\n", dep)
-			if err := installWithMakepkg(dep, noConfirm); err != nil {
-				return fmt.Errorf("failed to install AUR dependency %q: %w", dep, err)
-			}
-		}
-		fmt.Println()
-	}
-
+// resolveAURDeps kept for compatibility but no longer installs AUR deps.
+func resolveAURDeps(pkg *Package, noConfirm bool) error {
 	return nil
 }
 

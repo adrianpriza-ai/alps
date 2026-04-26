@@ -81,6 +81,15 @@ func genFish(cmds []string, backend string) {
 # repo subcommands
 complete -c alps -n '__fish_seen_subcommand_from repo' -a 'update list install remove' -d 'repo subcommand'
 
+# aur subcommands
+complete -c alps -n '__fish_seen_subcommand_from aur' -a 'install search list clean' -d 'aur subcommand'
+
+# flatpak subcommands
+complete -c alps -n '__fish_seen_subcommand_from flatpak' -a 'install remove search list update' -d 'flatpak subcommand'
+
+# snap subcommands
+complete -c alps -n '__fish_seen_subcommand_from snap' -a 'install remove search list update' -d 'snap subcommand'
+
 # alps-more package completion (live from cache)
 complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' \
     -a "(grep -oP '(?<=\[)[^\]]+' /var/cache/alps/more/main.txt 2>/dev/null)" -d 'alps-more package'
@@ -192,6 +201,10 @@ func cmdDesc(cmd string) string {
 		"config-show":  "show config",
 		"version":      "show version",
 		"completion":   "generate shell completion",
+		"repo":         "manage alps-more repo",
+		"aur":          "manage AUR packages directly",
+		"flatpak":      "manage flatpak packages",
+		"snap":         "manage snap packages",
 		"install":      "install package",
 		"remove":       "remove package",
 		"purge":        "purge package",
@@ -224,19 +237,70 @@ func cmdDesc(cmd string) string {
 }
 
 func effectiveCmds(cfg *config.Config) []string {
+	base := []string{
+		"help", "aliases", "config-show", "version", "repo", "flatpak",
+		"install", "remove", "purge", "update", "upgrade",
+		"full-upgrade", "search", "show", "list",
+		"autoremove", "autoclean", "clean",
+	}
+
+	// Add distro-specific subcommands
+	distro := detectDistroID()
+	switch distro {
+	case "arch", "manjaro", "endeavouros", "garuda":
+		base = append(base, "aur")
+	case "ubuntu", "debian", "linuxmint", "pop", "elementary":
+		if isSnapAvailable() {
+			base = append(base, "snap")
+		}
+	}
+
+	// Add flatpak if installed
+	if _, err := exec.LookPath("flatpak"); err == nil {
+		// already in base
+	}
+
 	if hasCustomAliases(cfg) {
-		cmds := []string{"help", "aliases", "config-show", "version", "repo"}
+		cmds := []string{}
+		for _, b := range base {
+			// keep non-package commands
+			switch b {
+			case "help", "aliases", "config-show", "version", "repo", "aur", "flatpak", "snap":
+				cmds = append(cmds, b)
+			}
+		}
 		for k := range cfg.Aliases {
 			cmds = append(cmds, k)
 		}
 		return cmds
 	}
-	return []string{
-		"help", "aliases", "config-show", "version", "repo",
-		"install", "remove", "purge", "update", "upgrade",
-		"full-upgrade", "search", "show", "list",
-		"autoremove", "autoclean", "clean",
+
+	return base
+}
+
+// detectDistroID reads /etc/os-release ID field.
+func detectDistroID() string {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return ""
 	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "ID=") {
+			return strings.Trim(line[3:], `"'`)
+		}
+	}
+	return ""
+}
+
+// isSnapAvailable checks if snap is usable.
+func isSnapAvailable() bool {
+	if _, err := exec.LookPath("snap"); err != nil {
+		return false
+	}
+	if _, err := os.Stat("/etc/apt/preferences.d/nosnap.pref"); err == nil {
+		return false
+	}
+	return true
 }
 
 var defaultAliasKeys = map[string]string{

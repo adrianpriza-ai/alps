@@ -73,14 +73,14 @@ func PrintHeader(cfg *config.Config) {
 
 	term := os.Getenv("TERM")
 	if term == "linux" || term == "" {
-		fmt.Printf("\n  \033[1;97mALPS\033[0m \033[2mv0.7\033[0m\n\n")
+		fmt.Printf("\n  \033[1;97mALPS\033[0m \033[2mv0.8\033[0m\n\n")
 		return
 	}
 
 	fmt.Print("\033[0m\033[97m                   *\n")
 	fmt.Print("\033[97m                  /^\\ \033[37m *             \033[97mCustomizable\033[37m\n")
 	fmt.Print("\033[97m ALPS\033[37m        /^\\ /   \\/^\\\n")
-	fmt.Print("\033[37m   v0.7     /   \\   /^\\  \\         \033[97mpackage manager\033[37m\n")
+	fmt.Print("\033[37m   v0.8     /   \\   /^\\  \\         \033[97mpackage manager\033[37m\n")
 	fmt.Print("\033[1;32m           /_____\\_/___\\__\\\033[0m\n\n")
 }
 
