@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -17,7 +16,6 @@ type Style struct {
 	ColorDim     string
 	ColorReset   string
 	ColorBold    string
-
 	SymOK     string
 	SymErr    string
 	SymWarn   string
@@ -25,20 +23,9 @@ type Style struct {
 	SymPkg    string
 	SymArrow  string
 	SymBullet string
-	ProgressStyle     string
-	ProgressApt       string
-	ProgressDnf       string
-	ProgressPacman    string
-	ProgressAur       string
-	ProgressBarChar   string
-	ProgressBarEmpty  string
-	ProgressBarWidth  int
-	ProgressSpinChars string
-
-	// Header
 	ShowHeader  bool
-	TitleStyle  string   // "default" | "custom"
-	HeaderLines []string // used when TitleStyle == "custom"
+	TitleStyle  string
+	HeaderLines []string
 	HeaderText  string
 }
 
@@ -65,15 +52,6 @@ var defaults = map[string]string{
 	"sym_pkg":             "::",
 	"sym_arrow":           "->",
 	"sym_bullet":          "::",
-	"progress_style":      "pacman",
-	"progress_apt":        "",
-	"progress_dnf":        "",
-	"progress_pacman":     "",
-	"progress_aur":        "spinner",
-	"progress_bar_char":   "#",
-	"progress_bar_empty":  "-",
-	"progress_bar_width":  "30",
-	"progress_spin_chars": `\|/-`,
 	"show_header":         "true",
 	"title_style":         "default",
 	"header_text":         "alps",
@@ -128,11 +106,6 @@ func Load() *Config {
 		}
 	}
 
-	width := 30
-	if w, err := strconv.Atoi(kv["progress_bar_width"]); err == nil && w > 0 {
-		width = w
-	}
-
 	return &Config{
 		Style: Style{
 			ColorPrimary:      unescape(kv["color_primary"]),
@@ -150,15 +123,6 @@ func Load() *Config {
 			SymPkg:            kv["sym_pkg"],
 			SymArrow:          kv["sym_arrow"],
 			SymBullet:         kv["sym_bullet"],
-			ProgressStyle:     kv["progress_style"],
-			ProgressApt:       kv["progress_apt"],
-			ProgressDnf:       kv["progress_dnf"],
-			ProgressPacman:    kv["progress_pacman"],
-			ProgressAur:       kv["progress_aur"],
-			ProgressBarChar:   kv["progress_bar_char"],
-			ProgressBarEmpty:  kv["progress_bar_empty"],
-			ProgressBarWidth:  width,
-			ProgressSpinChars: kv["progress_spin_chars"],
 			ShowHeader:        kv["show_header"] == "true",
 			TitleStyle:        kv["title_style"],
 			HeaderLines:       headerLines,

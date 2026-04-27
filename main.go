@@ -15,7 +15,7 @@ import (
 	"alps/ui"
 )
 
-const version = "v0.8 by \033]8;;https://github.com/adrianpriza-ai\aadrianpriza-ai\033]8;;\a"
+const version = "v0.6 by \033]8;;https://github.com/adrianpriza-ai\aadrianpriza-ai\033]8;;\a"
 
 func main() {
 	cfg := config.Load()
@@ -67,24 +67,15 @@ func resolveAlias(cmd string, cfg *config.Config) string {
 func detectBackend() string {
 	for _, b := range []string{"apt", "apt-get", "dnf", "pacman"} {
 		if _, err := exec.LookPath(b); err == nil {
-			// normalize apt-get → apt for cmdMap lookup
-			if b == "apt-get" {
-				return "apt"
-			}
 			return b
 		}
 	}
 	return ""
 }
 
-// detectRealBackend returns the actual binary name (apt or apt-get).
+// detectRealBackend returns the actual binary name.
 func detectRealBackend() string {
-	for _, b := range []string{"apt", "apt-get", "dnf", "pacman"} {
-		if _, err := exec.LookPath(b); err == nil {
-			return b
-		}
-	}
-	return ""
+	return detectBackend()
 }
 
 var cmdMap = map[string]map[string][]string{
@@ -102,17 +93,32 @@ var cmdMap = map[string]map[string][]string{
 		"autoclean":    {"apt", "autoclean"},
 		"clean":        {"apt", "clean"},
 	},
+	"apt-get": {
+		"install":      {"apt-get", "install"},
+		"remove":       {"apt-get", "remove"},
+		"purge":        {"apt-get", "purge"},
+		"update":       {"apt-get", "update"},
+		"upgrade":      {"apt-get", "upgrade"},
+		"full-upgrade": {"apt-get", "dist-upgrade"},
+		"search":       {"apt-cache", "search"},
+		"show":         {"apt-cache", "show"},
+		"list":         {"dpkg", "--list"},
+		"autoremove":   {"apt-get", "autoremove"},
+		"autoclean":    {"apt-get", "autoclean"},
+		"clean":        {"apt-get", "clean"},
+	},
 	"dnf": {
-		"install":    {"dnf", "install"},
-		"remove":     {"dnf", "remove"},
-		"purge":      {"dnf", "remove"},
-		"update":     {"dnf", "check-update"},
-		"upgrade":    {"dnf", "upgrade"},
-		"search":     {"dnf", "search"},
-		"show":       {"dnf", "info"},
-		"list":       {"dnf", "list"},
-		"autoremove": {"dnf", "autoremove"},
-		"clean":      {"dnf", "clean", "all"},
+		"install":      {"dnf", "install"},
+		"remove":       {"dnf", "remove"},
+		"purge":        {"dnf", "remove"},
+		"update":       {"dnf", "check-update"},
+		"upgrade":      {"dnf", "upgrade"},
+		"full-upgrade": {"dnf", "upgrade", "--refresh"},
+		"search":       {"dnf", "search"},
+		"show":         {"dnf", "info"},
+		"list":         {"dnf", "list"},
+		"autoremove":   {"dnf", "autoremove"},
+		"clean":        {"dnf", "clean", "all"},
 	},
 	"pacman": {
 		"install":      {"pacman", "-S"},
@@ -131,7 +137,7 @@ var cmdMap = map[string]map[string][]string{
 // needsSudo returns true for backends that require privilege escalation.
 func needsSudo(backend string) bool {
 	switch backend {
-	case "apt", "pacman", "dnf":
+	case "apt", "apt-get", "pacman", "dnf":
 		return true
 	}
 	return false
@@ -226,6 +232,16 @@ func runPacmanUpgrade(subcmd string, args []string, cfg *config.Config) {
 	runAURUpgrade(noConfirm, cfg)
 }
 
+// isFilePath returns true if arg looks like a local file path.
+func isFilePath(s string) bool {
+	return strings.HasPrefix(s, "./") ||
+		strings.HasPrefix(s, "/") ||
+		strings.HasSuffix(s, ".pkg.tar.zst") ||
+		strings.HasSuffix(s, ".pkg.tar.xz") ||
+		strings.HasSuffix(s, ".deb") ||
+		strings.HasSuffix(s, ".rpm")
+}
+
 func runPacmanWithAURFallback(args []string, cfg *config.Config) {
 	if len(args) == 0 {
 		ui.Msg(cfg, ui.LevelError, "Package name required")
@@ -237,23 +253,38 @@ func runPacmanWithAURFallback(args []string, cfg *config.Config) {
 	ui.Msgf(cfg, ui.LevelInfo, "install (pacman -S %s)", strings.Join(pkgs, " "))
 	fmt.Println()
 
-	// Use pacman -Sp to check which packages exist without installing
-	spArgs := append([]string{"-Sp"}, pkgs...)
-	var spStderr strings.Builder
-	spCmd := exec.Command("pacman", spArgs...)
-	spCmd.Stdout = nil // we don't need URLs
-	spCmd.Stderr = &spStderr
-	spCmd.Env = append(os.Environ(), "LANG=C", "LC_ALL=C")
-	spCmd.Run()
+	// Separate file paths from package names
+	var filePkgs []string
+	var namePkgs []string
+	for _, p := range pkgs {
+		if isFilePath(p) {
+			filePkgs = append(filePkgs, p)
+		} else {
+			namePkgs = append(namePkgs, p)
+		}
+	}
 
-	notFound := parseNotFound(spStderr.String())
+	// Use pacman -Sp to check which named packages exist
+	var notFound []string
+	if len(namePkgs) > 0 {
+		spArgs := append([]string{"-Sp"}, namePkgs...)
+		var spStderr strings.Builder
+		spCmd := exec.Command("pacman", spArgs...)
+		spCmd.Stdout = nil
+		spCmd.Stderr = &spStderr
+		spCmd.Env = append(os.Environ(), "LANG=C", "LC_ALL=C")
+		spCmd.Run()
+		notFound = parseNotFound(spStderr.String())
+	}
+
 	notFoundSet := make(map[string]bool, len(notFound))
 	for _, p := range notFound {
 		notFoundSet[p] = true
 	}
 
-	repoPkgs := make([]string, 0, len(pkgs))
-	for _, p := range pkgs {
+	// repoPkgs = file paths + named packages that exist in repo
+	repoPkgs := append([]string{}, filePkgs...)
+	for _, p := range namePkgs {
 		if !notFoundSet[p] {
 			repoPkgs = append(repoPkgs, p)
 		}
@@ -273,7 +304,7 @@ func runPacmanWithAURFallback(args []string, cfg *config.Config) {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Stdin = os.Stdin
-		cmd.Env = append(os.Environ(), "LANG=C", "LC_ALL=C")
+
 		if err := cmd.Run(); err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 				ui.Msg(cfg, ui.LevelWarn, "Installation cancelled.")
@@ -344,7 +375,7 @@ func runPacmanSearch(args []string, cfg *config.Config) {
 	repoCmd := exec.Command("pacman", "-Ss", query)
 	repoCmd.Stdout = os.Stdout
 	repoCmd.Stderr = os.Stderr
-	repoCmd.Env = append(os.Environ(), "LANG=C", "LC_ALL=C")
+
 	repoCmd.Run()
 
 	// AUR results — already running in background
@@ -713,60 +744,76 @@ func runAptWithSnapFallback(args []string, cfg *config.Config) {
 	ui.Msgf(cfg, ui.LevelInfo, "install (%s install %s)", realBackend, strings.Join(pkgs, " "))
 	fmt.Println()
 
+	// Separate file paths from package names
+	var notFound []string
+	var repoPkgs []string
+	for _, pkg := range pkgs {
+		if isFilePath(pkg) {
+			// file path — install directly, no check needed
+			repoPkgs = append(repoPkgs, pkg)
+			continue
+		}
+		// check with apt-cache show (silent, no LANG=C needed)
+		chkCmd := "apt-cache"
+		if _, err := exec.LookPath("apt-cache"); err != nil {
+			chkCmd = ""
+		}
+		if chkCmd != "" {
+			chk := exec.Command(chkCmd, "show", pkg)
+			chk.Stdout = nil
+			chk.Stderr = nil
+			if chk.Run() != nil {
+				notFound = append(notFound, pkg)
+				continue
+			}
+		}
+		repoPkgs = append(repoPkgs, pkg)
+	}
+
 	if err := ensureSudo(); err != nil {
 		ui.Msg(cfg, ui.LevelError, "sudo authentication failed")
 		return
 	}
 
-	aptArgs := append([]string{realBackend, "install"}, pkgs...)
-	if noConfirm {
-		aptArgs = append(aptArgs, "-y")
-	}
-
-	var stderrBuf strings.Builder
-	cmd := exec.Command("sudo", aptArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = &stderrBuf
-	cmd.Stdin = os.Stdin
-	cmd.Env = append(os.Environ(), "LANG=C", "LC_ALL=C")
-	err := cmd.Run()
-
-	// Print stderr (apt output)
-	if s := stderrBuf.String(); s != "" {
-		fmt.Print(s)
-	}
-
-	if err == nil {
-		ui.Msg(cfg, ui.LevelOK, "Done.")
-		return
-	}
-
-	// Check for snap fallback
-	if !snap.IsAvailable() {
-		ui.Msgf(cfg, ui.LevelError, "apt install failed: %v", err)
-		return
-	}
-
-	// Find which packages failed
-	notFound := parseAptNotFound(stderrBuf.String())
-	if len(notFound) == 0 {
-		ui.Msgf(cfg, ui.LevelError, "apt install failed: %v", err)
-		return
-	}
-
-	fmt.Println()
-	ui.Msgf(cfg, ui.LevelWarn, "Not found in apt: %s", strings.Join(notFound, " "))
-	ui.Msgf(cfg, ui.LevelInfo, "Try snap for %s%s%s?",
-		cfg.Style.ColorBold, strings.Join(notFound, " "), cfg.Style.ColorReset+cfg.Style.ColorInfo)
-	fmt.Print(cfg.Style.ColorReset)
-	if ui.Confirm() {
-		if err := snap.Install(notFound, false); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
+	// Install repo packages — full output in user's language
+	if len(repoPkgs) > 0 {
+		aptArgs := append([]string{realBackend, "install"}, repoPkgs...)
+		if noConfirm {
+			aptArgs = append(aptArgs, "-y")
+		}
+		cmd := exec.Command("sudo", aptArgs...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		if err := cmd.Run(); err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+				ui.Msg(cfg, ui.LevelWarn, "Installation cancelled.")
+			} else {
+				ui.Msgf(cfg, ui.LevelError, "Installation failed: %v", err)
+			}
 		} else {
 			ui.Msg(cfg, ui.LevelOK, "Done.")
 		}
-	} else {
-		ui.Msg(cfg, ui.LevelWarn, "Skipped.")
+	}
+
+	// Snap fallback for not found
+	if len(notFound) > 0 && snap.IsAvailable() {
+		fmt.Println()
+		ui.Msgf(cfg, ui.LevelWarn, "Not found in apt: %s", strings.Join(notFound, " "))
+		ui.Msgf(cfg, ui.LevelInfo, "Try snap for %s%s%s?",
+			cfg.Style.ColorBold, strings.Join(notFound, " "), cfg.Style.ColorReset+cfg.Style.ColorInfo)
+		fmt.Print(cfg.Style.ColorReset)
+		if ui.Confirm() {
+			if err := snap.Install(notFound, false); err != nil {
+				ui.Msgf(cfg, ui.LevelError, "%v", err)
+			} else {
+				ui.Msg(cfg, ui.LevelOK, "Done.")
+			}
+		} else {
+			ui.Msg(cfg, ui.LevelWarn, "Skipped.")
+		}
+	} else if len(notFound) > 0 {
+		ui.Msgf(cfg, ui.LevelWarn, "Not found in apt: %s", strings.Join(notFound, " "))
 	}
 }
 
@@ -803,18 +850,7 @@ func runAptSearch(args []string, cfg *config.Config) {
 	}
 }
 
-// parseAptNotFound extracts package names from apt "E: Unable to locate package X" lines.
-func parseAptNotFound(stderr string) []string {
-	var missing []string
-	for _, line := range strings.Split(stderr, "\n") {
-		line = strings.TrimSpace(line)
-		const prefix = "E: Unable to locate package "
-		if strings.HasPrefix(line, prefix) {
-			missing = append(missing, strings.TrimPrefix(line, prefix))
-		}
-	}
-	return missing
-}
+
 
 // runFlatpak handles: alps flatpak install|remove|search|list|update
 func runFlatpak(args []string, cfg *config.Config) {
