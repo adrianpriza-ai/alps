@@ -219,7 +219,7 @@ alps repo remove <pkg>    # remove a package
 
 Each entry specifies supported architectures, OS/distro, optional dependencies, and install/remove commands. ALPS validates all of these before running anything. Entries support per-distro commands via `@distro` suffix (e.g. `[ollama@arch]`, `[ollama@debian]`).
 
-**alps-more repo:** [codeberg.org/moreland/alps-more](https://codeberg.org/moreland/alps-more)
+**alps-more repo:** [github.com/adrianpriza-ai/alps-more](https://github.com/adrianpriza-ai/alps-more)
 
 ## Project Structure
 

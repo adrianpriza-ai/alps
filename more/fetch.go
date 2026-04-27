@@ -18,8 +18,8 @@ const (
 	lastSyncFile  = "/var/cache/alps/more/last_sync"
 	expireDays    = 90
 
-	primaryURL  = "https://moreland.codeberg.page/alps-more/main.txt"
-	fallbackURL = "https://adrianpriza-ai.github.io/alps-more/main.txt"
+	primaryURL  = "https://adrianpriza-ai.github.io/alps-more/main.txt"
+	fallbackURL = "https://moreland.codeberg.page/alps-more/main.txt"
 )
 
 // CacheStatus returns whether cache exists, and whether it is expired.
