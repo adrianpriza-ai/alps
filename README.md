@@ -256,7 +256,7 @@ alps/
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/adrianpriza-ai/alps?tab=readme-ov-file#).
+See [CONTRIBUTING.md](https://github.com/adrianpriza-ai/alps?tab=contributing-ov-file#).
 
 ## License
 
