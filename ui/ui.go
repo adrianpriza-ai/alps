@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"alps/config"
+	"github.com/adrianpriza-ai/alps/config"
 )
 
 type Level int
@@ -141,8 +141,8 @@ func PrintHelp(cfg *config.Config) {
 				s.ColorDim, a[1], s.ColorReset)
 		}
 		fmt.Println()
-		fmt.Printf("  %s⚠  Arch tip:%s %sup%s and %sug%s alone cause partial upgrades.\n",
-			s.ColorWarning, s.ColorReset,
+		fmt.Printf("  %s%s  Arch tip:%s %sup%s and %sug%s alone cause partial upgrades.\n",
+			s.ColorWarning, s.SymWarn, s.ColorReset,
 			s.ColorPrimary, s.ColorReset,
 			s.ColorPrimary, s.ColorReset)
 		fmt.Printf("     Always use %sfug%s (full-upgrade / pacman -Syu) instead.\n\n",

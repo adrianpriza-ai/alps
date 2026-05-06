@@ -7,14 +7,14 @@ import (
 	"os/exec"
 	"strings"
 
-	"alps/aur"
-	"alps/completion"
-	"alps/config"
-	"alps/flatpak"
-	"alps/more"
-	"alps/priv"
-	"alps/snap"
-	"alps/ui"
+	"github.com/adrianpriza-ai/alps/aur"
+	"github.com/adrianpriza-ai/alps/completion"
+	"github.com/adrianpriza-ai/alps/config"
+	"github.com/adrianpriza-ai/alps/flatpak"
+	"github.com/adrianpriza-ai/alps/more"
+	"github.com/adrianpriza-ai/alps/priv"
+	"github.com/adrianpriza-ai/alps/snap"
+	"github.com/adrianpriza-ai/alps/ui"
 )
 
 var Version = "dev"

@@ -1,3 +1,3 @@
-module alps
+module github.com/adrianpriza-ai/alps
 
 go 1.26.2

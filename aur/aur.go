@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 
-	"alps/priv"
+	"github.com/adrianpriza-ai/alps/priv"
 )
 
 const (
@@ -39,6 +39,15 @@ type Package struct {
 type rpcResponse struct {
 	Results []Package `json:"results"`
 	Error   string    `json:"error"`
+}
+
+// symSet returns TTY-safe symbols for ok, warn, and arrow.
+func symSet() (ok, warn, arrow string) {
+	t := os.Getenv("TERM")
+	if t == "linux" || t == "dumb" || t == "" {
+		return " OK ", "WARN", "->"
+	}
+	return "✓", "⚠", "→"
 }
 
 // DetectHelper returns "yay" if available, otherwise "".
@@ -188,11 +197,12 @@ func Install(pkgNames []string, noConfirm bool) error {
 }
 
 func installWithYay(pkgNames []string, noConfirm bool) error {
+	_, _, arrow := symSet()
 	args := append([]string{"-S"}, pkgNames...)
 	if noConfirm {
 		args = append(args, "--noconfirm")
 	}
-	fmt.Printf("  → using yay: %s\n\n", strings.Join(pkgNames, " "))
+	fmt.Printf("  %s using yay: %s\n\n", arrow, strings.Join(pkgNames, " "))
 	cmd := exec.Command("yay", args...)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	cmd.Stdout = os.Stdout
@@ -228,6 +238,7 @@ func ListInstalledAUR() (map[string]string, error) {
 }
 
 func installWithMakepkg(pkgName string, noConfirm bool) error {
+	ok, warn, arrow := symSet()
 	pkg, err := Info(pkgName)
 	if err != nil {
 		return err
@@ -236,7 +247,7 @@ func installWithMakepkg(pkgName string, noConfirm bool) error {
 	PrintPackageInfo(pkg)
 
 	if pkg.OutOfDate != 0 {
-		fmt.Printf("  ⚠  out-of-date. Continue anyway? [y/N] ")
+		fmt.Printf("  %s  out-of-date. Continue anyway? [y/N] ", warn)
 		var inp string
 		fmt.Scanln(&inp)
 		if strings.ToLower(strings.TrimSpace(inp)) != "y" {
@@ -295,7 +306,7 @@ func installWithMakepkg(pkgName string, noConfirm bool) error {
 
 	gitURL := fmt.Sprintf("https://aur.archlinux.org/%s.git", pkg.Name)
 
-	fmt.Printf("  → cloning %s...\n", gitURL)
+	fmt.Printf("  %s cloning %s...\n", arrow, gitURL)
 	cloneCmd := exec.Command("git", "clone", "--depth=1", gitURL, pkgDir)
 	cloneCmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	cloneCmd.Stdout = nil
@@ -303,7 +314,7 @@ func installWithMakepkg(pkgName string, noConfirm bool) error {
 	if err := cloneCmd.Run(); err != nil {
 		return fmt.Errorf("git clone failed: %w", err)
 	}
-	fmt.Printf("  ✓  cloned\n\n")
+	fmt.Printf("  %s  cloned\n\n", ok)
 
 	if !noConfirm {
 		if err := reviewPKGBUILD(filepath.Join(pkgDir, "PKGBUILD")); err != nil {
@@ -316,7 +327,7 @@ func installWithMakepkg(pkgName string, noConfirm bool) error {
 		makepkgArgs = append(makepkgArgs, "--noconfirm")
 	}
 
-	fmt.Printf("\n  → building %s %s...\n\n", pkg.Name, pkg.Version)
+	fmt.Printf("\n  %s building %s %s...\n\n", arrow, pkg.Name, pkg.Version)
 	makepkg := exec.Command("makepkg", makepkgArgs...)
 	makepkg.Env = append(os.Environ(), "TERM=xterm-256color")
 	makepkg.Dir = pkgDir
@@ -337,15 +348,15 @@ func installWithMakepkg(pkgName string, noConfirm bool) error {
 			rmArgs := append([]string{"pacman", "-Rns", "--noconfirm"}, toRemove...)
 			rmCmd, err := priv.Command(rmArgs...)
 			if err != nil {
-				fmt.Printf("  ⚠  privilege escalation failed: %v\n", err)
+				fmt.Printf("  %s  privilege escalation failed: %v\n", warn, err)
 			} else {
 				rmCmd.Stdout = os.Stdout
 				rmCmd.Stderr = os.Stderr
 				rmCmd.Stdin = os.Stdin
 				if err := rmCmd.Run(); err != nil {
-					fmt.Printf("  ⚠  failed to remove build deps: %v\n", err)
+					fmt.Printf("  %s  failed to remove build deps: %v\n", warn, err)
 				} else {
-					fmt.Printf("  ✓  build dependencies removed\n")
+					fmt.Printf("  %s  build dependencies removed\n", ok)
 				}
 			}
 		}
@@ -358,7 +369,7 @@ func installWithMakepkg(pkgName string, noConfirm bool) error {
 	fmt.Scanln(&keep)
 	if strings.ToLower(strings.TrimSpace(keep)) != "y" {
 		os.RemoveAll(pkgDir)
-		fmt.Printf("  ✓  cache removed\n")
+		fmt.Printf("  %s  cache removed\n", ok)
 	}
 
 	return nil

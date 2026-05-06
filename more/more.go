@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	"alps/priv"
+	"github.com/adrianpriza-ai/alps/priv"
 )
 
 // Entry represents a single package entry from main.txt.

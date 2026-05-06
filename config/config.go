@@ -75,6 +75,11 @@ var defaultAliases = map[string]string{
 
 func globalConfigPath() string { return "/etc/alps/config" }
 
+// isTTY returns true if running in a Linux TTY (no unicode support).
+func isTTY() bool {
+	return os.Getenv("TERM") == "linux" || os.Getenv("TERM") == "dumb" || os.Getenv("TERM") == ""
+}
+
 func userConfigPath() string {
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
@@ -104,6 +109,14 @@ func Load() *Config {
 		if _, exists := aliases[k]; !exists {
 			aliases[k] = v
 		}
+	}
+
+	// Override symbols for TTY
+	if isTTY() {
+		kv["sym_ok"] = " OK "
+		kv["sym_err"] = "ERR "
+		kv["sym_warn"] = "WARN"
+		kv["sym_info"] = "INFO"
 	}
 
 	return &Config{

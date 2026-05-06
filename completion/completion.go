@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"alps/config"
+	"github.com/adrianpriza-ai/alps/config"
 )
 
 // Generate prints a shell completion script to stdout.

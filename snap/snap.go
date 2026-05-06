@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"alps/priv"
+	"github.com/adrianpriza-ai/alps/priv"
 )
 
 // IsAvailable returns true if snapd is running and not blocked.
