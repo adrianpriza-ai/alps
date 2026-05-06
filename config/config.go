@@ -16,17 +16,17 @@ type Style struct {
 	ColorDim     string
 	ColorReset   string
 	ColorBold    string
-	SymOK     string
-	SymErr    string
-	SymWarn   string
-	SymInfo   string
-	SymPkg    string
-	SymArrow  string
-	SymBullet string
-	ShowHeader  bool
-	TitleStyle  string
-	HeaderLines []string
-	HeaderText  string
+	SymOK        string
+	SymErr       string
+	SymWarn      string
+	SymInfo      string
+	SymPkg       string
+	SymArrow     string
+	SymBullet    string
+	ShowHeader   bool
+	TitleStyle   string
+	HeaderLines  []string
+	HeaderText   string
 }
 
 type Config struct {
@@ -37,24 +37,24 @@ type Config struct {
 }
 
 var defaults = map[string]string{
-	"color_primary":       `\e[36m`,
-	"color_success":       `\e[32m`,
-	"color_warning":       `\e[33m`,
-	"color_error":         `\e[31m`,
-	"color_info":          `\e[34m`,
-	"color_dim":           `\e[2m`,
-	"color_reset":         `\e[0m`,
-	"color_bold":          `\e[1m`,
-	"sym_ok":              "✓",
-	"sym_err":             "✗",
-	"sym_warn":            "⚠",
-	"sym_info":            "◆",
-	"sym_pkg":             "::",
-	"sym_arrow":           "->",
-	"sym_bullet":          "::",
-	"show_header":         "true",
-	"title_style":         "default",
-	"header_text":         "alps",
+	"color_primary": `\e[36m`,
+	"color_success": `\e[32m`,
+	"color_warning": `\e[33m`,
+	"color_error":   `\e[31m`,
+	"color_info":    `\e[34m`,
+	"color_dim":     `\e[2m`,
+	"color_reset":   `\e[0m`,
+	"color_bold":    `\e[1m`,
+	"sym_ok":        "✓",
+	"sym_err":       "✗",
+	"sym_warn":      "⚠",
+	"sym_info":      "◆",
+	"sym_pkg":       "::",
+	"sym_arrow":     "->",
+	"sym_bullet":    "::",
+	"show_header":   "true",
+	"title_style":   "default",
+	"header_text":   "alps",
 }
 
 var defaultAliases = map[string]string{
@@ -108,25 +108,25 @@ func Load() *Config {
 
 	return &Config{
 		Style: Style{
-			ColorPrimary:      unescape(kv["color_primary"]),
-			ColorSuccess:      unescape(kv["color_success"]),
-			ColorWarning:      unescape(kv["color_warning"]),
-			ColorError:        unescape(kv["color_error"]),
-			ColorInfo:         unescape(kv["color_info"]),
-			ColorDim:          unescape(kv["color_dim"]),
-			ColorReset:        unescape(kv["color_reset"]),
-			ColorBold:         unescape(kv["color_bold"]),
-			SymOK:             kv["sym_ok"],
-			SymErr:            kv["sym_err"],
-			SymWarn:           kv["sym_warn"],
-			SymInfo:           kv["sym_info"],
-			SymPkg:            kv["sym_pkg"],
-			SymArrow:          kv["sym_arrow"],
-			SymBullet:         kv["sym_bullet"],
-			ShowHeader:        kv["show_header"] == "true",
-			TitleStyle:        kv["title_style"],
-			HeaderLines:       headerLines,
-			HeaderText:        kv["header_text"],
+			ColorPrimary: unescape(kv["color_primary"]),
+			ColorSuccess: unescape(kv["color_success"]),
+			ColorWarning: unescape(kv["color_warning"]),
+			ColorError:   unescape(kv["color_error"]),
+			ColorInfo:    unescape(kv["color_info"]),
+			ColorDim:     unescape(kv["color_dim"]),
+			ColorReset:   unescape(kv["color_reset"]),
+			ColorBold:    unescape(kv["color_bold"]),
+			SymOK:        kv["sym_ok"],
+			SymErr:       kv["sym_err"],
+			SymWarn:      kv["sym_warn"],
+			SymInfo:      kv["sym_info"],
+			SymPkg:       kv["sym_pkg"],
+			SymArrow:     kv["sym_arrow"],
+			SymBullet:    kv["sym_bullet"],
+			ShowHeader:   kv["show_header"] == "true",
+			TitleStyle:   kv["title_style"],
+			HeaderLines:  headerLines,
+			HeaderText:   kv["header_text"],
 		},
 		Aliases:    aliases,
 		GlobalPath: globalPath,

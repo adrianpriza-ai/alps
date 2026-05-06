@@ -1,11 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
-	"bufio"
 
 	"alps/aur"
 	"alps/completion"
@@ -397,8 +397,6 @@ func parseNotFound(stderr string) []string {
 	return missing
 }
 
-
-
 func runPacmanSearch(args []string, cfg *config.Config) {
 	if len(args) == 0 {
 		ui.Msg(cfg, ui.LevelError, "Search query required")
@@ -693,7 +691,7 @@ func isArch() bool {
 // runAUR handles: alps aur install | search | list | clean
 func runAUR(args []string, cfg *config.Config) {
 	ui.PrintHeader(cfg)
-	
+
 	if !isArch() {
 		ui.Msg(cfg, ui.LevelError, "AUR is only available on Arch Linux")
 		os.Exit(1)
@@ -909,8 +907,6 @@ func runAptSearch(args []string, cfg *config.Config) {
 		<-snapCh
 	}
 }
-
-
 
 // runFlatpak handles: alps flatpak install|remove|search|list|update
 func runFlatpak(args []string, cfg *config.Config) {

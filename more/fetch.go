@@ -1,22 +1,22 @@
 package more
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
-	"strings"
-	"bytes"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 const (
-	cacheDir      = "/var/cache/alps/more"
-	cacheFile     = "/var/cache/alps/more/main.txt"
-	lastSyncFile  = "/var/cache/alps/more/last_sync"
-	expireDays    = 90
+	cacheDir     = "/var/cache/alps/more"
+	cacheFile    = "/var/cache/alps/more/main.txt"
+	lastSyncFile = "/var/cache/alps/more/last_sync"
+	expireDays   = 90
 
 	primaryURL  = "https://adrianpriza-ai.github.io/alps-more/main.txt"
 	fallbackURL = "https://moreland.codeberg.page/alps-more/main.txt"

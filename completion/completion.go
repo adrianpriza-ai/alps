@@ -320,5 +320,3 @@ func hasCustomAliases(cfg *config.Config) bool {
 	}
 	return false
 }
-
-
