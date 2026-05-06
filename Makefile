@@ -1,46 +1,56 @@
-BINARY = alps
-PREFIX = /usr/local/bin
+BINARY  = alps
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-
-GO := $(shell command -v go 2>/dev/null)
-
+GO      := $(shell command -v go 2>/dev/null)
+GREEN := \033[32m
+RED   := \033[31m
+RESET := \033[0m
+ifdef TERMUX_VERSION
+  PREFIX  = $(HOME)/../usr/bin
+  SUDO    =
+  ZSH_COMP = $(HOME)/../usr/share/zsh/site-functions
+  BASH_COMP = $(HOME)/../usr/etc/bash_completion.d
+else
+  PREFIX  = /usr/local/bin
+  SUDO    = sudo
+  ZSH_COMP = /usr/local/share/zsh/site-functions
+  BASH_COMP = /etc/bash_completion.d
+endif
 build:
 	@if [ -z "$(GO)" ]; then \
-		echo "✗ Go is not installed."; \
-		echo "  Install it with your package manager:"; \
-		echo "    Arch:          sudo pacman -S go"; \
-		echo "    Debian/Ubuntu: sudo apt install golang-go"; \
-		echo "    Fedora:        sudo dnf install golang"; \
+		printf "  $(RED) !! $(RESET) Go is not installed.\n"; \
+		printf "     Arch: sudo pacman -S go\n"; \
+		printf "     Debian/Ubuntu: sudo apt install golang-go\n"; \
+		printf "     Fedora: sudo dnf install golang\n"; \
+		ifdef TERMUX_VERSION \
+		printf "     Termux: pkg install golang\n"; \
+		endif \
 		exit 1; \
 	fi
-	go build -ldflags="-s -w -X main.Version=$(VERSION)" -o alps .
-
+	go build -ldflags="-s -w -X main.Version=$(VERSION)" -o $(BINARY) .
 install: build
-	sudo cp $(BINARY) $(PREFIX)/$(BINARY)
+	$(SUDO) cp $(BINARY) $(PREFIX)/$(BINARY)
 	@if command -v fish > /dev/null 2>&1; then \
 		mkdir -p ~/.config/fish/completions && \
 		./$(BINARY) completion fish > ~/.config/fish/completions/alps.fish && \
-		echo "  ✓ fish completion installed"; \
+		echo "  $(GREEN) OK $(RESET) fish completion installed"; \
 	fi
 	@if command -v zsh > /dev/null 2>&1; then \
-		sudo mkdir -p /usr/local/share/zsh/site-functions && \
-		./$(BINARY) completion zsh | sudo tee /usr/local/share/zsh/site-functions/_alps > /dev/null && \
-		echo "  ✓ zsh completion installed"; \
+		mkdir -p $(ZSH_COMP) && \
+		./$(BINARY) completion zsh | $(SUDO) tee $(ZSH_COMP)/_alps > /dev/null && \
+		echo "  $(GREEN) OK $(RESET) zsh completion installed"; \
 	fi
 	@if command -v bash > /dev/null 2>&1; then \
-		./$(BINARY) completion bash | sudo tee /etc/bash_completion.d/alps > /dev/null && \
-		echo "  ✓ bash completion installed"; \
+		mkdir -p $(BASH_COMP) && \
+		./$(BINARY) completion bash | $(SUDO) tee $(BASH_COMP)/alps > /dev/null && \
+		echo "  $(GREEN) OK $(RESET) bash completion installed"; \
 	fi
-	@echo "  ✓ alps installed"
-
+	@echo "  $(GREEN) OK $(RESET) alps installed"
 uninstall:
-	sudo rm -f $(PREFIX)/$(BINARY)
+	$(SUDO) rm -f $(PREFIX)/$(BINARY)
 	rm -f ~/.config/fish/completions/alps.fish
-	sudo rm -f /usr/local/share/zsh/site-functions/_alps
-	sudo rm -f /etc/bash_completion.d/alps
-	@echo "  ✓ alps uninstalled"
-
+	$(SUDO) rm -f $(ZSH_COMP)/_alps
+	$(SUDO) rm -f $(BASH_COMP)/alps
+	@echo "  $(GREEN) OK $(RESET) alps uninstalled"
 clean:
 	rm -f $(BINARY)
-
 .PHONY: build install uninstall clean
