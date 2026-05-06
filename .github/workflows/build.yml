@@ -21,10 +21,10 @@ jobs:
 
       - name: Vet
         run: go vet ./...
-
+      
       - name: Format check
-         run: |
-         if [ -n "$(gofmt -s -l .)" ]; then
-             echo "Code is not formatted. Run: gofmt -s -w ."
-             exit 1
-         fi
+        run: |
+          if [ -n "$(gofmt -s -l .)" ]; then
+            echo "Code is not formatted. Run: gofmt -s -w ."
+            exit 1
+          fi
