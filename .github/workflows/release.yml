@@ -1,3 +1,5 @@
+name: Release
+
 on:
   push:
     tags:
@@ -7,6 +9,10 @@ on:
       tag:
         description: "Tag to release (e.g. v0.9)"
         required: true
+
+permissions:
+  contents: write
+  pull-requests: read
 
 jobs:
   release:
@@ -36,4 +42,4 @@ jobs:
             alps-linux-amd64
             alps-linux-arm64
             alps-linux-armv7
-          generate_release_notes: true
+          generate_release_notes: ${{ inputs.tag == '' }}
