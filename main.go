@@ -569,115 +569,19 @@ func runRepo(args []string, cfg *config.Config) {
 
 	subcmd := args[0]
 	rest := args[1:]
-
-	switch subcmd {
-	case "update":
-		ui.Msg(cfg, ui.LevelInfo, "Updating alps-more repo...")
-		fmt.Println()
-		if err := ensureSudo(); err != nil {
-			ui.Msg(cfg, ui.LevelError, "sudo authentication failed")
-			os.Exit(1)
-		}
-		if err := more.FetchAndCache(); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "update failed: %v", err)
-			os.Exit(1)
-		}
-		ui.Msgf(cfg, ui.LevelOK, "Repo updated. Cache: %s", more.CachePath())
-
-	case "list":
-		entries, err := more.List()
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-		if len(entries) == 0 {
-			ui.Msg(cfg, ui.LevelWarn, "No packages in repo.")
-			return
-		}
-		fmt.Println()
-		for _, e := range entries {
-			fmt.Printf("  %s%s%s  %s%s%s  \033[2m[%s]\033[0m\n",
-				cfg.Style.ColorPrimary, e.Name, cfg.Style.ColorReset,
-				cfg.Style.ColorDim, e.Desc, cfg.Style.ColorReset,
-				strings.Join(e.Arch, ", "))
-		}
-		fmt.Println()
-
-	case "install":
-		if len(rest) == 0 {
-			ui.Msg(cfg, ui.LevelError, "Usage: alps repo install <package>")
-			os.Exit(1)
-		}
-		pkgName := rest[0]
-		entry, err := more.Find(pkgName)
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-
-		// Validate arch, os, deps — stop on any failure
-		if err := more.Validate(entry); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-
-		ui.Msgf(cfg, ui.LevelInfo, "Install %s%s%s from alps-more?",
-			cfg.Style.ColorBold, entry.Name, cfg.Style.ColorReset+cfg.Style.ColorInfo)
-		if entry.Desc != "" {
-			fmt.Printf("  %s%s%s\n", cfg.Style.ColorDim, entry.Desc, cfg.Style.ColorReset)
-		}
-		fmt.Println()
-		for _, line := range entry.CmdLines {
-			fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
-		}
-		fmt.Print(cfg.Style.ColorReset)
-		fmt.Println()
-		if !ui.Confirm() {
-			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
-			return
-		}
-
-		fmt.Println()
-		if err := more.Install(entry); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-		ui.Msg(cfg, ui.LevelOK, "Done.")
-
-	case "remove":
-		if len(rest) == 0 {
-			ui.Msg(cfg, ui.LevelError, "Usage: alps repo remove <package>")
-			os.Exit(1)
-		}
-		pkgName := rest[0]
-		entry, err := more.Find(pkgName)
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-
-		ui.Msgf(cfg, ui.LevelInfo, "Remove %s%s%s from alps-more?",
-			cfg.Style.ColorBold, entry.Name, cfg.Style.ColorReset+cfg.Style.ColorInfo)
-		fmt.Println()
-		for _, line := range entry.RemoveLines {
-			fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
-		}
-		fmt.Print(cfg.Style.ColorReset)
-		fmt.Println()
-		if !ui.Confirm() {
-			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
-			return
-		}
-
-		fmt.Println()
-		if err := more.Remove(entry); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-		ui.Msg(cfg, ui.LevelOK, "Done.")
-
-	default:
+	handlers := map[string]func([]string, *config.Config) error{
+		"update":  repoUpdate,
+		"list":    repoList,
+		"install": repoInstall,
+		"remove":  repoRemove,
+	}
+	handler, ok := handlers[subcmd]
+	if !ok {
 		ui.Msgf(cfg, ui.LevelError, "Unknown repo subcommand: %s", subcmd)
+		os.Exit(1)
+	}
+	if err := handler(rest, cfg); err != nil {
+		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
 	}
 }
@@ -704,84 +608,19 @@ func runAUR(args []string, cfg *config.Config) {
 
 	subcmd := args[0]
 	rest := args[1:]
-
-	switch subcmd {
-	case "install":
-		if len(rest) == 0 {
-			ui.Msg(cfg, ui.LevelError, "Usage: alps aur install <package>")
-			os.Exit(1)
-		}
-		_, noConfirm := splitFlags(rest)
-		pkgs, _ := splitFlags(rest)
-		if err := aur.Install(pkgs, noConfirm); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-		ui.Msg(cfg, ui.LevelOK, "Done.")
-
-	case "search":
-		if len(rest) == 0 {
-			ui.Msg(cfg, ui.LevelError, "Usage: alps aur search <query>")
-			os.Exit(1)
-		}
-		query := strings.Join(rest, " ")
-		ui.Msgf(cfg, ui.LevelInfo, "Searching '%s' in AUR...", query)
-		fmt.Println()
-		results, err := aur.Search(query)
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-		if len(results) == 0 {
-			ui.Msg(cfg, ui.LevelWarn, "No results found in AUR")
-			return
-		}
-		for i, p := range results {
-			aur.PrintSearchResult(i+1, p, "aur")
-		}
-		fmt.Println()
-
-	case "list":
-		installed, err := aur.ListInstalledAUR()
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-		if len(installed) == 0 {
-			ui.Msg(cfg, ui.LevelInfo, "No AUR packages installed.")
-			return
-		}
-		fmt.Println()
-		for name, ver := range installed {
-			fmt.Printf("  %s%s%s  %s%s%s\n",
-				cfg.Style.ColorPrimary, name, cfg.Style.ColorReset,
-				cfg.Style.ColorDim, ver, cfg.Style.ColorReset)
-		}
-		fmt.Println()
-
-	case "clean":
-		cacheRoot, err := aur.AURCacheRoot()
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-		if _, err := os.Stat(cacheRoot); os.IsNotExist(err) {
-			ui.Msg(cfg, ui.LevelInfo, "No AUR cache found.")
-			return
-		}
-		ui.Msgf(cfg, ui.LevelInfo, "Remove AUR build cache? (%s)", cacheRoot)
-		if !ui.Confirm() {
-			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
-			return
-		}
-		if err := os.RemoveAll(cacheRoot); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "failed to remove cache: %v", err)
-			os.Exit(1)
-		}
-		ui.Msg(cfg, ui.LevelOK, "Cache removed.")
-
-	default:
+	handlers := map[string]func([]string, *config.Config) error{
+		"install": aurInstallCmd,
+		"search":  aurSearchCmd,
+		"list":    aurListCmd,
+		"clean":   aurCleanCmd,
+	}
+	handler, ok := handlers[subcmd]
+	if !ok {
 		ui.Msgf(cfg, ui.LevelError, "Unknown aur subcommand: %s", subcmd)
+		os.Exit(1)
+	}
+	if err := handler(rest, cfg); err != nil {
+		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
 	}
 }
@@ -1037,4 +876,113 @@ func runSnap(args []string, cfg *config.Config) {
 		ui.Msgf(cfg, ui.LevelError, "Unknown snap subcommand: %s", subcmd)
 		os.Exit(1)
 	}
+}
+
+func repoUpdate(_ []string, _ *config.Config) error {
+	if err := ensureSudo(); err != nil {
+		return fmt.Errorf("sudo authentication failed")
+	}
+	if err := more.FetchAndCache(); err != nil {
+		return fmt.Errorf("update failed: %w", err)
+	}
+	fmt.Printf("  Repo updated. Cache: %s\n", more.CachePath())
+	return nil
+}
+
+func repoList(_ []string, cfg *config.Config) error {
+	entries, err := more.List()
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		ui.Msg(cfg, ui.LevelWarn, "No packages in repo.")
+		return nil
+	}
+	for _, e := range entries {
+		fmt.Printf("  %s%s%s  %s%s%s  \033[2m[%s]\033[0m\n", cfg.Style.ColorPrimary, e.Name, cfg.Style.ColorReset, cfg.Style.ColorDim, e.Desc, cfg.Style.ColorReset, strings.Join(e.Arch, ", "))
+	}
+	return nil
+}
+
+func repoInstall(rest []string, cfg *config.Config) error {
+	if len(rest) == 0 {
+		return fmt.Errorf("Usage: alps repo install <package>")
+	}
+	entry, err := more.Find(rest[0])
+	if err != nil {
+		return err
+	}
+	if err := more.Validate(entry); err != nil {
+		return err
+	}
+	if !ui.Confirm() {
+		return nil
+	}
+	return more.Install(entry)
+}
+
+func repoRemove(rest []string, cfg *config.Config) error {
+	if len(rest) == 0 {
+		return fmt.Errorf("Usage: alps repo remove <package>")
+	}
+	entry, err := more.Find(rest[0])
+	if err != nil {
+		return err
+	}
+	_ = cfg
+	if !ui.Confirm() {
+		return nil
+	}
+	return more.Remove(entry)
+}
+
+func aurInstallCmd(rest []string, _ *config.Config) error {
+	if len(rest) == 0 {
+		return fmt.Errorf("Usage: alps aur install <package>")
+	}
+	_, noConfirm := splitFlags(rest)
+	pkgs, _ := splitFlags(rest)
+	return aur.Install(pkgs, noConfirm)
+}
+
+func aurSearchCmd(rest []string, cfg *config.Config) error {
+	if len(rest) == 0 {
+		return fmt.Errorf("Usage: alps aur search <query>")
+	}
+	query := strings.Join(rest, " ")
+	ui.Msgf(cfg, ui.LevelInfo, "Searching '%s' in AUR...", query)
+	results, err := aur.Search(query)
+	if err != nil {
+		return err
+	}
+	for i, p := range results {
+		aur.PrintSearchResult(i+1, p, "aur")
+	}
+	return nil
+}
+
+func aurListCmd(_ []string, cfg *config.Config) error {
+	installed, err := aur.ListInstalledAUR()
+	if err != nil {
+		return err
+	}
+	if len(installed) == 0 {
+		ui.Msg(cfg, ui.LevelInfo, "No AUR packages installed.")
+	}
+	return nil
+}
+
+func aurCleanCmd(_ []string, cfg *config.Config) error {
+	cacheRoot, err := aur.AURCacheRoot()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(cacheRoot); os.IsNotExist(err) {
+		ui.Msg(cfg, ui.LevelInfo, "No AUR cache found.")
+		return nil
+	}
+	if !ui.Confirm() {
+		return nil
+	}
+	return os.RemoveAll(cacheRoot)
 }

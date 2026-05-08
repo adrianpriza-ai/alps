@@ -53,42 +53,18 @@ func Parse(data []byte) (map[string]*Entry, error) {
 			continue
 		}
 
-		switch {
-		case line == "cmd_begin":
-			inCmd = true
-			inRemove = false
-		case line == "cmd_end":
-			inCmd = false
-		case line == "remove_begin":
-			inRemove = true
-			inCmd = false
-		case line == "remove_end":
-			inRemove = false
-		case inCmd:
-			current.CmdLines = append(current.CmdLines, line)
-		case inRemove:
-			current.RemoveLines = append(current.RemoveLines, line)
-		default:
-			idx := strings.Index(line, "=")
-			if idx < 0 {
-				continue
-			}
-			key := strings.TrimSpace(strings.ToLower(line[:idx]))
-			val := strings.TrimSpace(line[idx+1:])
-
-			switch key {
-			case "desc":
-				current.Desc = val
-			case "arch":
-				current.Arch = splitTrim(val)
-			case "os":
-				current.OS = splitTrim(val)
-			case "deps":
-				current.Deps = splitTrim(val)
-			case "sudo":
-				current.Sudo = strings.ToLower(val) == "true"
-			}
+		if handleBlockToggle(line, &inCmd, &inRemove) {
+			continue
 		}
+		if inCmd {
+			current.CmdLines = append(current.CmdLines, line)
+			continue
+		}
+		if inRemove {
+			current.RemoveLines = append(current.RemoveLines, line)
+			continue
+		}
+		parseKeyValue(line, current)
 	}
 
 	// Save last entry
@@ -97,6 +73,46 @@ func Parse(data []byte) (map[string]*Entry, error) {
 	}
 
 	return entries, scanner.Err()
+}
+
+func handleBlockToggle(line string, inCmd, inRemove *bool) bool {
+	switch line {
+	case "cmd_begin":
+		*inCmd = true
+		*inRemove = false
+	case "cmd_end":
+		*inCmd = false
+	case "remove_begin":
+		*inRemove = true
+		*inCmd = false
+	case "remove_end":
+		*inRemove = false
+	default:
+		return false
+	}
+	return true
+}
+
+func parseKeyValue(line string, entry *Entry) {
+	idx := strings.Index(line, "=")
+	if idx < 0 {
+		return
+	}
+	key := strings.TrimSpace(strings.ToLower(line[:idx]))
+	val := strings.TrimSpace(line[idx+1:])
+
+	switch key {
+	case "desc":
+		entry.Desc = val
+	case "arch":
+		entry.Arch = splitTrim(val)
+	case "os":
+		entry.OS = splitTrim(val)
+	case "deps":
+		entry.Deps = splitTrim(val)
+	case "sudo":
+		entry.Sudo = strings.ToLower(val) == "true"
+	}
 }
 
 // baseName returns the package name without @distro suffix.
