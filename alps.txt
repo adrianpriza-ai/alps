@@ -1,0 +1,151 @@
+ALPS — Advanced Linux Package System
+=====================================
+v0.9 • Go 1.22+ • MIT License
+One tool. Every distro. Your style.
+
+GitHub: https://github.com/adrianpriza-ai/alps
+Releases: https://github.com/adrianpriza-ai/alps/releases
+alps-more: https://github.com/adrianpriza-ai/alps-more
+
+FEATURES
+--------
+• Multi-distro: Auto-detects apt/apt-get/dnf/pacman
+• Built-in AUR: yay fallback → makepkg -si + dep resolution
+• Snap fallback: Auto-offers snap on Ubuntu/Debian if apt fails
+• Flatpak: First-class subcommand via Flathub
+• alps-more: Cross-distro script repo with validation
+• Customizable: Colors, symbols, header, aliases via config
+• Smart completion: fish/bash/zsh, auto-installed
+• Smart aliases: Case-sensitive, pacman-style (-S, -R)
+
+INSTALLATION
+------------
+Quick (recommended):
+  git clone https://github.com/adrianpriza-ai/alps
+  cd alps && make install
+
+Manual:
+  git clone https://github.com/adrianpriza-ai/alps
+  cd alps
+  go build -o alps .
+  sudo cp alps /usr/local/bin/alps
+
+Shell completion:
+  Fish: alps completion fish > ~/.config/fish/completions/alps.fish
+  Bash: alps completion bash > /etc/bash_completion.d/alps
+  Zsh:  alps completion zsh > "${fpath[1]}/_alps" && compinit
+
+COMMANDS
+--------
+alps install <pkg>     → install from repo/AUR/alps-more
+alps search <query>    → search repo + AUR
+alps upgrade           → upgrade system + AUR
+alps autoremove        → remove orphans
+alps repo update       → refresh alps-more cache (sudo)
+alps repo install <pkg>→ install from alps-more
+alps repo list         → list alps-more packages
+alps completion <sh>   → generate completion script
+alps config-show       → show config + style preview
+alps aliases           → list active aliases
+
+Default aliases:
+  ins=install  rm=remove  pu=purge  up=update  ug=upgrade
+  fug=full-upgrade  se=search  sh=show  ls=list
+  au=autoremove  ac=autoclean  cl=clean
+
+CONFIGURATION
+-------------
+Paths (user overrides global):
+  Global: /etc/alps/config
+  User:   ~/.config/alps/config
+
+Example (~/.config/alps/config):
+  color_primary="\e[36m"   # cyan
+  color_success="\e[32m"   # green
+  sym_ok="✓"  sym_err="✗"  sym_warn="⚠"  sym_info="◆"
+  show_header=true
+  title_style="default"
+  alias_-S="install"  alias_-R="remove"  alias_i="install"
+
+AUR SUPPORT (Arch Only)
+-----------------------
+Workflow for 'alps install <pkg>':
+  1. Try pacman -S
+  2. If not found → query AUR
+  3. Use yay if available; else makepkg -si
+  4. Resolve deps; stop if AUR-only dep found
+  5. Show PKGBUILD summary (makepkg only)
+  6. Post-build: ask to clean makedepends + cache
+
+Direct AUR commands:
+  alps aur install|search|list|clean <pkg>
+
+Requirements: sudo pacman -S git base-devel
+
+SNAP & FLATPAK
+--------------
+Snap (Ubuntu/Debian):
+  alps snap install|search|list|update|remove <pkg>
+  • Auto-fallback when apt fails
+  • Checks /etc/apt/preferences.d/nosnap.pref (Linux Mint)
+
+Flatpak (All distros):
+  alps flatpak install|search|list|update|remove <pkg>
+  • Uses Flathub by default
+
+ALPS-MORE REPO
+--------------
+Cross-distro script repo for non-package-manager tools.
+Cache: /var/cache/alps/more/ • Expires: 90 days
+Hosted: GitHub + Codeberg
+
+Commands:
+  alps repo update          # refresh (sudo)
+  alps repo list            # list packages
+  alps repo install <pkg>   # validate + install
+  alps repo remove <pkg>    # remove
+
+Entry format ([pkg@distro]):
+  [ollama]
+  desc   = Run LLMs locally
+  arch   = x86_64, aarch64
+  os     = linux
+  deps   = curl
+  sudo   = true
+  cmd_begin
+    curl -fsSL https://ollama.com/install.sh | sh
+  cmd_end
+  remove_begin
+    sudo systemctl disable ollama --now
+    sudo rm -f /usr/local/bin/ollama
+  remove_end
+
+PROJECT STRUCTURE
+-----------------
+alps/
+├── main.go               # entry point
+├── config/config.go      # config loading
+├── ui/ui.go              # output/header
+├── aur/aur.go            # AUR helper
+├── more/                 # alps-more parser
+├── snap/snap.go          # snap support
+├── flatpak/flatpak.go    # flatpak support
+├── priv/priv.go          # sudo/su/root handling
+├── completion/           # shell completion
+├── Makefile, go.mod, README.md
+
+DEV NOTES
+---------
+• apt-get needs separate cmdMap (apt search ≠ apt-cache)
+• Never run pacman -Sy/-Su alone → partial upgrade = bad
+• /tmp is RAM on Arch → use ~/.cache for AUR builds
+• priv.Command() priority: root > sudo > su > error
+• LANG=C only for pacman -Sp (check), never for output
+• Snap fallback checks Linux Mint's nosnap.pref
+• alps-more cache: /var/cache/alps/more/, 90-day expiry
+• Completion is distro-aware: aur=Arch only, snap=Debian/Ubuntu only
+
+LICENSE & CONTRIB
+-----------------
+• License: MIT
+• Contributing: See CONTRIBUTING.md on GitHub
