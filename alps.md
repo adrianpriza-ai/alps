@@ -1,6 +1,3 @@
-## 📄 `ALPS.md` (Markdown)
-
-```markdown
 # ALPS — Advanced Linux Package System
 
 > **One tool. Every distro. Your style.**  
