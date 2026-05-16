@@ -25,7 +25,7 @@ func main() {
 	cfg := config.Load()
 
 	if len(os.Args) < 2 {
-		ui.PrintHelp(cfg)
+		printDiagnostic(cfg)
 		os.Exit(0)
 	}
 
@@ -558,12 +558,12 @@ func runAURUpgrade(noConfirm bool, cfg *config.Config) {
 	}
 }
 
-// runRepo handles: alps repo update | list | install <pkg> | remove <pkg>
+// runRepo handles: alps repo update | list | install | remove | search | upgrade
 func runRepo(args []string, cfg *config.Config) {
 	ui.PrintHeader(cfg)
 
 	if len(args) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps repo <update|list|install|remove> [package]")
+		ui.Msg(cfg, ui.LevelError, "Usage: alps repo <update|list|install|remove|search|upgrade> [package]")
 		os.Exit(1)
 	}
 
@@ -594,12 +594,17 @@ func runRepo(args []string, cfg *config.Config) {
 			ui.Msg(cfg, ui.LevelWarn, "No packages in repo.")
 			return
 		}
+		installed, _ := more.ReadInstalled()
 		fmt.Println()
 		for _, e := range entries {
-			fmt.Printf("  %s%s%s  %s%s%s  \033[2m[%s]\033[0m\n",
-				cfg.Style.ColorPrimary, e.Name, cfg.Style.ColorReset,
-				cfg.Style.ColorDim, e.Desc, cfg.Style.ColorReset,
-				strings.Join(e.Arch, ", "))
+			installedVer := ""
+			if rec, ok := installed[e.Name]; ok {
+				installedVer = rec.Version
+				if installedVer == "" {
+					installedVer = "installed"
+				}
+			}
+			ui.PrintRepoEntry(cfg, e.Name, e.Version, e.Desc, e.Arch, installedVer)
 		}
 		fmt.Println()
 
@@ -615,7 +620,6 @@ func runRepo(args []string, cfg *config.Config) {
 			os.Exit(1)
 		}
 
-		// Validate arch, os, deps — stop on any failure
 		if err := more.Validate(entry); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
@@ -626,10 +630,31 @@ func runRepo(args []string, cfg *config.Config) {
 		if entry.Desc != "" {
 			fmt.Printf("  %s%s%s\n", cfg.Style.ColorDim, entry.Desc, cfg.Style.ColorReset)
 		}
+		if entry.Author != "" {
+			fmt.Printf("  %sauthor: %s%s\n", cfg.Style.ColorDim, entry.Author, cfg.Style.ColorReset)
+		}
+		if entry.Version != "" {
+			fmt.Printf("  %sversion: %s%s\n", cfg.Style.ColorDim, entry.Version, cfg.Style.ColorReset)
+		}
 		fmt.Println()
+
+		fmt.Printf("  %sinstall:%s\n", cfg.Style.ColorBold, cfg.Style.ColorReset)
 		for _, line := range entry.CmdLines {
 			fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
 		}
+
+		if len(entry.RemoveLines) > 0 {
+			fmt.Println()
+			fmt.Printf("  %scleanup on failure:%s\n", cfg.Style.ColorBold, cfg.Style.ColorReset)
+			for _, line := range entry.RemoveLines {
+				fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
+			}
+		} else {
+			fmt.Println()
+			fmt.Printf("  %s%s  no remove_cmd — cannot auto-cleanup if install fails%s\n",
+				cfg.Style.ColorWarning, cfg.Style.SymWarn, cfg.Style.ColorReset)
+		}
+
 		fmt.Print(cfg.Style.ColorReset)
 		fmt.Println()
 		if !ui.Confirm() {
@@ -674,7 +699,49 @@ func runRepo(args []string, cfg *config.Config) {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
 		}
+		if err := more.UnmarkInstalled(pkgName); err != nil {
+			ui.Msgf(cfg, ui.LevelWarn, "removed but failed to update state: %v", err)
+		}
 		ui.Msg(cfg, ui.LevelOK, "Done.")
+
+	case "search":
+		if len(rest) == 0 {
+			ui.Msg(cfg, ui.LevelError, "Usage: alps repo search <query>")
+			os.Exit(1)
+		}
+		query := strings.Join(rest, " ")
+		results, err := more.Search(query)
+		if err != nil {
+			ui.Msgf(cfg, ui.LevelError, "%v", err)
+			os.Exit(1)
+		}
+		if len(results) == 0 {
+			ui.Msgf(cfg, ui.LevelWarn, "No results for '%s' in alps-more.", query)
+			return
+		}
+		fmt.Println()
+		for _, e := range results {
+			ui.PrintRepoSearchResult(cfg, e.Name, e.Version, e.Desc)
+		}
+		fmt.Println()
+
+	case "upgrade":
+		if len(rest) == 0 {
+			// No package name → upgrade all
+			ui.Msg(cfg, ui.LevelInfo, "Checking alps-more packages for updates...")
+			fmt.Println()
+			if err := more.UpgradeAll(); err != nil {
+				ui.Msgf(cfg, ui.LevelError, "%v", err)
+				os.Exit(1)
+			}
+		} else {
+			pkgName := rest[0]
+			if err := more.Upgrade(pkgName); err != nil {
+				ui.Msgf(cfg, ui.LevelError, "%v", err)
+				os.Exit(1)
+			}
+			ui.Msg(cfg, ui.LevelOK, "Done.")
+		}
 
 	default:
 		ui.Msgf(cfg, ui.LevelError, "Unknown repo subcommand: %s", subcmd)
@@ -1037,4 +1104,56 @@ func runSnap(args []string, cfg *config.Config) {
 		ui.Msgf(cfg, ui.LevelError, "Unknown snap subcommand: %s", subcmd)
 		os.Exit(1)
 	}
+}
+
+// printDiagnostic shows a quick system overview when alps is run with no args.
+func printDiagnostic(cfg *config.Config) {
+	ui.PrintHeader(cfg)
+
+	// Distro
+	distro := "unknown"
+	if data, err := os.ReadFile("/etc/os-release"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "PRETTY_NAME=") {
+				distro = strings.Trim(line[12:], `"'`)
+				break
+			}
+		}
+	}
+
+	// Backend
+	backend := detectBackend()
+	if backend == "" {
+		backend = "none detected"
+	}
+
+	// alps-more installed count
+	installed, _ := more.ReadInstalled()
+	moreCount := len(installed)
+
+	// Extras
+	extras := []string{}
+	if _, err := exec.LookPath("flatpak"); err == nil {
+		extras = append(extras, "flatpak")
+	}
+	if _, err := exec.LookPath("snap"); err == nil {
+		extras = append(extras, "snap")
+	}
+	if _, err := exec.LookPath("yay"); err == nil {
+		extras = append(extras, "yay")
+	}
+
+	dim := cfg.Style.ColorDim
+	rst := cfg.Style.ColorReset
+	pri := cfg.Style.ColorPrimary
+
+	fmt.Printf("  %ssystem%s   %s\n", pri, rst, distro)
+	fmt.Printf("  %sbackend%s  %s\n", pri, rst, backend)
+	if len(extras) > 0 {
+		fmt.Printf("  %sextras%s   %s\n", pri, rst, strings.Join(extras, "  "))
+	}
+	fmt.Printf("  %smore%s     %s%d package(s) installed via alps-more%s\n", pri, rst, dim, moreCount, rst)
+	fmt.Println()
+	fmt.Printf("  %srun 'alps help' for commands%s\n", dim, rst)
+	fmt.Println()
 }

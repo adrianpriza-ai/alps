@@ -115,6 +115,8 @@ func PrintHelp(cfg *config.Config) {
 		{"repo list", "list available packages"},
 		{"repo install <pkg>", "install from alps-more"},
 		{"repo remove <pkg>", "remove from alps-more"},
+		{"repo search <query>", "search alps-more repo"},
+		{"repo upgrade [pkg]", "upgrade installed package(s)"},
 	}
 	for _, r := range repoSubs {
 		fmt.Printf("  %s%s%s  %-24s %s%s%s\n",
@@ -291,4 +293,106 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// ──────────────────────────────────────────
+// REPO OUTPUT HELPERS (TTY-aware)
+// ──────────────────────────────────────────
+
+// symUpgrade returns an upgrade arrow safe for the current terminal.
+func symUpgrade() string {
+	if isTTY() {
+		return "->"
+	}
+	return "↑"
+}
+
+// symReinstall returns a reinstall symbol safe for the current terminal.
+func symReinstall() string {
+	if isTTY() {
+		return ">>"
+	}
+	return "⟳"
+}
+
+// isTTY returns true when running in a basic TTY with no unicode support.
+func isTTY() bool {
+	term := os.Getenv("TERM")
+	return term == "linux" || term == "dumb" || term == ""
+}
+
+// PrintRepoEntry prints one line of `alps repo list` output.
+// installedVer is empty when the package is not installed.
+func PrintRepoEntry(cfg *config.Config, name, version, desc string, arch []string, installedVer string) {
+	s := cfg.Style
+
+	verStr := ""
+	if version != "" {
+		verStr = fmt.Sprintf(" %s%s%s", s.ColorDim, version, s.ColorReset)
+	}
+
+	instTag := ""
+	if installedVer != "" {
+		label := installedVer
+		if label == "" {
+			label = "installed"
+		}
+		instTag = fmt.Sprintf(" %s[%s]%s", s.ColorSuccess, label, s.ColorReset)
+	}
+
+	archStr := ""
+	if len(arch) > 0 {
+		archStr = fmt.Sprintf(" %s[%s]%s", s.ColorDim, strings.Join(arch, ", "), s.ColorReset)
+	}
+
+	fmt.Printf("  %s%s%s%s%s  %s%s%s%s\n",
+		s.ColorPrimary, name, s.ColorReset,
+		verStr, instTag,
+		s.ColorDim, desc, s.ColorReset,
+		archStr)
+}
+
+// PrintRepoSearchResult prints one result from `alps repo search`.
+func PrintRepoSearchResult(cfg *config.Config, name, version, desc string) {
+	s := cfg.Style
+
+	verStr := ""
+	if version != "" {
+		verStr = fmt.Sprintf(" %s%s%s", s.ColorDim, version, s.ColorReset)
+	}
+
+	fmt.Printf("  %s%s%s%s  %s\n",
+		s.ColorPrimary, name, s.ColorReset,
+		verStr, desc)
+}
+
+// PrintUpgradeStatus prints the status line before running an upgrade.
+func PrintUpgradeStatus(cfg *config.Config, name, fromVer, toVer string) {
+	s := cfg.Style
+	arrow := symUpgrade()
+	if fromVer != "" && toVer != "" {
+		fmt.Printf("  %s%s%s  %s: %s%s%s %s %s%s%s\n",
+			s.ColorInfo, arrow, s.ColorReset,
+			name,
+			s.ColorDim, fromVer, s.ColorReset,
+			arrow,
+			s.ColorSuccess, toVer, s.ColorReset)
+	} else {
+		fmt.Printf("  %s%s%s  %s: update available\n",
+			s.ColorInfo, arrow, s.ColorReset, name)
+	}
+}
+
+// PrintReinstallStatus prints the status line before reinstalling.
+func PrintReinstallStatus(cfg *config.Config, name, version string) {
+	s := cfg.Style
+	sym := symReinstall()
+	if version != "" {
+		fmt.Printf("  %s%s%s  %s %s%s%s already up to date — reinstalling...\n",
+			s.ColorWarning, sym, s.ColorReset,
+			name, s.ColorDim, version, s.ColorReset)
+	} else {
+		fmt.Printf("  %s%s%s  %s already installed — reinstalling...\n",
+			s.ColorWarning, sym, s.ColorReset, name)
+	}
 }

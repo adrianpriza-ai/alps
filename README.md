@@ -12,6 +12,7 @@
   *The customizable package manager frontend*
 
   ![Release](https://img.shields.io/github/v/release/adrianpriza-ai/alps?include_prereleases&style=flat&color=red)
+<<<<<<< HEAD
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat)
 ![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)
 ![Build](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml/badge.svg)
@@ -19,6 +20,15 @@
 
 [![AUR](https://img.shields.io/badge/AUR-built--in-1793D1?style=flat&logo=archlinux)](https://aur.archlinux.org)
 [![alps-more](https://img.shields.io/badge/alps--more-repo-orange?style=flat)](https://github.com/adrianpriza-ai/alps-more)
+=======
+  ![License](https://img.shields.io/badge/License-MIT-green?style=flat)
+  ![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)
+  ![Build](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml/badge.svg)
+  ![Go Report Card](https://goreportcard.com/badge/github.com/adrianpriza-ai/alps?v=1)
+
+  [![AUR](https://img.shields.io/badge/AUR-built--in-1793D1?style=flat&logo=archlinux)](https://aur.archlinux.org)
+  [![alps-more](https://img.shields.io/badge/alps--more-repo-orange?style=flat)](https://github.com/adrianpriza-ai/alps-more)
+>>>>>>> 13f6424 (update)
 
 </div>
 
@@ -36,7 +46,7 @@ ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, and `pacman` with built
 | **Built-in AUR** | Uses `yay` if available, falls back to `makepkg` with dep resolution |
 | **Snap fallback** | Auto-falls back to snap on Ubuntu/Debian if apt can't find a package |
 | **Flatpak support** | First-class `alps flatpak` subcommand for all distros |
-| **alps-more** | Cross-distro script repo with arch/os/deps validation |
+| **alps-more** | Cross-distro script repo with version tracking, auto-cleanup on failure, stale entry detection |
 | **Fully customizable** | Colors, symbols, header, aliases — all via config |
 | **Smart completion** | fish, bash, zsh — auto-configured per distro |
 | **Smart aliases** | Case-sensitive, pacman-style (`-S`, `-R`) supported |
@@ -219,26 +229,80 @@ alps flatpak remove <pkg>
 alps-more is a cross-distro script repo for tools not available in standard package managers.
 Cache is stored globally at `/var/cache/alps/more/` and expires after 90 days.
 
+### Commands
+
 ```bash
-alps repo update          # download/refresh repo (requires sudo)
-alps repo list            # list all available packages
-alps repo install <pkg>   # install a package
+alps repo update          # refresh cache from GitHub/Codeberg (requires sudo)
+alps repo list            # list all available packages for your distro
+alps repo install <pkg>   # install a package with validation & preview
 alps repo remove <pkg>    # remove a package
+alps repo search <query>  # search by name/desc (like pacman -Ss)
+alps repo upgrade [pkg]   # upgrade installed package(s)
 ```
 
-Each entry specifies supported architectures, OS/distro, optional dependencies, and install/remove commands. ALPS validates all of these before running anything. Entries support per-distro commands via `@distro` suffix (e.g. `[ollama@arch]`, `[ollama@debian]`).
+### Package tracking
 
-**alps-more repo:** [github.com/adrianpriza-ai/alps-more](https://github.com/adrianpriza-ai/alps-more)
+ALPS tracks installed packages and their versions in `/var/cache/alps/more/installed.json`. When upgrading:
+- If a newer version is available → runs `upgrade_cmd` (or falls back to `cmd_begin`)
+- If already at latest version → reinstalls
+- If install fails → auto-runs `remove_cmd` cleanup, user can retry with `alps repo install`
+
+Stale entries (packages removed from repo) are reported but not auto-removed. Remove manually with `alps repo remove <pkg>`.
+
+### Package format
+
+Each entry specifies:
+- `desc`, `author`, `version` — metadata
+- `arch` (required) — x86_64, aarch64, etc.
+- `os` (required) — linux, arch, debian, etc.
+- `deps` (optional) — required binaries to check
+- `sudo` (optional) — true if commands need privilege
+- `cmd_begin`...`cmd_end` — install commands
+- `upgrade_begin`...`upgrade_end` — upgrade commands (optional, fallback to install)
+- `remove_begin`...`remove_end` — cleanup commands
+
+Example:
+
+```ini
+[ollama]
+desc       = Run LLMs locally
+author     = ollama.com
+version    = 0.3.12
+arch       = x86_64, aarch64
+os         = linux
+deps       = curl
+sudo       = true
+cmd_begin
+  curl -fsSL https://ollama.com/install.sh | sh
+cmd_end
+upgrade_begin
+  curl -fsSL https://ollama.com/install.sh | sh
+upgrade_end
+remove_begin
+  sudo systemctl disable ollama --now
+  sudo rm -f /usr/local/bin/ollama
+remove_end
+```
+
+### Reliability
+
+- **Network retries:** 3 attempts with backoff (timeout 15s per request)
+- **Cache validation:** corrupted cache is detected; old cache is kept if download fails
+- **JSON recovery:** corrupted `installed.json` is backed up and reset
+- **Install safety:** shows full preview (commands + cleanup) before confirming
+- **Failure recovery:** if install fails mid-way, cleanup is run automatically
+
+**Repo:** [github.com/adrianpriza-ai/alps-more](https://github.com/adrianpriza-ai/alps-more)
 
 ## Project Structure
 
 ```
 alps/
-├── main.go               # entry point, backend dispatch
+├── main.go               # entry point, backend dispatch, CLI handlers
 ├── config/
 │   └── config.go         # config loading and parsing
 ├── ui/
-│   └── ui.go             # output, header
+│   └── ui.go             # output formatting, headers, helpers
 ├── aur/
 │   └── aur.go            # AUR helper (yay + makepkg, dep resolution)
 ├── snap/
@@ -246,19 +310,20 @@ alps/
 ├── flatpak/
 │   └── flatpak.go        # flatpak support
 ├── more/
-│   ├── more.go           # alps-more parser, validation, install logic
-│   └── fetch.go          # cache download and management
+│   ├── more.go           # alps-more parser, validation, install/upgrade/remove logic
+│   ├── fetch.go          # cache download with retry, validation, timeout
+│   └── state.go          # installed.json tracking with corruption recovery
 ├── priv/
 │   └── priv.go           # privilege escalation (sudo/su/root handling)
 ├── completion/
 │   └── completion.go     # shell completion generator (distro-aware)
 ├── Makefile
 ├── go.mod
-├──	CODE_OF_CONDUCT.md
+├── CODE_OF_CONDUCT.md
 ├── CONTRIBUTING.md
 ├── LICENSE
 ├── README.md
-└──	SECURITY.md
+└── SECURITY.md
 ```
 
 ## Contributing

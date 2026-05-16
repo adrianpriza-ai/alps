@@ -79,7 +79,7 @@ func genFish(cmds []string, backend string) {
 
 	fmt.Printf(`
 # repo subcommands
-complete -c alps -n '__fish_seen_subcommand_from repo' -a 'update list install remove' -d 'repo subcommand'
+complete -c alps -n '__fish_seen_subcommand_from repo' -a 'update list install remove search upgrade' -d 'repo subcommand'
 
 # aur subcommands
 complete -c alps -n '__fish_seen_subcommand_from aur' -a 'install search list clean' -d 'aur subcommand'
@@ -95,6 +95,10 @@ complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcomman
     -a "(grep -oP '(?<=\[)[^\]]+' /var/cache/alps/more/main.txt 2>/dev/null)" -d 'alps-more package'
 complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' \
     -a "(grep -oP '(?<=\[)[^\]]+' /var/cache/alps/more/main.txt 2>/dev/null)" -d 'alps-more package'
+complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from search' \
+    -a "(grep -oP '(?<=\[)[^\]]+' /var/cache/alps/more/main.txt 2>/dev/null)" -d 'alps-more package'
+complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from upgrade' \
+    -a "(jq -r 'keys[]' /var/cache/alps/more/installed.json 2>/dev/null)" -d 'installed package'
 
 # Available package completion for install/search
 complete -c alps -n '__fish_seen_subcommand_from install search' \
@@ -134,6 +138,19 @@ _alps_completions() {
             ;;
         remove|rm|purge|pu)
             COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
+            ;;
+        repo)
+            case "${words[2]}" in
+                install|remove|search)
+                    COMPREPLY=($(compgen -W "$(grep -oP '(?<=\[)[^\]]+' /var/cache/alps/more/main.txt 2>/dev/null)" -- "$cur"))
+                    ;;
+                upgrade)
+                    COMPREPLY=($(compgen -W "$(jq -r 'keys[]' /var/cache/alps/more/installed.json 2>/dev/null)" -- "$cur"))
+                    ;;
+                *)
+                    COMPREPLY=($(compgen -W "update list install remove search upgrade" -- "$cur"))
+                    ;;
+            esac
             ;;
     esac
 }
@@ -185,6 +202,23 @@ _alps() {
                     installed=(${(f)"$(%s)"})
                     _describe 'installed package' installed
                     ;;
+                repo)
+                    case ${words[3]} in
+                        install|remove|search)
+                            local morepkgs
+                            morepkgs=(${(f)"$(grep -oP '(?<=\[)[^\]]+' /var/cache/alps/more/main.txt 2>/dev/null)"})
+                            _describe 'alps-more package' morepkgs
+                            ;;
+                        upgrade)
+                            local instpkgs
+                            instpkgs=(${(f)"$(jq -r 'keys[]' /var/cache/alps/more/installed.json 2>/dev/null)"})
+                            _describe 'installed package' instpkgs
+                            ;;
+                        *)
+                            _describe 'repo subcommand' '(update list install remove search upgrade)'
+                            ;;
+                    esac
+                    ;;
             esac
             ;;
     esac
@@ -201,7 +235,7 @@ func cmdDesc(cmd string) string {
 		"config-show":  "show config",
 		"version":      "show version",
 		"completion":   "generate shell completion",
-		"repo":         "manage alps-more repo",
+		"repo":         "manage alps-more repo packages",
 		"aur":          "manage AUR packages directly",
 		"flatpak":      "manage flatpak packages",
 		"snap":         "manage snap packages",
