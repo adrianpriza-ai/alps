@@ -6,11 +6,11 @@
 
   *The customizable package manager frontend*
 
-  ![Release](https://img.shields.io/github/v/release/adrianpriza-ai/alps?include_prereleases&style=flat&color=red)
-  ![License](https://img.shields.io/badge/License-MIT-green?style=flat)
-  ![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)
-  ![Build](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml/badge.svg)
-  ![Go Report Card](https://goreportcard.com/badge/github.com/adrianpriza-ai/alps?v=1)
+  [![Release](https://img.shields.io/github/v/release/adrianpriza-ai/alps?include_prereleases&style=flat&color=red)](https://github.com/adrianpriza-ai/alps/releases)
+  [![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENCE)
+  [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev)
+  [![Build](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml/badge.svg)](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml)
+  [![Go Report Card](https://goreportcard.com/badge/github.com/adrianpriza-ai/alps?v=1)](https://goreportcard.com/report/github.com/adrianpriza-ai/alps)
 
   [![AUR](https://img.shields.io/badge/AUR-built--in-1793D1?style=flat&logo=archlinux)](https://aur.archlinux.org)
   [![alps-more](https://img.shields.io/badge/alps--more-repo-orange?style=flat)](https://github.com/adrianpriza-ai/alps-more)
