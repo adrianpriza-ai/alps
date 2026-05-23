@@ -33,7 +33,7 @@ jobs:
       - name: Install packaging tools
         run: |
           sudo apt update
-          sudo apt install -y dpkg-dev
+          sudo apt install -y dpkg-dev apt-utils
 
       - name: Clean old package dir
         run: |
@@ -198,6 +198,7 @@ jobs:
 
           mkdir -p pool/main
           mkdir -p dists/stable/main/binary-amd64
+          mkdir -p dists/stable/main/binary-all
 
           cp ../alps_${TAG#v}_amd64.deb \
             pool/main/
@@ -206,6 +207,12 @@ jobs:
             > dists/stable/main/binary-amd64/Packages
 
           gzip -kf dists/stable/main/binary-amd64/Packages
+
+          touch dists/stable/main/binary-all/Packages
+
+          gzip -kf dists/stable/main/binary-all/Packages
+          
+          apt-ftparchive release dists/stable > dists/stable/Release
 
       - name: Push APT repository
         run: |
