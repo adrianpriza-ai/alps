@@ -81,13 +81,13 @@ jobs:
             cp alps-linux-$ARCH \
               pkg/usr/local/bin/alps
 
-            ./alps-linux-$ARCH completion fish \
+            ./alps-linux-amd64 completion fish \
               > pkg/usr/share/fish/vendor_completions.d/alps.fish
 
-            ./alps-linux-$ARCH completion bash \
+            ./alps-linux-amd64 completion bash \
               > pkg/usr/share/bash-completion/completions/alps
 
-            ./alps-linux-$ARCH completion zsh \
+            ./alps-linux-amd64 completion zsh \
               > pkg/usr/share/zsh/site-functions/_alps
 
             echo "deb [trusted=yes] https://adrianpriza-ai.github.io/alps-apt stable main" \
