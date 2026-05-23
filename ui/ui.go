@@ -115,8 +115,9 @@ func PrintHelp(cfg *config.Config) {
 		{"repo list", "list available packages"},
 		{"repo install <pkg>", "install from alps-more"},
 		{"repo remove <pkg>", "remove from alps-more"},
+		{"repo purge <pkg>", "remove package including configs/data"},
 		{"repo search <query>", "search alps-more repo"},
-		{"repo upgrade [pkg]", "upgrade installed package(s)"},
+		{"repo upgrade <pkg>", "upgrade installed package(s)"},
 	}
 	for _, r := range repoSubs {
 		fmt.Printf("  %s%s%s  %-24s %s%s%s\n",

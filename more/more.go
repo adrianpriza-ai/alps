@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/adrianpriza-ai/alps/config"
 	"github.com/adrianpriza-ai/alps/priv"
 )
 
@@ -16,22 +17,23 @@ import (
 type Entry struct {
 	Name         string
 	Desc         string
-	Author       string   // optional
-	Version      string   // optional
-	Arch         []string // required, no field = error
-	OS           []string // "linux" = all, or specific distros
-	Deps         []string // optional
-	Sudo         bool     // optional, run ensureSudo() once before cmds
+	Author       string
+	Version      string
+	Arch         []string
+	OS           []string
+	Deps         []string
+	Sudo         bool
 	CmdLines     []string
 	RemoveLines  []string
 	UpgradeLines []string
+	PurgeLines   []string
 }
 
 // Parse parses main.txt content into a map of entries.
 func Parse(data []byte) (map[string]*Entry, error) {
 	entries := make(map[string]*Entry)
 	var current *Entry
-	var inCmd, inRemove, inUpgrade bool
+	var inCmd, inRemove, inUpgrade, inPurge bool
 
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
@@ -48,7 +50,7 @@ func Parse(data []byte) (map[string]*Entry, error) {
 			}
 			name := line[1 : len(line)-1]
 			current = &Entry{Name: name}
-			inCmd, inRemove, inUpgrade = false, false, false
+			inCmd, inRemove, inUpgrade, inPurge = false, false, false, false
 			continue
 		}
 
@@ -59,25 +61,32 @@ func Parse(data []byte) (map[string]*Entry, error) {
 		switch {
 		case line == "cmd_begin":
 			inCmd = true
-			inRemove, inUpgrade = false, false
+			inRemove, inUpgrade, inPurge = false, false, false
 		case line == "cmd_end":
 			inCmd = false
 		case line == "remove_begin":
 			inRemove = true
-			inCmd, inUpgrade = false, false
+			inCmd, inUpgrade, inPurge = false, false, false
 		case line == "remove_end":
 			inRemove = false
 		case line == "upgrade_begin":
 			inUpgrade = true
-			inCmd, inRemove = false, false
+			inCmd, inRemove, inPurge = false, false, false
 		case line == "upgrade_end":
 			inUpgrade = false
+		case line == "purge_begin":
+			inPurge = true
+			inCmd, inRemove, inUpgrade = false, false, false
+		case line == "purge_end":
+			inPurge = false
 		case inCmd:
 			current.CmdLines = append(current.CmdLines, line)
 		case inRemove:
 			current.RemoveLines = append(current.RemoveLines, line)
 		case inUpgrade:
 			current.UpgradeLines = append(current.UpgradeLines, line)
+		case inPurge:
+			current.PurgeLines = append(current.PurgeLines, line)
 		default:
 			idx := strings.Index(line, "=")
 			if idx < 0 {
@@ -114,13 +123,13 @@ func Parse(data []byte) (map[string]*Entry, error) {
 }
 
 // Find looks up a package by name from cache, matching current distro.
-func Find(name string) (*Entry, error) {
+func Find(name string, cfg *config.Config) (*Entry, error) {
 	exists, expired := CacheStatus()
 	if !exists {
 		return nil, fmt.Errorf("no cache found, run: alps repo update")
 	}
 	if expired {
-		fmt.Printf("  %s  repo cache is expired (>90 days). Using old cache.\n", symWarn())
+		fmt.Printf("  %s  repo cache is expired (>90 days). Using old cache.\n", cfg.Style.SymWarn)
 		fmt.Println("        Run 'alps repo update' to refresh.")
 		fmt.Println()
 	}
@@ -153,13 +162,13 @@ func Find(name string) (*Entry, error) {
 }
 
 // List returns all entries filtered to the current distro.
-func List() (map[string]*Entry, error) {
+func List(cfg *config.Config) (map[string]*Entry, error) {
 	exists, expired := CacheStatus()
 	if !exists {
 		return nil, fmt.Errorf("no cache found, run: alps repo update")
 	}
 	if expired {
-		fmt.Printf("  %s  repo cache is expired (>90 days). Using old cache.\n", symWarn())
+		fmt.Printf("  %s  repo cache is expired (>90 days). Using old cache.\n", cfg.Style.SymWarn)
 		fmt.Println("        Run 'alps repo update' to refresh.")
 		fmt.Println()
 	}
@@ -187,8 +196,8 @@ func List() (map[string]*Entry, error) {
 
 // Search returns entries whose name or desc contains query (case-insensitive).
 // Filters to current distro, like pacman -Ss.
-func Search(query string) ([]*Entry, error) {
-	entries, err := List()
+func Search(query string, cfg *config.Config) ([]*Entry, error) {
+	entries, err := List(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -257,10 +266,10 @@ func Validate(e *Entry) error {
 
 // Install installs a package, handling already-installed and upgrade cases.
 //
-//   - Not installed         → install
+//   - Not installed                    → install
 //   - Installed, new version available → upgrade (upgrade_cmd or fallback to install cmd)
 //   - Installed, same/no version       → reinstall
-func Install(e *Entry) error {
+func Install(e *Entry, cfg *config.Config) error {
 	if e.Sudo {
 		if err := ensureSudo(); err != nil {
 			return fmt.Errorf("sudo authentication failed: %w", err)
@@ -272,24 +281,24 @@ func Install(e *Entry) error {
 	if isInstalled {
 		if e.Version != "" && rec.Version != "" && e.Version != rec.Version {
 			fmt.Printf("  %s  %s: %s -> %s\n",
-				symUpgrade(), e.Name, rec.Version, e.Version)
-			return runUpgrade(e)
+				cfg.Style.SymArrow, e.Name, rec.Version, e.Version)
+			return runUpgrade(e, cfg)
 		}
 
 		if e.Version != "" && rec.Version != "" {
 			fmt.Printf("  %s  %s %s already up to date. Reinstalling...\n",
-				symReinstall(), e.Name, e.Version)
+				cfg.Style.SymInfo, e.Name, e.Version)
 		} else {
 			fmt.Printf("  %s  %s already installed. Reinstalling...\n",
-				symReinstall(), e.Name)
+				cfg.Style.SymInfo, e.Name)
 		}
 	}
 
-	return runInstall(e)
+	return runInstall(e, cfg)
 }
 
 // Remove runs the remove lines for a package.
-func Remove(e *Entry) error {
+func Remove(e *Entry, cfg *config.Config) error {
 	if len(e.RemoveLines) == 0 {
 		return fmt.Errorf("package %q has no remove commands defined", e.Name)
 	}
@@ -302,8 +311,8 @@ func Remove(e *Entry) error {
 }
 
 // Upgrade upgrades a single installed package if a newer version is available.
-func Upgrade(name string) error {
-	e, err := Find(name)
+func Upgrade(name string, cfg *config.Config) error {
+	e, err := Find(name, cfg)
 	if err != nil {
 		return err
 	}
@@ -314,28 +323,28 @@ func Upgrade(name string) error {
 	}
 
 	if e.Version == "" || rec.Version == "" {
-		fmt.Printf("  %s  %s: no version info, reinstalling...\n", symReinstall(), name)
-		return runInstall(e)
+		fmt.Printf("  %s  %s: no version info, reinstalling...\n", cfg.Style.SymInfo, name)
+		return runInstall(e, cfg)
 	}
 
 	if e.Version == rec.Version {
-		fmt.Printf("  ok  %s %s is already up to date.\n", name, e.Version)
+		fmt.Printf("  %s  %s %s is already up to date.\n", cfg.Style.SymOK, name, e.Version)
 		return nil
 	}
 
-	fmt.Printf("  %s  %s: %s -> %s\n", symUpgrade(), name, rec.Version, e.Version)
+	fmt.Printf("  %s  %s: %s -> %s\n", cfg.Style.SymArrow, name, rec.Version, e.Version)
 
 	if e.Sudo {
 		if err := ensureSudo(); err != nil {
 			return fmt.Errorf("sudo authentication failed: %w", err)
 		}
 	}
-	return runUpgrade(e)
+	return runUpgrade(e, cfg)
 }
 
 // UpgradeAll upgrades all packages tracked in installed.json.
 // Stale entries (removed from repo) are reported but not removed automatically.
-func UpgradeAll() error {
+func UpgradeAll(cfg *config.Config) error {
 	records, err := ReadInstalled()
 	if err != nil {
 		return err
@@ -347,15 +356,14 @@ func UpgradeAll() error {
 
 	var upgraded, upToDate, failed, stale int
 	for name := range records {
-		e, err := Find(name)
+		e, err := Find(name, cfg)
 		if err != nil {
-			// Package no longer exists in repo — stale entry
 			if strings.Contains(err.Error(), "not found in alps-more repo") {
-				fmt.Printf("  %s  %s: no longer in repo (stale) — skipping\n", symWarn(), name)
+				fmt.Printf("  %s  %s: no longer in repo (stale) — skipping\n", cfg.Style.SymWarn, name)
 				fmt.Printf("       to remove: alps repo remove %s\n", name)
 				stale++
 			} else {
-				fmt.Printf("  %s  %s: %v\n", symErr(), name, err)
+				fmt.Printf("  %s  %s: %v\n", cfg.Style.SymErr, name, err)
 				failed++
 			}
 			continue
@@ -363,13 +371,13 @@ func UpgradeAll() error {
 
 		rec := records[name]
 		if e.Version != "" && rec.Version != "" && e.Version == rec.Version {
-			fmt.Printf("  %s  %s %s\n", symOK(), name, e.Version)
+			fmt.Printf("  %s  %s %s\n", cfg.Style.SymOK, name, e.Version)
 			upToDate++
 			continue
 		}
 
-		if err := Upgrade(name); err != nil {
-			fmt.Printf("  %s  %s: %v\n", symErr(), name, err)
+		if err := Upgrade(name, cfg); err != nil {
+			fmt.Printf("  %s  %s: %v\n", cfg.Style.SymErr, name, err)
 			failed++
 		} else {
 			upgraded++
@@ -384,32 +392,72 @@ func UpgradeAll() error {
 	return nil
 }
 
+// Purge removes a package and deletes its config/data files.
+// Runs remove_begin first (uninstall binary/service),
+// then purge_begin (delete configs/user data).
+// Falls back to remove-only if no purge_begin is defined.
+func Purge(name string, cfg *config.Config) error {
+	e, err := Find(name, cfg)
+	if err != nil {
+		return err
+	}
+
+	_, isInstalled := GetInstalled(name)
+	if !isInstalled {
+		return fmt.Errorf("package %q is not installed via alps-more", name)
+	}
+
+	if len(e.RemoveLines) == 0 && len(e.PurgeLines) == 0 {
+		return fmt.Errorf("package %q has no remove or purge commands defined", e.Name)
+	}
+
+	if e.Sudo {
+		if err := ensureSudo(); err != nil {
+			return fmt.Errorf("sudo authentication failed: %w", err)
+		}
+	}
+
+	// Step 1: remove (binary, service)
+	if len(e.RemoveLines) > 0 {
+		if err := runLines(e.RemoveLines); err != nil {
+			return fmt.Errorf("remove step failed: %w", err)
+		}
+	}
+
+	// Step 2: purge (configs, data)
+	if len(e.PurgeLines) > 0 {
+		if err := runLines(e.PurgeLines); err != nil {
+			return fmt.Errorf("purge step failed: %w", err)
+		}
+	}
+
+	return UnmarkInstalled(name)
+}
+
 // --- internal helpers ---
 
-func runInstall(e *Entry) error {
+func runInstall(e *Entry, cfg *config.Config) error {
 	if len(e.CmdLines) == 0 {
 		return fmt.Errorf("package %q has no install commands", e.Name)
 	}
 	if err := runLines(e.CmdLines); err != nil {
-		// Install failed — auto-cleanup so the system is not left in a broken state.
-		// User can then retry with `alps repo install <pkg>` cleanly.
 		if len(e.RemoveLines) > 0 {
-			fmt.Printf("  %s  install failed — running cleanup to undo partial install...\n", symWarn())
+			fmt.Printf("  %s  install failed — running cleanup to undo partial install...\n", cfg.Style.SymWarn)
 			if rerr := runLines(e.RemoveLines); rerr != nil {
-				fmt.Printf("  %s  cleanup also failed: %v\n", symErr(), rerr)
-				fmt.Printf("  %s  you may need to clean up manually before retrying.\n", symWarn())
+				fmt.Printf("  %s  cleanup also failed: %v\n", cfg.Style.SymErr, rerr)
+				fmt.Printf("  %s  you may need to clean up manually before retrying.\n", cfg.Style.SymWarn)
 			} else {
-				fmt.Printf("  %s  cleanup done. Run `alps repo install %s` to retry.\n", symOK(), e.Name)
+				fmt.Printf("  %s  cleanup done. Run `alps repo install %s` to retry.\n", cfg.Style.SymOK, e.Name)
 			}
 		} else {
-			fmt.Printf("  %s  no remove_cmd defined — cannot auto-cleanup. Check manually.\n", symWarn())
+			fmt.Printf("  %s  no remove_cmd defined — cannot auto-cleanup. Check manually.\n", cfg.Style.SymWarn)
 		}
 		return err
 	}
 	return MarkInstalled(e.Name, e.Version)
 }
 
-func runUpgrade(e *Entry) error {
+func runUpgrade(e *Entry, cfg *config.Config) error {
 	lines := e.UpgradeLines
 	if len(lines) == 0 {
 		lines = e.CmdLines
@@ -418,17 +466,16 @@ func runUpgrade(e *Entry) error {
 		return fmt.Errorf("package %q has no upgrade or install commands", e.Name)
 	}
 	if err := runLines(lines); err != nil {
-		// Upgrade failed — run remove so user can do a clean reinstall.
 		if len(e.RemoveLines) > 0 {
-			fmt.Printf("  %s  upgrade failed — running cleanup...\n", symWarn())
+			fmt.Printf("  %s  upgrade failed — running cleanup...\n", cfg.Style.SymWarn)
 			if rerr := runLines(e.RemoveLines); rerr != nil {
-				fmt.Printf("  %s  cleanup also failed: %v\n", symErr(), rerr)
-				fmt.Printf("  %s  you may need to clean up manually before retrying.\n", symWarn())
+				fmt.Printf("  %s  cleanup also failed: %v\n", cfg.Style.SymErr, rerr)
+				fmt.Printf("  %s  you may need to clean up manually before retrying.\n", cfg.Style.SymWarn)
 			} else {
-				fmt.Printf("  %s  cleanup done. Run `alps repo install %s` to reinstall.\n", symOK(), e.Name)
+				fmt.Printf("  %s  cleanup done. Run `alps repo install %s` to reinstall.\n", cfg.Style.SymOK, e.Name)
 			}
 		} else {
-			fmt.Printf("  %s  no remove_cmd defined — cannot auto-cleanup. Check manually.\n", symWarn())
+			fmt.Printf("  %s  no remove_cmd defined — cannot auto-cleanup. Check manually.\n", cfg.Style.SymWarn)
 		}
 		return err
 	}
@@ -436,6 +483,9 @@ func runUpgrade(e *Entry) error {
 }
 
 func ensureSudo() error {
+	if isTermux() {
+		return nil // Termux owns its prefix — no privilege escalation needed
+	}
 	return priv.Ensure()
 }
 
@@ -456,46 +506,22 @@ func runLines(lines []string) error {
 	return nil
 }
 
-// --- tty-aware helpers ---
-
-func isTTY() bool {
-	term := os.Getenv("TERM")
-	return term == "linux" || term == "dumb" || term == ""
+// isTermux returns true when running inside Termux on Android.
+func isTermux() bool {
+	return os.Getenv("TERMUX_VERSION") != "" ||
+		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
 }
 
-func symUpgrade() string {
-	if isTTY() {
-		return "->"
+// isWSL returns true when running inside Windows Subsystem for Linux.
+func isWSL() bool {
+	if os.Getenv("WSL_DISTRO_NAME") != "" || os.Getenv("WSL_INTEROP") != "" {
+		return true
 	}
-	return "↑"
-}
-
-func symReinstall() string {
-	if isTTY() {
-		return ">>"
+	if data, err := os.ReadFile("/proc/version"); err == nil {
+		lower := strings.ToLower(string(data))
+		return strings.Contains(lower, "microsoft") || strings.Contains(lower, "wsl")
 	}
-	return "⟳"
-}
-
-func symOK() string {
-	if isTTY() {
-		return "ok"
-	}
-	return "✓"
-}
-
-func symErr() string {
-	if isTTY() {
-		return "!!"
-	}
-	return "✗"
-}
-
-func symWarn() string {
-	if isTTY() {
-		return "!!"
-	}
-	return "⚠"
+	return false
 }
 
 func splitTrim(s string) []string {
@@ -536,6 +562,11 @@ func normalizeArch(goarch string) string {
 }
 
 func detectDistro() (id string, idLike []string) {
+	// Termux has no /etc/os-release — it is its own environment
+	if isTermux() {
+		return "termux", []string{"termux"}
+	}
+
 	data, err := os.ReadFile("/etc/os-release")
 	if err != nil {
 		return "unknown", nil
@@ -548,6 +579,11 @@ func detectDistro() (id string, idLike []string) {
 			raw := strings.Trim(line[8:], `"'`)
 			idLike = strings.Fields(raw)
 		}
+	}
+
+	// Inject "wsl" so entries with os=wsl explicitly match on WSL hosts
+	if isWSL() {
+		idLike = append(idLike, "wsl")
 	}
 	return
 }

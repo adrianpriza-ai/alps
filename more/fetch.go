@@ -10,13 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/adrianpriza-ai/alps/config"
 )
 
 const (
-	cacheDir     = "/var/cache/alps/more"
-	cacheFile    = "/var/cache/alps/more/main.txt"
-	lastSyncFile = "/var/cache/alps/more/last_sync"
-	expireDays   = 90
+	defaultCacheDir = "/var/cache/alps/more"
+	expireDays      = 90
 
 	primaryURL  = "https://adrianpriza-ai.github.io/alps-more/main.txt"
 	fallbackURL = "https://moreland.codeberg.page/alps-more/main.txt"
@@ -26,19 +26,58 @@ const (
 	retryDelay      = 2 * time.Second
 )
 
+// getCacheDir returns the cache directory, respecting Termux PREFIX.
+func getCacheDir() string {
+	if isTermux() {
+		prefix := os.Getenv("PREFIX")
+		if prefix == "" {
+			prefix = "/data/data/com.termux/files/usr"
+		}
+		return filepath.Join(prefix, "var/cache/alps/more")
+	}
+	return defaultCacheDir
+}
+
+func getCacheFile() string      { return filepath.Join(getCacheDir(), "main.txt") }
+func getLastSyncFile() string   { return filepath.Join(getCacheDir(), "last_sync") }
+func getInstalledFile() string  { return filepath.Join(getCacheDir(), "installed.json") }
+
+// ensureCacheDir creates the cache directory using sudo on Linux, directly on Termux.
+func ensureCacheDir() error {
+	dir := getCacheDir()
+	if isTermux() {
+		return os.MkdirAll(dir, 0755)
+	}
+	cmd := exec.Command("sudo", "mkdir", "-p", dir)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// writeCacheFile writes data to a cache path using sudo on Linux, directly on Termux.
+func writeCacheFile(path string, data []byte) error {
+	if isTermux() {
+		return os.WriteFile(path, data, 0644)
+	}
+	cmd := exec.Command("sudo", "tee", path)
+	cmd.Stdin = bytes.NewReader(data)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // CacheStatus returns whether cache exists and whether it is expired.
 func CacheStatus() (exists bool, expired bool) {
-	info, err := os.Stat(cacheFile)
+	info, err := os.Stat(getCacheFile())
 	if err != nil || info.Size() == 0 {
 		return false, true
 	}
 
-	// Validate cache content — must have at least one [package] header
 	if !isCacheValid() {
 		return false, true
 	}
 
-	data, err := os.ReadFile(lastSyncFile)
+	data, err := os.ReadFile(getLastSyncFile())
 	if err != nil {
 		return true, true
 	}
@@ -54,7 +93,7 @@ func CacheStatus() (exists bool, expired bool) {
 
 // isCacheValid checks that main.txt contains at least one valid [package] entry.
 func isCacheValid() bool {
-	data, err := os.ReadFile(cacheFile)
+	data, err := os.ReadFile(getCacheFile())
 	if err != nil {
 		return false
 	}
@@ -70,11 +109,10 @@ func isCacheValid() bool {
 // FetchAndCache downloads main.txt and writes to cache.
 // Tries primary (GitHub) first with retries, falls back to Codeberg.
 // Validates content before overwriting existing cache.
-// Requires sudo (caller must ensure privilege).
-func FetchAndCache() error {
+func FetchAndCache(cfg *config.Config) error {
 	content, err := downloadWithRetry(primaryURL)
 	if err != nil {
-		fmt.Printf("  %s  Primary failed (%v), trying fallback...\n", symWarn(), err)
+		fmt.Printf("  %s  Primary failed (%v), trying fallback...\n", cfg.Style.SymWarn, err)
 		content, err = downloadWithRetry(fallbackURL)
 		if err != nil {
 			return fmt.Errorf("both sources failed: %w", err)
@@ -87,15 +125,15 @@ func FetchAndCache() error {
 		return fmt.Errorf("downloaded content is empty or invalid — cache not updated")
 	}
 
-	if err := sudoMkdir(cacheDir); err != nil {
+	if err := ensureCacheDir(); err != nil {
 		return fmt.Errorf("failed to create cache dir: %w", err)
 	}
-	if err := sudoWrite(cacheFile, content); err != nil {
+	if err := writeCacheFile(getCacheFile(), content); err != nil {
 		return fmt.Errorf("failed to write cache: %w", err)
 	}
 
 	ts := []byte(time.Now().Format(time.RFC3339))
-	if err := sudoWrite(lastSyncFile, ts); err != nil {
+	if err := writeCacheFile(getLastSyncFile(), ts); err != nil {
 		return fmt.Errorf("failed to write sync timestamp: %w", err)
 	}
 
@@ -104,7 +142,7 @@ func FetchAndCache() error {
 
 // ReadCache reads and validates the cached main.txt content.
 func ReadCache() ([]byte, error) {
-	data, err := os.ReadFile(cacheFile)
+	data, err := os.ReadFile(getCacheFile())
 	if err != nil {
 		return nil, fmt.Errorf("cache not found, run: alps repo update")
 	}
@@ -163,22 +201,7 @@ func hasValidEntries(data []byte) bool {
 	return false
 }
 
-func sudoMkdir(dir string) error {
-	cmd := exec.Command("sudo", "mkdir", "-p", dir)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func sudoWrite(path string, data []byte) error {
-	cmd := exec.Command("sudo", "tee", path)
-	cmd.Stdin = bytes.NewReader(data)
-	cmd.Stdout = io.Discard
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
 // CachePath returns the cache file path (for display purposes).
 func CachePath() string {
-	return filepath.Clean(cacheFile)
+	return filepath.Clean(getCacheFile())
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/adrianpriza-ai/alps/config"
@@ -27,8 +28,46 @@ func Generate(shell string, cfg *config.Config) {
 	}
 }
 
+// ── Environment detection ─────────────────────────────────────────
+
+func isTermux() bool {
+	return os.Getenv("TERMUX_VERSION") != "" ||
+		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
+}
+
+func isWSL() bool {
+	if os.Getenv("WSL_DISTRO_NAME") != "" || os.Getenv("WSL_INTEROP") != "" {
+		return true
+	}
+	if data, err := os.ReadFile("/proc/version"); err == nil {
+		lower := strings.ToLower(string(data))
+		return strings.Contains(lower, "microsoft") || strings.Contains(lower, "wsl")
+	}
+	return false
+}
+
+// cacheDir returns the alps-more cache directory for the current environment.
+func cacheDir() string {
+	if isTermux() {
+		prefix := os.Getenv("PREFIX")
+		if prefix == "" {
+			prefix = "/data/data/com.termux/files/usr"
+		}
+		return filepath.Join(prefix, "var/cache/alps/more")
+	}
+	return "/var/cache/alps/more"
+}
+
+// cacheFile returns the full path to main.txt in the cache.
+func cacheFile() string { return filepath.Join(cacheDir(), "main.txt") }
+
+// installedFile returns the full path to installed.json in the cache.
+func installedFile() string { return filepath.Join(cacheDir(), "installed.json") }
+
+// ── Backend detection ─────────────────────────────────────────────
+
 func detectBackend() string {
-	for _, b := range []string{"apt", "dnf", "pacman"} {
+	for _, b := range []string{"apt", "apt-get", "dnf", "pacman"} {
 		if _, err := exec.LookPath(b); err == nil {
 			return b
 		}
@@ -43,7 +82,7 @@ func pkgListCmd(backend string) string {
 		return "pacman -Ssq 2>/dev/null"
 	case "dnf":
 		return "dnf repoquery --quiet --qf '%{name}' 2>/dev/null"
-	default: // apt
+	default: // apt / apt-get
 		return "apt-cache pkgnames 2>/dev/null"
 	}
 }
@@ -55,9 +94,25 @@ func installedListCmd(backend string) string {
 		return "pacman -Qq 2>/dev/null"
 	case "dnf":
 		return "dnf list --installed --quiet 2>/dev/null | awk 'NR>1{print $1}'"
-	default: // apt
+	default: // apt / apt-get
 		return "dpkg --get-selections 2>/dev/null | awk '{print $1}'"
 	}
+}
+
+// moreListCmd returns a POSIX-compatible shell snippet that lists
+// all package names from the alps-more main.txt cache.
+// Uses tr+grep instead of grep -oP (PCRE unavailable on some systems / Termux).
+func moreListCmd(path string) string {
+	return fmt.Sprintf(
+		`grep '^\[' %s 2>/dev/null | tr -d '[]'`,
+		path,
+	)
+}
+
+// moreInstalledCmd returns a shell snippet that lists packages
+// installed via alps-more (from installed.json).
+func moreInstalledCmd(path string) string {
+	return fmt.Sprintf(`jq -r 'keys[]' %s 2>/dev/null`, path)
 }
 
 // ── Fish ──────────────────────────────────────────────────────────
@@ -65,6 +120,8 @@ func installedListCmd(backend string) string {
 func genFish(cmds []string, backend string) {
 	pkgList := pkgListCmd(backend)
 	installedList := installedListCmd(backend)
+	morePkgs := moreListCmd(cacheFile())
+	moreInstalled := moreInstalledCmd(installedFile())
 
 	fmt.Println("# alps fish completion")
 	fmt.Println("# Install: alps completion fish > ~/.config/fish/completions/alps.fish")
@@ -78,36 +135,36 @@ func genFish(cmds []string, backend string) {
 	}
 
 	fmt.Printf(`
-# repo subcommands
-complete -c alps -n '__fish_seen_subcommand_from repo' -a 'update list install remove search upgrade' -d 'repo subcommand'
+# ── repo subcommands ─────────────────────────────────────────────
+complete -c alps -n '__fish_seen_subcommand_from repo' \
+    -a 'update list install remove purge search upgrade' -d 'repo subcommand'
 
-# aur subcommands
-complete -c alps -n '__fish_seen_subcommand_from aur' -a 'install search list clean' -d 'aur subcommand'
-
-# flatpak subcommands
-complete -c alps -n '__fish_seen_subcommand_from flatpak' -a 'install remove search list update' -d 'flatpak subcommand'
-
-# snap subcommands
-complete -c alps -n '__fish_seen_subcommand_from snap' -a 'install remove search list update' -d 'snap subcommand'
-
-# alps-more package completion (live from cache)
-complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install' \
-    -a "(grep -oP '(?<=\[)[^\]]+' /var/cache/alps/more/main.txt 2>/dev/null)" -d 'alps-more package'
-complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove' \
-    -a "(grep -oP '(?<=\[)[^\]]+' /var/cache/alps/more/main.txt 2>/dev/null)" -d 'alps-more package'
-complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from search' \
-    -a "(grep -oP '(?<=\[)[^\]]+' /var/cache/alps/more/main.txt 2>/dev/null)" -d 'alps-more package'
+# repo install/remove/search/purge: complete from alps-more cache
+complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install search' \
+    -a "(%s)" -d 'alps-more package'
+complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove purge' \
+    -a "(%s)" -d 'installed alps-more package'
 complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from upgrade' \
-    -a "(jq -r 'keys[]' /var/cache/alps/more/installed.json 2>/dev/null)" -d 'installed package'
+    -a "(%s)" -d 'installed alps-more package'
 
-# Available package completion for install/search
+# ── aur subcommands ───────────────────────────────────────────────
+complete -c alps -n '__fish_seen_subcommand_from aur' \
+    -a 'install search list clean' -d 'aur subcommand'
+
+# ── flatpak subcommands ───────────────────────────────────────────
+complete -c alps -n '__fish_seen_subcommand_from flatpak' \
+    -a 'install remove search list update' -d 'flatpak subcommand'
+
+# ── snap subcommands ──────────────────────────────────────────────
+complete -c alps -n '__fish_seen_subcommand_from snap' \
+    -a 'install remove search list update' -d 'snap subcommand'
+
+# ── package completion ────────────────────────────────────────────
 complete -c alps -n '__fish_seen_subcommand_from install search' \
-    -a '(%s)' -d 'package'
-
-# Installed package completion for remove/purge
+    -a "(%s)" -d 'package'
 complete -c alps -n '__fish_seen_subcommand_from remove purge' \
-    -a '(%s)' -d 'installed'
-`, pkgList, installedList)
+    -a "(%s)" -d 'installed package'
+`, morePkgs, moreInstalled, moreInstalled, pkgList, installedList)
 }
 
 // ── Bash ──────────────────────────────────────────────────────────
@@ -116,6 +173,8 @@ func genBash(cmds []string, backend string) {
 	cmdList := strings.Join(cmds, " ")
 	pkgList := pkgListCmd(backend)
 	installedList := installedListCmd(backend)
+	morePkgs := moreListCmd(cacheFile())
+	moreInstalled := moreInstalledCmd(installedFile())
 
 	fmt.Printf(`# alps bash completion
 # Install: alps completion bash > /etc/bash_completion.d/alps
@@ -141,14 +200,17 @@ _alps_completions() {
             ;;
         repo)
             case "${words[2]}" in
-                install|remove|search)
-                    COMPREPLY=($(compgen -W "$(grep -oP '(?<=\[)[^\]]+' /var/cache/alps/more/main.txt 2>/dev/null)" -- "$cur"))
+                install|search)
+                    COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
+                    ;;
+                remove|purge)
+                    COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
                     ;;
                 upgrade)
-                    COMPREPLY=($(compgen -W "$(jq -r 'keys[]' /var/cache/alps/more/installed.json 2>/dev/null)" -- "$cur"))
+                    COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
                     ;;
                 *)
-                    COMPREPLY=($(compgen -W "update list install remove search upgrade" -- "$cur"))
+                    COMPREPLY=($(compgen -W "update list install remove purge search upgrade" -- "$cur"))
                     ;;
             esac
             ;;
@@ -156,7 +218,7 @@ _alps_completions() {
 }
 
 complete -F _alps_completions alps
-`, cmdList, pkgList, installedList)
+`, cmdList, pkgList, installedList, morePkgs, moreInstalled, moreInstalled)
 }
 
 // ── Zsh ───────────────────────────────────────────────────────────
@@ -169,6 +231,8 @@ func genZsh(cmds []string, backend string) {
 
 	pkgList := pkgListCmd(backend)
 	installedList := installedListCmd(backend)
+	morePkgs := moreListCmd(cacheFile())
+	moreInstalled := moreInstalledCmd(installedFile())
 
 	fmt.Printf(`#compdef alps
 # alps zsh completion
@@ -204,18 +268,24 @@ _alps() {
                     ;;
                 repo)
                     case ${words[3]} in
-                        install|remove|search)
+                        install|search)
                             local morepkgs
-                            morepkgs=(${(f)"$(grep -oP '(?<=\[)[^\]]+' /var/cache/alps/more/main.txt 2>/dev/null)"})
+                            morepkgs=(${(f)"$(%s)"})
                             _describe 'alps-more package' morepkgs
+                            ;;
+                        remove|purge)
+                            local moreinst
+                            moreinst=(${(f)"$(%s)"})
+                            _describe 'installed alps-more package' moreinst
                             ;;
                         upgrade)
                             local instpkgs
-                            instpkgs=(${(f)"$(jq -r 'keys[]' /var/cache/alps/more/installed.json 2>/dev/null)"})
-                            _describe 'installed package' instpkgs
+                            instpkgs=(${(f)"$(%s)"})
+                            _describe 'installed alps-more package' instpkgs
                             ;;
                         *)
-                            _describe 'repo subcommand' '(update list install remove search upgrade)'
+                            _describe 'repo subcommand' \
+                                '(update list install remove purge search upgrade)'
                             ;;
                     esac
                     ;;
@@ -225,8 +295,12 @@ _alps() {
 }
 
 _alps
-`, strings.Join(cmdList, "\n                "), pkgList, installedList)
+`, strings.Join(cmdList, "\n                "),
+		pkgList, installedList,
+		morePkgs, moreInstalled, moreInstalled)
 }
+
+// ── Command metadata ──────────────────────────────────────────────
 
 func cmdDesc(cmd string) string {
 	descs := map[string]string{
@@ -241,7 +315,7 @@ func cmdDesc(cmd string) string {
 		"snap":         "manage snap packages",
 		"install":      "install package",
 		"remove":       "remove package",
-		"purge":        "purge package",
+		"purge":        "purge package and config",
 		"update":       "update package lists",
 		"upgrade":      "upgrade packages",
 		"full-upgrade": "full system upgrade",
@@ -270,6 +344,7 @@ func cmdDesc(cmd string) string {
 	return cmd
 }
 
+// effectiveCmds returns the command list for this distro/environment.
 func effectiveCmds(cfg *config.Config) []string {
 	base := []string{
 		"help", "aliases", "config-show", "version", "repo", "flatpak",
@@ -278,55 +353,70 @@ func effectiveCmds(cfg *config.Config) []string {
 		"autoremove", "autoclean", "clean",
 	}
 
-	// Add distro-specific subcommands
+	// Termux: no AUR, no snap
+	if isTermux() {
+		return applyAliasFilter(base, cfg)
+	}
+
 	distro := detectDistroID()
+
+	// Arch-based: add aur
 	switch distro {
-	case "arch", "manjaro", "endeavouros", "garuda":
+	case "arch", "manjaro", "endeavouros", "garuda", "artix":
 		base = append(base, "aur")
-	case "ubuntu", "debian", "linuxmint", "pop", "elementary":
+	// Debian/Ubuntu-based: add snap if available
+	case "ubuntu", "debian", "linuxmint", "pop", "elementary", "kali":
 		if isSnapAvailable() {
 			base = append(base, "snap")
 		}
-	}
-
-	// Add flatpak if installed
-	if _, err := exec.LookPath("flatpak"); err == nil {
-		// already in base
-	}
-
-	if hasCustomAliases(cfg) {
-		cmds := []string{}
-		for _, b := range base {
-			// keep non-package commands
-			switch b {
-			case "help", "aliases", "config-show", "version", "repo", "aur", "flatpak", "snap":
-				cmds = append(cmds, b)
-			}
+	// WSL: snap usually blocked, skip silently; no aur
+	default:
+		if isWSL() {
+			// no extra subcommands for WSL specifically
 		}
-		for k := range cfg.Aliases {
-			cmds = append(cmds, k)
-		}
-		return cmds
 	}
 
-	return base
+	return applyAliasFilter(base, cfg)
+}
+
+// applyAliasFilter returns base commands, replacing package commands with
+// active aliases when the user has custom aliases configured.
+func applyAliasFilter(base []string, cfg *config.Config) []string {
+	if !hasCustomAliases(cfg) {
+		return base
+	}
+	cmds := []string{}
+	for _, b := range base {
+		switch b {
+		case "help", "aliases", "config-show", "version", "repo", "aur", "flatpak", "snap":
+			cmds = append(cmds, b)
+		}
+	}
+	for k := range cfg.Aliases {
+		cmds = append(cmds, k)
+	}
+	return cmds
 }
 
 // detectDistroID reads /etc/os-release ID field.
+// Returns "termux" on Termux where the file does not exist.
 func detectDistroID() string {
+	if isTermux() {
+		return "termux"
+	}
 	data, err := os.ReadFile("/etc/os-release")
 	if err != nil {
 		return ""
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasPrefix(line, "ID=") {
-			return strings.Trim(line[3:], `"'`)
+			return strings.ToLower(strings.Trim(line[3:], `"'`))
 		}
 	}
 	return ""
 }
 
-// isSnapAvailable checks if snap is usable.
+// isSnapAvailable checks if snap is usable on this system.
 func isSnapAvailable() bool {
 	if _, err := exec.LookPath("snap"); err != nil {
 		return false

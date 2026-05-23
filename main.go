@@ -563,7 +563,7 @@ func runRepo(args []string, cfg *config.Config) {
 	ui.PrintHeader(cfg)
 
 	if len(args) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps repo <update|list|install|remove|search|upgrade> [package]")
+		ui.Msg(cfg, ui.LevelError, "Usage: alps repo <update|list|install|remove|purge|search|upgrade> [package]")
 		os.Exit(1)
 	}
 
@@ -578,14 +578,14 @@ func runRepo(args []string, cfg *config.Config) {
 			ui.Msg(cfg, ui.LevelError, "sudo authentication failed")
 			os.Exit(1)
 		}
-		if err := more.FetchAndCache(); err != nil {
+		if err := more.FetchAndCache(cfg); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "update failed: %v", err)
 			os.Exit(1)
 		}
 		ui.Msgf(cfg, ui.LevelOK, "Repo updated. Cache: %s", more.CachePath())
 
 	case "list":
-		entries, err := more.List()
+		entries, err := more.List(cfg)
 		if err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
@@ -614,7 +614,7 @@ func runRepo(args []string, cfg *config.Config) {
 			os.Exit(1)
 		}
 		pkgName := rest[0]
-		entry, err := more.Find(pkgName)
+		entry, err := more.Find(pkgName, cfg)
 		if err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
@@ -643,14 +643,11 @@ func runRepo(args []string, cfg *config.Config) {
 			fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
 		}
 
+		fmt.Println()
 		if len(entry.RemoveLines) > 0 {
-			fmt.Println()
-			fmt.Printf("  %scleanup on failure:%s\n", cfg.Style.ColorBold, cfg.Style.ColorReset)
-			for _, line := range entry.RemoveLines {
-				fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
-			}
+			fmt.Printf("  %s%s  auto-cleanup on failure: enabled%s\n",
+				cfg.Style.ColorDim, cfg.Style.SymOK, cfg.Style.ColorReset)
 		} else {
-			fmt.Println()
 			fmt.Printf("  %s%s  no remove_cmd — cannot auto-cleanup if install fails%s\n",
 				cfg.Style.ColorWarning, cfg.Style.SymWarn, cfg.Style.ColorReset)
 		}
@@ -663,7 +660,7 @@ func runRepo(args []string, cfg *config.Config) {
 		}
 
 		fmt.Println()
-		if err := more.Install(entry); err != nil {
+		if err := more.Install(entry, cfg); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
 		}
@@ -675,7 +672,7 @@ func runRepo(args []string, cfg *config.Config) {
 			os.Exit(1)
 		}
 		pkgName := rest[0]
-		entry, err := more.Find(pkgName)
+		entry, err := more.Find(pkgName, cfg)
 		if err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
@@ -695,12 +692,65 @@ func runRepo(args []string, cfg *config.Config) {
 		}
 
 		fmt.Println()
-		if err := more.Remove(entry); err != nil {
+		if err := more.Remove(entry, cfg); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
 		}
 		if err := more.UnmarkInstalled(pkgName); err != nil {
 			ui.Msgf(cfg, ui.LevelWarn, "removed but failed to update state: %v", err)
+		}
+		ui.Msg(cfg, ui.LevelOK, "Done.")
+
+	case "purge":
+		if len(rest) == 0 {
+			ui.Msg(cfg, ui.LevelError, "Usage: alps repo purge <package>")
+			os.Exit(1)
+		}
+		pkgName := rest[0]
+		entry, err := more.Find(pkgName, cfg)
+		if err != nil {
+			ui.Msgf(cfg, ui.LevelError, "%v", err)
+			os.Exit(1)
+		}
+
+		_, isInstalled := more.GetInstalled(pkgName)
+		if !isInstalled {
+			ui.Msgf(cfg, ui.LevelError, "package %q is not installed via alps-more", pkgName)
+			os.Exit(1)
+		}
+
+		ui.Msgf(cfg, ui.LevelWarn, "Purge %s%s%s? This removes the package AND its config/data files.",
+			cfg.Style.ColorBold, entry.Name, cfg.Style.ColorReset+cfg.Style.ColorWarning)
+		fmt.Println()
+
+		if len(entry.RemoveLines) > 0 {
+			fmt.Printf("  %sremove:%s\n", cfg.Style.ColorBold, cfg.Style.ColorReset)
+			for _, line := range entry.RemoveLines {
+				fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
+			}
+			fmt.Println()
+		}
+		if len(entry.PurgeLines) > 0 {
+			fmt.Printf("  %spurge:%s\n", cfg.Style.ColorBold, cfg.Style.ColorReset)
+			for _, line := range entry.PurgeLines {
+				fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
+			}
+		} else {
+			fmt.Printf("  %s%s  no purge_cmd defined — only remove will run%s\n",
+				cfg.Style.ColorDim, cfg.Style.SymWarn, cfg.Style.ColorReset)
+		}
+
+		fmt.Print(cfg.Style.ColorReset)
+		fmt.Println()
+		if !ui.Confirm() {
+			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
+			return
+		}
+
+		fmt.Println()
+		if err := more.Purge(pkgName, cfg); err != nil {
+			ui.Msgf(cfg, ui.LevelError, "%v", err)
+			os.Exit(1)
 		}
 		ui.Msg(cfg, ui.LevelOK, "Done.")
 
@@ -710,7 +760,7 @@ func runRepo(args []string, cfg *config.Config) {
 			os.Exit(1)
 		}
 		query := strings.Join(rest, " ")
-		results, err := more.Search(query)
+		results, err := more.Search(query, cfg)
 		if err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
@@ -730,13 +780,13 @@ func runRepo(args []string, cfg *config.Config) {
 			// No package name → upgrade all
 			ui.Msg(cfg, ui.LevelInfo, "Checking alps-more packages for updates...")
 			fmt.Println()
-			if err := more.UpgradeAll(); err != nil {
+			if err := more.UpgradeAll(cfg); err != nil {
 				ui.Msgf(cfg, ui.LevelError, "%v", err)
 				os.Exit(1)
 			}
 		} else {
 			pkgName := rest[0]
-			if err := more.Upgrade(pkgName); err != nil {
+			if err := more.Upgrade(pkgName, cfg); err != nil {
 				ui.Msgf(cfg, ui.LevelError, "%v", err)
 				os.Exit(1)
 			}
@@ -1106,17 +1156,37 @@ func runSnap(args []string, cfg *config.Config) {
 	}
 }
 
+// isTermux returns true when running inside Termux on Android.
+func isTermux() bool {
+	return os.Getenv("TERMUX_VERSION") != "" ||
+		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
+}
+
 // printDiagnostic shows a quick system overview when alps is run with no args.
 func printDiagnostic(cfg *config.Config) {
 	ui.PrintHeader(cfg)
 
 	// Distro
-	distro := "unknown"
-	if data, err := os.ReadFile("/etc/os-release"); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "PRETTY_NAME=") {
-				distro = strings.Trim(line[12:], `"'`)
-				break
+	var distro string
+	if isTermux() {
+		distro = "Termux"
+		if v := os.Getenv("TERMUX_VERSION"); v != "" {
+			distro = "Termux " + v
+		}
+		// Append Android version if available via getprop
+		if out, err := exec.Command("getprop", "ro.build.version.release").Output(); err == nil {
+			if v := strings.TrimSpace(string(out)); v != "" {
+				distro += " (Android " + v + ")"
+			}
+		}
+	} else {
+		distro = "unknown"
+		if data, err := os.ReadFile("/etc/os-release"); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(line, "PRETTY_NAME=") {
+					distro = strings.Trim(line[12:], `"'`)
+					break
+				}
 			}
 		}
 	}
@@ -1131,16 +1201,18 @@ func printDiagnostic(cfg *config.Config) {
 	installed, _ := more.ReadInstalled()
 	moreCount := len(installed)
 
-	// Extras
+	// Extras — snap/yay are not relevant on Termux
 	extras := []string{}
-	if _, err := exec.LookPath("flatpak"); err == nil {
-		extras = append(extras, "flatpak")
-	}
-	if _, err := exec.LookPath("snap"); err == nil {
-		extras = append(extras, "snap")
-	}
-	if _, err := exec.LookPath("yay"); err == nil {
-		extras = append(extras, "yay")
+	if !isTermux() {
+		if _, err := exec.LookPath("flatpak"); err == nil {
+			extras = append(extras, "flatpak")
+		}
+		if _, err := exec.LookPath("snap"); err == nil {
+			extras = append(extras, "snap")
+		}
+		if _, err := exec.LookPath("yay"); err == nil {
+			extras = append(extras, "yay")
+		}
 	}
 
 	dim := cfg.Style.ColorDim
