@@ -212,7 +212,22 @@ jobs:
 
           gzip -kf dists/stable/main/binary-all/Packages
           
-          apt-ftparchive release dists/stable > dists/stable/Release
+          cat > apt.conf <<EOF
+          APT::FTPArchive::Release {
+            Origin "ALPS";
+            Label "ALPS";
+            Suite "stable";
+            Codename "stable";
+            Architectures "amd64 all";
+            Components "main";
+            Description "ALPS APT Repository";
+          };
+          EOF
+
+          apt-ftparchive \
+          -c apt.conf \
+          release dists/stable \
+          > dists/stable/Release
 
       - name: Push APT repository
         run: |
