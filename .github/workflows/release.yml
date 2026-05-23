@@ -35,10 +35,6 @@ jobs:
           sudo apt update
           sudo apt install -y dpkg-dev apt-utils
 
-      - name: Clean old package dir
-        run: |
-          rm -rf pkg repo
-
       - name: Build binaries
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
@@ -58,82 +54,28 @@ jobs:
             -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-armv7 .
 
-      - name: Create package structure
-        run: |
-          mkdir -p pkg/usr/local/bin
-
-          mkdir -p pkg/usr/share/fish/vendor_completions.d
-          mkdir -p pkg/usr/share/bash-completion/completions
-          mkdir -p pkg/usr/share/zsh/site-functions
-
-          mkdir -p pkg/etc/apt/sources.list.d
-          mkdir -p pkg/DEBIAN
-
-      - name: Generate completions
-        run: |
-          ./alps-linux-amd64 completion fish \
-            > pkg/usr/share/fish/vendor_completions.d/alps.fish
-
-          ./alps-linux-amd64 completion bash \
-            > pkg/usr/share/bash-completion/completions/alps
-
-          ./alps-linux-amd64 completion zsh \
-            > pkg/usr/share/zsh/site-functions/_alps
-
-      - name: Copy binary
-        run: |
-          cp alps-linux-amd64 pkg/usr/local/bin/alps
-
-      - name: Add apt repository config
-        run: |
-          echo "deb [trusted=yes] https://adrianpriza-ai.github.io/alps-apt stable main" \
-            > pkg/etc/apt/sources.list.d/alps.list
-
-      - name: Create DEBIAN control
-        run: |
-          TAG=${{ inputs.tag || github.ref_name }}
-
-          cat > pkg/DEBIAN/control <<EOF
-          Package: alps
-          Version: ${TAG#v}
-          Section: utils
-          Priority: optional
-          Architecture: amd64
-          Maintainer: adrianpriza-ai
-          Description: Advanced Linux Package System
-          EOF
-
-      - name: Create postinst
-        run: |
-          cat > pkg/DEBIAN/postinst <<EOF
-          #!/bin/sh
-
-          apt update || true
-
-          exit 0
-          EOF
-
-          chmod 755 pkg/DEBIAN/postinst
+          # Termux (Android) — same Linux kernel, same archs, separate labels
+          cp alps-linux-amd64  alps-termux-x86_64
+          cp alps-linux-arm64  alps-termux-aarch64
+          cp alps-linux-armv7  alps-termux-arm
 
       - name: Build .deb packages
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
 
-          for ARCH in amd64 arm64 armv7
-          do
+          for ARCH in amd64 arm64 armv7; do
             rm -rf pkg
 
             mkdir -p pkg/usr/local/bin
-
             mkdir -p pkg/usr/share/fish/vendor_completions.d
             mkdir -p pkg/usr/share/bash-completion/completions
             mkdir -p pkg/usr/share/zsh/site-functions
-
             mkdir -p pkg/etc/apt/sources.list.d
             mkdir -p pkg/DEBIAN
 
             cp alps-linux-$ARCH pkg/usr/local/bin/alps
 
+            # Always generate completions from the amd64 binary (runs on this runner)
             ./alps-linux-amd64 completion fish \
               > pkg/usr/share/fish/vendor_completions.d/alps.fish
 
@@ -147,7 +89,6 @@ jobs:
               > pkg/etc/apt/sources.list.d/alps.list
 
             DEBARCH=$ARCH
-
             if [ "$ARCH" = "armv7" ]; then
               DEBARCH="armhf"
             fi
@@ -164,16 +105,15 @@ jobs:
 
             cat > pkg/DEBIAN/postinst <<EOF
           #!/bin/sh
-
           apt update || true
-
           exit 0
           EOF
-
             chmod 755 pkg/DEBIAN/postinst
 
             dpkg-deb --build pkg alps_${TAG#v}_$DEBARCH.deb
           done
+
+          rm -rf pkg
 
       - name: Generate checksums
         run: |
@@ -181,6 +121,9 @@ jobs:
             alps-linux-amd64 \
             alps-linux-arm64 \
             alps-linux-armv7 \
+            alps-termux-aarch64 \
+            alps-termux-arm \
+            alps-termux-x86_64 \
             *.deb \
             > SHA256SUMS
 
@@ -198,36 +141,46 @@ jobs:
 
           mkdir -p pool/main
           mkdir -p dists/stable/main/binary-amd64
+          mkdir -p dists/stable/main/binary-arm64
+          mkdir -p dists/stable/main/binary-armhf
           mkdir -p dists/stable/main/binary-all
 
-          cp ../alps_${TAG#v}_amd64.deb \
-            pool/main/
+          cp ../alps_${TAG#v}_amd64.deb  pool/main/
+          cp ../alps_${TAG#v}_arm64.deb  pool/main/
+          cp ../alps_${TAG#v}_armhf.deb  pool/main/
 
-          dpkg-scanpackages pool /dev/null \
+          # Rebuild Packages index for each arch
+          dpkg-scanpackages --multiversion pool \
             > dists/stable/main/binary-amd64/Packages
-
           gzip -kf dists/stable/main/binary-amd64/Packages
 
-          touch dists/stable/main/binary-all/Packages
+          dpkg-scanpackages --multiversion pool \
+            > dists/stable/main/binary-arm64/Packages
+          gzip -kf dists/stable/main/binary-arm64/Packages
 
+          dpkg-scanpackages --multiversion pool \
+            > dists/stable/main/binary-armhf/Packages
+          gzip -kf dists/stable/main/binary-armhf/Packages
+
+          touch dists/stable/main/binary-all/Packages
           gzip -kf dists/stable/main/binary-all/Packages
-          
+
           cat > apt.conf <<EOF
           APT::FTPArchive::Release {
             Origin "ALPS";
             Label "ALPS";
             Suite "stable";
             Codename "stable";
-            Architectures "amd64 all";
+            Architectures "amd64 arm64 armhf all";
             Components "main";
             Description "ALPS APT Repository";
           };
           EOF
 
           apt-ftparchive \
-          -c apt.conf \
-          release dists/stable \
-          > dists/stable/Release
+            -c apt.conf \
+            release dists/stable \
+            > dists/stable/Release
 
       - name: Push APT repository
         run: |
@@ -254,6 +207,10 @@ jobs:
             alps-linux-amd64
             alps-linux-arm64
             alps-linux-armv7
+
+            alps-termux-aarch64
+            alps-termux-arm
+            alps-termux-x86_64
 
             *.deb
 
