@@ -37,7 +37,7 @@ jobs:
 
       - name: Clean old build files
         run: |
-          rm -rf pkg repo
+          rm -rf pkg repo completions
           rm -f *.deb
           rm -f SHA256SUMS
 
@@ -60,6 +60,19 @@ jobs:
             -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-armv7 .
 
+      - name: Generate completions
+        run: |
+          mkdir -p completions
+
+          ./alps-linux-amd64 completion fish \
+            > completions/alps.fish
+
+          ./alps-linux-amd64 completion bash \
+            > completions/alps.bash
+
+          ./alps-linux-amd64 completion zsh \
+            > completions/_alps
+
       - name: Build .deb packages
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
@@ -81,14 +94,14 @@ jobs:
             cp alps-linux-$ARCH \
               pkg/usr/local/bin/alps
 
-            ./alps-linux-amd64 completion fish \
-              > pkg/usr/share/fish/vendor_completions.d/alps.fish
+            cp completions/alps.fish \
+              pkg/usr/share/fish/vendor_completions.d/alps.fish
 
-            ./alps-linux-amd64 completion bash \
-              > pkg/usr/share/bash-completion/completions/alps
+            cp completions/alps.bash \
+              pkg/usr/share/bash-completion/completions/alps
 
-            ./alps-linux-amd64 completion zsh \
-              > pkg/usr/share/zsh/site-functions/_alps
+            cp completions/_alps \
+              pkg/usr/share/zsh/site-functions/_alps
 
             echo "deb [trusted=yes] https://adrianpriza-ai.github.io/alps-apt stable main" \
               > pkg/etc/apt/sources.list.d/alps.list
@@ -100,22 +113,22 @@ jobs:
             fi
 
             cat > pkg/DEBIAN/control <<EOF
-          Package: alps
-          Version: ${TAG#v}
-          Section: utils
-          Priority: optional
-          Architecture: $DEBARCH
-          Maintainer: adrianpriza-ai
-          Description: Advanced Linux Package System
-          EOF
+Package: alps
+Version: ${TAG#v}
+Section: utils
+Priority: optional
+Architecture: $DEBARCH
+Maintainer: adrianpriza-ai
+Description: Advanced Linux Package System
+EOF
 
             cat > pkg/DEBIAN/postinst <<EOF
-          #!/bin/sh
+#!/bin/sh
 
-          apt update || true
+apt update || true
 
-          exit 0
-          EOF
+exit 0
+EOF
 
             chmod 755 pkg/DEBIAN/postinst
 
@@ -171,14 +184,14 @@ jobs:
           gzip -kf dists/stable/main/binary-all/Packages
 
           cat > dists/stable/Release <<EOF
-          Origin: ALPS
-          Label: ALPS
-          Suite: stable
-          Codename: stable
-          Architectures: amd64 arm64 armhf all
-          Components: main
-          Description: ALPS APT Repository
-          EOF
+Origin: ALPS
+Label: ALPS
+Suite: stable
+Codename: stable
+Architectures: amd64 arm64 armhf all
+Components: main
+Description: ALPS APT Repository
+EOF
 
       - name: Push APT repository
         run: |
@@ -208,6 +221,9 @@ jobs:
 
             ### New
             - alps-more — better fallback and cleanup
+            - automatic APT repository support
+            - distro-aware shell completions
+            - multi-arch Debian packages
 
             ---
 
@@ -217,6 +233,15 @@ jobs:
             ---
 
             ### Install
+
+            **APT repository (recommended):**
+            ```bash
+            echo "deb [trusted=yes] https://adrianpriza-ai.github.io/alps-apt stable main" | \
+            sudo tee /etc/apt/sources.list.d/alps.list
+
+            sudo apt update
+            sudo apt install alps
+            ```
 
             **Build from source:**
             ```bash
@@ -236,8 +261,6 @@ jobs:
             - armv7
 
             depending on your architecture.
-
-            ---
 
           files: |
             alps-linux-amd64
