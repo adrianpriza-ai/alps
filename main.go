@@ -1166,15 +1166,16 @@ func isTermux() bool {
 func printDiagnostic(cfg *config.Config) {
 	ui.PrintHeader(cfg)
 
-	// Distro
 	var distro string
 	if isTermux() {
 		distro = "Termux"
 		if v := os.Getenv("TERMUX_VERSION"); v != "" {
 			distro = "Termux " + v
 		}
-		// Append Android version if available via getprop
-		if out, err := exec.Command("getprop", "ro.build.version.release").Output(); err == nil {
+
+		// FIX: Use absolute path to Android's native getprop binary
+		out, err := exec.Command("/system/bin/getprop", "ro.build.version.release").Output()
+		if err == nil {
 			if v := strings.TrimSpace(string(out)); v != "" {
 				distro += " (Android " + v + ")"
 			}
@@ -1191,17 +1192,14 @@ func printDiagnostic(cfg *config.Config) {
 		}
 	}
 
-	// Backend
 	backend := detectBackend()
 	if backend == "" {
 		backend = "none detected"
 	}
 
-	// alps-more installed count
 	installed, _ := more.ReadInstalled()
 	moreCount := len(installed)
 
-	// Extras — snap/yay are not relevant on Termux
 	extras := []string{}
 	if !isTermux() {
 		if _, err := exec.LookPath("flatpak"); err == nil {
