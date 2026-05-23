@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   release:
@@ -29,23 +30,18 @@ jobs:
         with:
           go-version: "1.22"
 
-      - name: Install tools
+      - name: Install packaging tools
         run: |
           sudo apt update
           sudo apt install -y dpkg-dev
 
-      - name: Clean
+      - name: Clean old package dir
         run: |
-          rm -rf pkg repo completions
-          rm -f *.deb
-          rm -f SHA256SUMS
+          rm -rf pkg repo
 
       - name: Build binaries
-        shell: bash
         run: |
-          set -e
-
-          TAG="${{ inputs.tag || github.ref_name }}"
+          TAG=${{ inputs.tag || github.ref_name }}
 
           GOOS=linux GOARCH=amd64 \
             go build \
@@ -62,91 +58,125 @@ jobs:
             -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-armv7 .
 
-      - name: Generate completions
-        shell: bash
+      - name: Create package structure
         run: |
-          set -e
+          mkdir -p pkg/usr/local/bin
 
-          mkdir -p completions
+          mkdir -p pkg/usr/share/fish/vendor_completions.d
+          mkdir -p pkg/usr/share/bash-completion/completions
+          mkdir -p pkg/usr/share/zsh/site-functions
 
-          chmod +x alps-linux-amd64
+          mkdir -p pkg/etc/apt/sources.list.d
+          mkdir -p pkg/DEBIAN
 
+      - name: Generate completions
+        run: |
           ./alps-linux-amd64 completion fish \
-            > completions/alps.fish
+            > pkg/usr/share/fish/vendor_completions.d/alps.fish
 
           ./alps-linux-amd64 completion bash \
-            > completions/alps.bash
+            > pkg/usr/share/bash-completion/completions/alps
 
           ./alps-linux-amd64 completion zsh \
-            > completions/_alps
+            > pkg/usr/share/zsh/site-functions/_alps
+
+      - name: Copy binary
+        run: |
+          cp alps-linux-amd64 pkg/usr/local/bin/alps
+
+      - name: Add apt repository config
+        run: |
+          echo "deb [trusted=yes] https://adrianpriza-ai.github.io/alps-apt stable main" \
+            > pkg/etc/apt/sources.list.d/alps.list
+
+      - name: Create DEBIAN control
+        run: |
+          TAG=${{ inputs.tag || github.ref_name }}
+
+          cat > pkg/DEBIAN/control <<EOF
+          Package: alps
+          Version: ${TAG#v}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: adrianpriza-ai
+          Description: Advanced Linux Package System
+          EOF
+
+      - name: Create postinst
+        run: |
+          cat > pkg/DEBIAN/postinst <<EOF
+          #!/bin/sh
+
+          apt update || true
+
+          exit 0
+          EOF
+
+          chmod 755 pkg/DEBIAN/postinst
 
       - name: Build .deb packages
-        shell: bash
         run: |
-          set -e
-
-          TAG="${{ inputs.tag || github.ref_name }}"
+          TAG=${{ inputs.tag || github.ref_name }}
 
           for ARCH in amd64 arm64 armv7
           do
             rm -rf pkg
 
             mkdir -p pkg/usr/local/bin
+
             mkdir -p pkg/usr/share/fish/vendor_completions.d
             mkdir -p pkg/usr/share/bash-completion/completions
             mkdir -p pkg/usr/share/zsh/site-functions
+
             mkdir -p pkg/etc/apt/sources.list.d
             mkdir -p pkg/DEBIAN
 
-            cp "alps-linux-$ARCH" \
-              pkg/usr/local/bin/alps
+            cp alps-linux-$ARCH pkg/usr/local/bin/alps
 
-            cp completions/alps.fish \
-              pkg/usr/share/fish/vendor_completions.d/alps.fish
+            ./alps-linux-amd64 completion fish \
+              > pkg/usr/share/fish/vendor_completions.d/alps.fish
 
-            cp completions/alps.bash \
-              pkg/usr/share/bash-completion/completions/alps
+            ./alps-linux-amd64 completion bash \
+              > pkg/usr/share/bash-completion/completions/alps
 
-            cp completions/_alps \
-              pkg/usr/share/zsh/site-functions/_alps
+            ./alps-linux-amd64 completion zsh \
+              > pkg/usr/share/zsh/site-functions/_alps
 
             echo "deb [trusted=yes] https://adrianpriza-ai.github.io/alps-apt stable main" \
               > pkg/etc/apt/sources.list.d/alps.list
 
-            DEBARCH="$ARCH"
+            DEBARCH=$ARCH
 
             if [ "$ARCH" = "armv7" ]; then
               DEBARCH="armhf"
             fi
 
             cat > pkg/DEBIAN/control <<EOF
-Package: alps
-Version: ${TAG#v}
-Section: utils
-Priority: optional
-Architecture: $DEBARCH
-Maintainer: adrianpriza-ai
-Description: Advanced Linux Package System
-EOF
+          Package: alps
+          Version: ${TAG#v}
+          Section: utils
+          Priority: optional
+          Architecture: $DEBARCH
+          Maintainer: adrianpriza-ai
+          Description: Advanced Linux Package System
+          EOF
 
             cat > pkg/DEBIAN/postinst <<EOF
-#!/bin/sh
-apt update || true
-exit 0
-EOF
+          #!/bin/sh
+
+          apt update || true
+
+          exit 0
+          EOF
 
             chmod 755 pkg/DEBIAN/postinst
 
-            dpkg-deb \
-              --build pkg \
-              "alps_${TAG#v}_${DEBARCH}.deb"
+            dpkg-deb --build pkg alps_${TAG#v}_$DEBARCH.deb
           done
 
       - name: Generate checksums
-        shell: bash
         run: |
-          set -e
-
           sha256sum \
             alps-linux-amd64 \
             alps-linux-arm64 \
@@ -155,65 +185,30 @@ EOF
             > SHA256SUMS
 
       - name: Clone APT repository
-        shell: bash
         run: |
-          set -e
-
           git clone \
             https://x-access-token:${{ secrets.REPO_TOKEN }}@github.com/adrianpriza-ai/alps-apt.git \
             repo
 
       - name: Update APT repository
-        shell: bash
         run: |
-          set -e
-
-          TAG="${{ inputs.tag || github.ref_name }}"
+          TAG=${{ inputs.tag || github.ref_name }}
 
           cd repo
 
           mkdir -p pool/main
-
           mkdir -p dists/stable/main/binary-amd64
-          mkdir -p dists/stable/main/binary-arm64
-          mkdir -p dists/stable/main/binary-armhf
-          mkdir -p dists/stable/main/binary-all
 
-          cp "../alps_${TAG#v}_amd64.deb" pool/main/
-          cp "../alps_${TAG#v}_arm64.deb" pool/main/
-          cp "../alps_${TAG#v}_armhf.deb" pool/main/
+          cp ../alps_${TAG#v}_amd64.deb \
+            pool/main/
 
           dpkg-scanpackages pool /dev/null \
             > dists/stable/main/binary-amd64/Packages
 
-          cp dists/stable/main/binary-amd64/Packages \
-            dists/stable/main/binary-arm64/Packages
-
-          cp dists/stable/main/binary-amd64/Packages \
-            dists/stable/main/binary-armhf/Packages
-
-          touch dists/stable/main/binary-all/Packages
-
           gzip -kf dists/stable/main/binary-amd64/Packages
-          gzip -kf dists/stable/main/binary-arm64/Packages
-          gzip -kf dists/stable/main/binary-armhf/Packages
-          gzip -kf dists/stable/main/binary-all/Packages
-
-          cat > dists/stable/Release <<EOF
-Origin: ALPS
-Label: ALPS
-Suite: stable
-Codename: stable
-Architectures: amd64 arm64 armhf all
-Components: main
-Description: ALPS APT Repository
-EOF
 
       - name: Push APT repository
-        shell: bash
         run: |
-          set -e
-
           cd repo
 
           git config user.name github-actions
@@ -221,9 +216,7 @@ EOF
 
           git add .
 
-          git commit \
-            -m "Release ${{ inputs.tag || github.ref_name }}" \
-            || true
+          git commit -m "Release ${{ inputs.tag || github.ref_name }}" || true
 
           git push
 
@@ -233,59 +226,13 @@ EOF
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
 
-          generate_release_notes: true
-
-          body: |
-            ## ALPS ${{ inputs.tag || github.ref_name }}
-
-            Public release of ALPS (Advanced Linux Package System).
-
-            ### New
-            - alps-more — better fallback and cleanup
-            - automatic APT repository support
-            - distro-aware shell completions
-            - multi-arch Debian packages
-
-            ---
-
-            ### Removed
-            - none
-
-            ---
-
-            ### Install
-
-            **APT repository (recommended):**
-            ```bash
-            echo "deb [trusted=yes] https://adrianpriza-ai.github.io/alps-apt stable main" | \
-            sudo tee /etc/apt/sources.list.d/alps.list
-
-            sudo apt update
-            sudo apt install alps
-            ```
-
-            **Build from source:**
-            ```bash
-            git clone https://github.com/adrianpriza-ai/alps
-            cd alps
-            make install
-            ```
-
-            **Pre-compiled binaries:**
-            ```bash
-            chmod +x alps-linux-amd64
-            sudo cp alps-linux-amd64 /usr/local/bin/alps
-            ```
-
-            Replace amd64 with:
-            - arm64
-            - armv7
-
-            depending on your architecture.
+          generate_release_notes: ${{ inputs.tag == '' }}
 
           files: |
             alps-linux-amd64
             alps-linux-arm64
             alps-linux-armv7
+
             *.deb
+
             SHA256SUMS
