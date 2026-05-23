@@ -35,9 +35,11 @@ jobs:
           sudo apt update
           sudo apt install -y dpkg-dev
 
-      - name: Clean old package dir
+      - name: Clean old build files
         run: |
           rm -rf pkg repo
+          rm -f *.deb
+          rm -f SHA256SUMS
 
       - name: Build binaries
         run: |
@@ -58,63 +60,6 @@ jobs:
             -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-armv7 .
 
-      - name: Create package structure
-        run: |
-          mkdir -p pkg/usr/local/bin
-
-          mkdir -p pkg/usr/share/fish/vendor_completions.d
-          mkdir -p pkg/usr/share/bash-completion/completions
-          mkdir -p pkg/usr/share/zsh/site-functions
-
-          mkdir -p pkg/etc/apt/sources.list.d
-          mkdir -p pkg/DEBIAN
-
-      - name: Generate completions
-        run: |
-          ./alps-linux-amd64 completion fish \
-            > pkg/usr/share/fish/vendor_completions.d/alps.fish
-
-          ./alps-linux-amd64 completion bash \
-            > pkg/usr/share/bash-completion/completions/alps
-
-          ./alps-linux-amd64 completion zsh \
-            > pkg/usr/share/zsh/site-functions/_alps
-
-      - name: Copy binary
-        run: |
-          cp alps-linux-amd64 pkg/usr/local/bin/alps
-
-      - name: Add apt repository config
-        run: |
-          echo "deb [trusted=yes] https://adrianpriza-ai.github.io/alps-apt stable main" \
-            > pkg/etc/apt/sources.list.d/alps.list
-
-      - name: Create DEBIAN control
-        run: |
-          TAG=${{ inputs.tag || github.ref_name }}
-
-          cat > pkg/DEBIAN/control <<EOF
-          Package: alps
-          Version: ${TAG#v}
-          Section: utils
-          Priority: optional
-          Architecture: amd64
-          Maintainer: adrianpriza-ai
-          Description: Advanced Linux Package System
-          EOF
-
-      - name: Create postinst
-        run: |
-          cat > pkg/DEBIAN/postinst <<EOF
-          #!/bin/sh
-
-          apt update || true
-
-          exit 0
-          EOF
-
-          chmod 755 pkg/DEBIAN/postinst
-
       - name: Build .deb packages
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
@@ -130,17 +75,19 @@ jobs:
             mkdir -p pkg/usr/share/zsh/site-functions
 
             mkdir -p pkg/etc/apt/sources.list.d
+
             mkdir -p pkg/DEBIAN
 
-            cp alps-linux-$ARCH pkg/usr/local/bin/alps
+            cp alps-linux-$ARCH \
+              pkg/usr/local/bin/alps
 
-            ./alps-linux-amd64 completion fish \
+            ./alps-linux-$ARCH completion fish \
               > pkg/usr/share/fish/vendor_completions.d/alps.fish
 
-            ./alps-linux-amd64 completion bash \
+            ./alps-linux-$ARCH completion bash \
               > pkg/usr/share/bash-completion/completions/alps
 
-            ./alps-linux-amd64 completion zsh \
+            ./alps-linux-$ARCH completion zsh \
               > pkg/usr/share/zsh/site-functions/_alps
 
             echo "deb [trusted=yes] https://adrianpriza-ai.github.io/alps-apt stable main" \
@@ -197,15 +144,41 @@ jobs:
           cd repo
 
           mkdir -p pool/main
-          mkdir -p dists/stable/main/binary-amd64
 
-          cp ../alps_${TAG#v}_amd64.deb \
-            pool/main/
+          mkdir -p dists/stable/main/binary-amd64
+          mkdir -p dists/stable/main/binary-arm64
+          mkdir -p dists/stable/main/binary-armhf
+          mkdir -p dists/stable/main/binary-all
+
+          cp ../alps_${TAG#v}_amd64.deb pool/main/
+          cp ../alps_${TAG#v}_arm64.deb pool/main/
+          cp ../alps_${TAG#v}_armhf.deb pool/main/
 
           dpkg-scanpackages pool /dev/null \
             > dists/stable/main/binary-amd64/Packages
 
+          cp dists/stable/main/binary-amd64/Packages \
+            dists/stable/main/binary-arm64/Packages
+
+          cp dists/stable/main/binary-amd64/Packages \
+            dists/stable/main/binary-armhf/Packages
+
+          touch dists/stable/main/binary-all/Packages
+
           gzip -kf dists/stable/main/binary-amd64/Packages
+          gzip -kf dists/stable/main/binary-arm64/Packages
+          gzip -kf dists/stable/main/binary-armhf/Packages
+          gzip -kf dists/stable/main/binary-all/Packages
+
+          cat > dists/stable/Release <<EOF
+          Origin: ALPS
+          Label: ALPS
+          Suite: stable
+          Codename: stable
+          Architectures: amd64 arm64 armhf all
+          Components: main
+          Description: ALPS APT Repository
+          EOF
 
       - name: Push APT repository
         run: |
@@ -226,7 +199,45 @@ jobs:
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
 
-          generate_release_notes: ${{ inputs.tag == '' }}
+          generate_release_notes: true
+
+          body: |
+            ## ALPS ${{ inputs.tag || github.ref_name }}
+
+            Public release of ALPS (Advanced Linux Package System).
+
+            ### New
+            - alps-more — better fallback and cleanup
+
+            ---
+
+            ### Removed
+            - none
+
+            ---
+
+            ### Install
+
+            **Build from source:**
+            ```bash
+            git clone https://github.com/adrianpriza-ai/alps
+            cd alps
+            make install
+            ```
+
+            **Pre-compiled binaries:**
+            ```bash
+            chmod +x alps-linux-amd64
+            sudo cp alps-linux-amd64 /usr/local/bin/alps
+            ```
+
+            Replace amd64 with:
+            - arm64
+            - armv7
+
+            depending on your architecture.
+
+            ---
 
           files: |
             alps-linux-amd64
