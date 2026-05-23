@@ -181,7 +181,7 @@ jobs:
             alps-linux-amd64 \
             alps-linux-arm64 \
             alps-linux-armv7 \
-            alps.deb \
+            *.deb \
             > SHA256SUMS
 
       - name: Clone APT repository
@@ -232,5 +232,7 @@ jobs:
             alps-linux-amd64
             alps-linux-arm64
             alps-linux-armv7
-            alps_*.deb
-            SHA256SUMS *
+
+            *.deb
+
+            SHA256SUMS
