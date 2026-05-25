@@ -664,19 +664,59 @@
       line-height: 1.6;
     }
 
+    /* ─── ARCH DETECT BAR ───────────────────────────── */
+    .dl-detect-bar {
+      padding: 13px 64px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-family: var(--f-mono);
+      font-size: 11px;
+      flex-wrap: wrap;
+    }
+
+    .dl-detect-label { color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; }
+    .dl-detect-arch  { color: var(--fg); font-weight: 500; letter-spacing: 0.1em; }
+    .dl-detect-note  { color: var(--muted); margin-left: 4px; }
+
+    .dl-arch-switcher {
+      display: flex;
+      gap: 0;
+      margin-left: auto;
+    }
+
+    .dl-arch-btn {
+      font-family: var(--f-mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 5px 13px;
+      border: 1px solid var(--border);
+      margin-left: -1px;
+      background: none;
+      color: var(--muted);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .dl-arch-btn.active { background: var(--fg); color: var(--bg); }
+    .dl-arch-btn:hover:not(.active) { background: var(--fg); color: var(--bg); opacity: 0.7; }
+
     .download-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-columns: repeat(4, 1fr);
       gap: 0;
     }
 
     .dl-tile {
       border-right: 1px solid var(--border);
-      padding: 52px 48px;
+      padding: 44px 36px;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      min-height: 340px;
+      min-height: 320px;
       position: relative;
     }
 
@@ -924,12 +964,15 @@
       .feat-tile:nth-child(2n) { border-right: none; }
 
       .install-section { grid-template-columns: 1fr; }
-      .install-left { padding: 48px 28px; border-right: none; border-bottom: 1px solid #222; }
+      .install-left { padding: 48px 28px; border-right: none; border-bottom: 1px solid #0A2A55; }
       .install-right { padding: 40px 28px; }
 
-      .download-grid { grid-template-columns: 1fr; }
-      .dl-tile { border-right: none; border-bottom: 1px solid var(--border); }
-      .dl-tile:last-child { border-bottom: none; }
+      .download-grid { grid-template-columns: 1fr 1fr; }
+      .dl-tile { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+      .dl-tile:nth-child(2n) { border-right: none; }
+      .dl-tile:nth-last-child(-n+2):not(:nth-child(2n - 1)) { border-bottom: none; }
+      .dl-tile:nth-last-child(-n+2) { border-bottom: none; }
+      .dl-detect-bar { padding: 12px 28px; }
 
       .links-section { grid-template-columns: 1fr 1fr; }
       .link-col:nth-child(2n) { border-right: none; }
@@ -948,6 +991,78 @@
       .features-grid { grid-template-columns: 1fr; }
       .links-section { grid-template-columns: 1fr; }
       .link-col { border-right: none; }
+      .download-grid { grid-template-columns: 1fr; }
+      .dl-tile { border-right: none !important; border-bottom: 1px solid var(--border) !important; }
+      .dl-tile:last-child { border-bottom: none !important; }
+      .hero-title { font-size: clamp(60px, 16vw, 96px); }
+      .hero-content-col { padding: 36px 24px; }
+      .hero-tagline { font-size: 14px; margin-bottom: 32px; }
+    }
+
+    /* ── 440px — minimum 410px support ─── */
+    @media (max-width: 440px) {
+      :root { --nav-h: 50px; }
+      nav { padding: 0 14px; }
+      .nav-brand { font-size: 18px; gap: 8px; }
+      .nav-brand-tag { display: none; }
+      .nav-links a { padding: 0 14px; }
+
+      .hero-image-col { height: 56vw; }
+      .hero-content-col { padding: 26px 16px 28px; }
+      .hero-title { font-size: clamp(42px, 11vw, 60px); line-height: 0.9; margin-bottom: 16px; }
+      .hero-eyebrow { font-size: 9.5px; letter-spacing: 0.1em; margin-bottom: 16px; gap: 8px; }
+      .hero-eyebrow::before { width: 16px; }
+      .hero-tagline { font-size: 12px; line-height: 1.6; margin-bottom: 22px; max-width: 100%; }
+      .hero-install-label { font-size: 9px; padding: 7px 12px; }
+      .hero-install-code { font-size: 10px; padding: 11px 12px; gap: 8px; overflow: hidden; }
+      .hero-install-code code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+      .copy-btn { font-size: 9px; padding: 4px 8px; }
+      .hero-bottom { gap: 12px; padding-top: 20px; flex-wrap: wrap; }
+      .hero-stat-num { font-size: 18px; }
+      .hero-stat-label { font-size: 9px; }
+      .hero-stat-sep { display: none; }
+
+      .what-left { padding: 32px 16px; }
+      .what-right { padding: 28px 16px; }
+      .what-headline { font-size: clamp(32px, 9vw, 52px); }
+      .feat-row { gap: 12px; padding: 18px 0; }
+      .feat-name { font-size: 13px; }
+      .feat-desc { font-size: 12px; }
+
+      .features-header { padding: 26px 16px 16px; }
+      .features-header-title { font-size: 30px; }
+      .feat-tile { padding: 22px 16px; gap: 10px; }
+      .feat-tile-name { font-size: 13px; }
+      .feat-tile-desc { font-size: 12px; }
+
+      .install-left { padding: 32px 16px; }
+      .install-right { padding: 26px 16px; }
+      .install-headline { font-size: clamp(38px, 10vw, 68px); }
+      .install-sub { font-size: 13px; }
+      .install-platforms { flex-wrap: wrap; gap: 4px; }
+      .platform-badge { font-size: 9px; padding: 6px 10px; margin-right: 0; }
+      .cmd-block { overflow: hidden; }
+      .cmd-body { font-size: 10.5px; padding: 12px; line-height: 1.8; overflow-x: auto; white-space: pre; }
+      .cmd-header { padding: 8px 12px; }
+      .cmd-method { font-size: 9px; }
+      .cmd-tag { font-size: 9px; }
+
+      .dl-tile { padding: 26px 16px; min-height: auto; }
+      .dl-ext { font-size: 48px; }
+      .download-header { padding: 26px 16px 16px; }
+      .download-header-title { font-size: 30px; }
+      .dl-detect-bar { padding: 10px 16px; font-size: 9.5px; gap: 8px; }
+      .dl-detect-note { display: none; }
+      .dl-arch-btn { font-size: 9px; padding: 4px 10px; }
+      .dl-name { font-size: 13px; }
+      .dl-desc { font-size: 11px; }
+      .dl-btn-inner { font-size: 10px; padding: 8px 14px; }
+
+      .link-col { padding: 26px 16px; }
+      .link-list a { font-size: 13px; }
+      footer { padding: 22px 16px; gap: 12px; }
+      .footer-brand { font-size: 15px; }
+      .footer-meta { font-size: 9.5px; }
     }
   </style>
 </head>
@@ -980,9 +1095,9 @@
           <span class="accent-char">A</span>LPS
         </h1>
         <p class="hero-tagline">
-          Stop remembering which command works on which distro. 
-          One unified interface for apt, dnf, pacman — with AUR, 
-          Snap, and Flatpak built in.
+          Stop remembering which command works on which distro.
+          One unified interface for apt, dnf, pacman — with AUR,
+          Snap, Flatpak, Android (Termux), and WSL built in.
         </p>
         <div class="hero-install-block">
           <div class="hero-install-label">Quick install</div>
@@ -994,18 +1109,18 @@
       </div>
       <div class="hero-bottom">
         <div class="hero-stat">
-          <span class="hero-stat-num">4</span>
+          <span class="hero-stat-num">4+</span>
           <span class="hero-stat-label">Backends</span>
+        </div>
+        <div class="hero-stat-sep"></div>
+        <div class="hero-stat">
+          <span class="hero-stat-num">Android</span>
+          <span class="hero-stat-label">+ WSL</span>
         </div>
         <div class="hero-stat-sep"></div>
         <div class="hero-stat">
           <span class="hero-stat-num">MIT</span>
           <span class="hero-stat-label">License</span>
-        </div>
-        <div class="hero-stat-sep"></div>
-        <div class="hero-stat">
-          <span class="hero-stat-num">Go</span>
-          <span class="hero-stat-label">1.22+</span>
         </div>
         <div class="hero-stat-sep"></div>
         <div class="hero-stat">
@@ -1029,6 +1144,8 @@
       <span class="marquee-item">Flatpak</span><span class="marquee-sep">/</span>
       <span class="marquee-item">Snap</span><span class="marquee-sep">/</span>
       <span class="marquee-item">alps-more</span><span class="marquee-sep">/</span>
+      <span class="marquee-item">Termux</span><span class="marquee-sep">/</span>
+      <span class="marquee-item">WSL</span><span class="marquee-sep">/</span>
       <!-- duplicate for seamless loop -->
       <span class="marquee-item">One tool</span><span class="marquee-sep">/</span>
       <span class="marquee-item">Every distro</span><span class="marquee-sep">/</span>
@@ -1040,6 +1157,8 @@
       <span class="marquee-item">Flatpak</span><span class="marquee-sep">/</span>
       <span class="marquee-item">Snap</span><span class="marquee-sep">/</span>
       <span class="marquee-item">alps-more</span><span class="marquee-sep">/</span>
+      <span class="marquee-item">Termux</span><span class="marquee-sep">/</span>
+      <span class="marquee-item">WSL</span><span class="marquee-sep">/</span>
     </div>
   </div>
 
@@ -1070,35 +1189,35 @@
         <span class="feat-idx">01</span>
         <div>
           <div class="feat-name">Auto-detects your package manager</div>
-          <div class="feat-desc">Reads /etc/os-release and selects the correct backend automatically on first run.</div>
+          <div class="feat-desc">Reads /etc/os-release and selects the correct backend automatically. Works on all distros including WSL — no config needed.</div>
         </div>
       </div>
       <div class="feat-row">
         <span class="feat-idx">02</span>
         <div>
           <div class="feat-name">Unified command surface</div>
-          <div class="feat-desc">Same commands everywhere: alps install, alps search, alps upgrade — regardless of distro.</div>
+          <div class="feat-desc">Same commands everywhere: alps install, alps search, alps upgrade — regardless of distro, WSL, or Termux on Android.</div>
         </div>
       </div>
       <div class="feat-row">
         <span class="feat-idx">03</span>
         <div>
-          <div class="feat-name">Privilege escalation without sudo</div>
-          <div class="feat-desc">Tries root &rarr; sudo &rarr; su in order. Works even on minimal systems with no sudo installed.</div>
+          <div class="feat-name">Android via Termux</div>
+          <div class="feat-desc">Full support on Android — no root, no sudo. Installs to $PREFIX/bin. alps-more cache lives at $PREFIX/var/cache/alps/more/.</div>
         </div>
       </div>
       <div class="feat-row">
         <span class="feat-idx">04</span>
         <div>
-          <div class="feat-name">Warns before dangerous operations</div>
-          <div class="feat-desc">Catches partial upgrades on Arch (pacman -Sy / -Su alone) before they cause breakage.</div>
+          <div class="feat-name">Privilege escalation without sudo</div>
+          <div class="feat-desc">Tries root → sudo → su in order. Works on minimal systems with no sudo. Termux needs no privilege escalation at all.</div>
         </div>
       </div>
       <div class="feat-row">
         <span class="feat-idx">05</span>
         <div>
-          <div class="feat-name">Fully customizable style</div>
-          <div class="feat-desc">Colors, symbols, header text, and aliases all configurable via ~/.config/alps/config.</div>
+          <div class="feat-name">Remove and purge support</div>
+          <div class="feat-desc">alps repo remove runs remove_begin. alps repo purge also deletes config and user data — mirrors apt remove vs apt purge.</div>
         </div>
       </div>
     </div>
@@ -1158,16 +1277,16 @@
 
       <div class="feat-tile">
         <div class="feat-tile-num">07</div>
-        <div class="feat-tile-icon">[TTY]</div>
-        <div class="feat-tile-name">TTY-Aware Output</div>
-        <div class="feat-tile-desc">Degrades gracefully on non-unicode terminals. Symbols fall back to ASCII. Colors respect TERM=dumb and TERM=linux.</div>
+        <div class="feat-tile-icon">[AND]</div>
+        <div class="feat-tile-name">Android &amp; WSL</div>
+        <div class="feat-tile-desc">Full Termux support — no root, no sudo, installs to $PREFIX. WSL entries can target os = wsl in alps-more. TTY-aware on both.</div>
       </div>
 
       <div class="feat-tile">
         <div class="feat-tile-num">08</div>
-        <div class="feat-tile-icon">[DIA]</div>
-        <div class="feat-tile-name">System Diagnostic</div>
-        <div class="feat-tile-desc">Running alps with no arguments prints a quick overview: detected backend, available extras, and installed alps-more count.</div>
+        <div class="feat-tile-icon">[TTY]</div>
+        <div class="feat-tile-name">TTY-Aware Output</div>
+        <div class="feat-tile-desc">Degrades gracefully on non-unicode terminals. Symbols fall back to ASCII. Colors respect TERM=dumb and TERM=linux.</div>
       </div>
 
     </div>
@@ -1188,6 +1307,8 @@
         <span class="platform-badge active">Ubuntu</span>
         <span class="platform-badge active">Debian</span>
         <span class="platform-badge active">Fedora</span>
+        <span class="platform-badge active">Android</span>
+        <span class="platform-badge active">WSL</span>
       </div>
     </div>
     <div class="install-right">
@@ -1228,6 +1349,19 @@
 
       <div class="cmd-block" style="margin-top: 1px;">
         <div class="cmd-header">
+          <span class="cmd-method">Termux — Android</span>
+          <span class="cmd-tag">no root needed</span>
+        </div>
+        <div class="cmd-body">
+          <span class="c"># installs to $PREFIX/bin — no sudo</span><br>
+          <span class="p">$</span> <span class="k">pkg install</span> golang git<br>
+          <span class="p">$</span> <span class="k">git clone</span> github.com/adrianpriza-ai/alps<br>
+          <span class="p">$</span> <span class="k">cd</span> alps &amp;&amp; <span class="k">make install</span>
+        </div>
+      </div>
+
+      <div class="cmd-block" style="margin-top: 1px;">
+        <div class="cmd-header">
           <span class="cmd-method">Shell completion</span>
           <span class="cmd-tag">fish / bash / zsh</span>
         </div>
@@ -1252,26 +1386,72 @@
         <h2 class="download-header-title">Pre-compiled binaries</h2>
       </div>
       <p class="download-note">
-        Native packages coming in a future release.<br>
-        Binaries for amd64, arm64, and armv7 available now via GitHub Releases.
+        .deb and Termux binaries available now.<br>
+        .rpm coming in a future release.
       </p>
     </div>
+
+    <!-- arch detect bar -->
+    <div class="dl-detect-bar">
+      <span class="dl-detect-label">Detected</span>
+      <span class="dl-detect-arch" id="dl-detected-label">amd64</span>
+      <span class="dl-detect-note">— click to override</span>
+      <div class="dl-arch-switcher">
+        <button class="dl-arch-btn" data-arch="amd64">amd64</button>
+        <button class="dl-arch-btn" data-arch="arm64">arm64</button>
+        <button class="dl-arch-btn" data-arch="armv7">armv7</button>
+      </div>
+    </div>
+
     <div class="download-grid">
 
-      <!-- .deb — coming soon -->
-      <div class="dl-tile coming-soon">
-        <span class="dl-coming-badge">Coming soon</span>
+      <!-- .deb — available -->
+      <div class="dl-tile available">
         <div class="dl-ext">.deb</div>
         <div>
           <div class="dl-name">Debian / Ubuntu package</div>
-          <div class="dl-desc">Native apt-compatible .deb package for Debian, Ubuntu, Linux Mint, Pop!_OS, and compatible distributions.</div>
+          <div class="dl-desc">Native apt package. Bundles binary, shell completions, and an APT repo source for future apt upgrades. Debian, Ubuntu, Mint, Pop!_OS.</div>
+          <div class="dl-arch-list">
+            <span class="dl-arch-item">amd64</span>
+            <span class="dl-arch-item">arm64</span>
+            <span class="dl-arch-item">armhf</span>
+          </div>
+          <a href="#" target="_blank" rel="noopener" class="dl-btn" id="dl-deb-btn">
+            <span class="dl-btn-inner">Loading…</span>
+          </a>
+        </div>
+      </div>
+
+      <!-- Termux — available -->
+      <div class="dl-tile available" id="dl-termux">
+        <div class="dl-ext" style="font-size:52px;line-height:1.2">Android</div>
+        <div>
+          <div class="dl-name">Termux binary</div>
+          <div class="dl-desc">No root. No sudo. Installs to $PREFIX/bin via make install. alps-more cache at $PREFIX/var/cache/alps/more/. Full feature parity.</div>
+          <div class="dl-arch-list">
+            <span class="dl-arch-item">x86_64</span>
+            <span class="dl-arch-item">aarch64</span>
+            <span class="dl-arch-item">arm</span>
+          </div>
+          <a href="#" target="_blank" rel="noopener" class="dl-btn" id="dl-termux-btn">
+            <span class="dl-btn-inner">Loading…</span>
+          </a>
+        </div>
+      </div>
+
+      <!-- Binary — available -->
+      <div class="dl-tile available">
+        <div class="dl-ext" style="font-size:52px;line-height:1.2">Binary</div>
+        <div>
+          <div class="dl-name">Pre-compiled Linux binary</div>
+          <div class="dl-desc">Standalone static binary. chmod +x, copy to /usr/local/bin. No dependencies, no package manager required.</div>
           <div class="dl-arch-list">
             <span class="dl-arch-item">amd64</span>
             <span class="dl-arch-item">arm64</span>
             <span class="dl-arch-item">armv7</span>
           </div>
-          <a class="dl-btn">
-            <span class="dl-btn-inner">Not yet available</span>
+          <a href="#" target="_blank" rel="noopener" class="dl-btn" id="dl-binary-btn">
+            <span class="dl-btn-inner">Loading…</span>
           </a>
         </div>
       </div>
@@ -1282,30 +1462,13 @@
         <div class="dl-ext">.rpm</div>
         <div>
           <div class="dl-name">Fedora / RHEL package</div>
-          <div class="dl-desc">Native dnf-compatible .rpm package for Fedora, RHEL, AlmaLinux, Rocky Linux, and compatible distributions.</div>
+          <div class="dl-desc">Native dnf-compatible package for Fedora, RHEL, AlmaLinux, Rocky Linux, and compatible distributions.</div>
           <div class="dl-arch-list">
             <span class="dl-arch-item">x86_64</span>
             <span class="dl-arch-item">aarch64</span>
           </div>
           <a class="dl-btn">
             <span class="dl-btn-inner">Not yet available</span>
-          </a>
-        </div>
-      </div>
-
-      <!-- binary — available now -->
-      <div class="dl-tile available">
-        <div class="dl-ext" style="font-size: 48px; line-height: 1.2;">Binary</div>
-        <div>
-          <div class="dl-name">Pre-compiled Linux binary</div>
-          <div class="dl-desc">Standalone static binary. Download, chmod +x, copy to /usr/local/bin. No dependencies required.</div>
-          <div class="dl-arch-list">
-            <span class="dl-arch-item">amd64</span>
-            <span class="dl-arch-item">arm64</span>
-            <span class="dl-arch-item">armv7</span>
-          </div>
-          <a href="https://github.com/adrianpriza-ai/alps/releases" target="_blank" rel="noopener" class="dl-btn" id="ver-dl-link">
-            <span class="dl-btn-inner">Download from GitHub</span>
           </a>
         </div>
       </div>
@@ -1366,49 +1529,119 @@
   </footer>
 
   <script>
+    /* ── Copy install command ──────────────────────────── */
     function copyInstall(btn) {
       const text = 'git clone https://github.com/adrianpriza-ai/alps && cd alps && make install';
       navigator.clipboard.writeText(text).then(() => {
         btn.textContent = 'copied';
         btn.classList.add('copied');
-        setTimeout(() => {
-          btn.textContent = 'copy';
-          btn.classList.remove('copied');
-        }, 2000);
+        setTimeout(() => { btn.textContent = 'copy'; btn.classList.remove('copied'); }, 2000);
       });
     }
 
-    /* ── GitHub Release version fetch ─────────────────── */
-    (async function fetchVersion() {
+    /* ── Arch detection ────────────────────────────────── */
+    async function detectArch() {
+      const ua = navigator.userAgent.toLowerCase();
+      const isAndroid = /android/.test(ua);
+      let arch = 'amd64';
+
+      if (navigator.userAgentData?.getHighEntropyValues) {
+        try {
+          const h = await navigator.userAgentData.getHighEntropyValues(['architecture', 'bitness']);
+          if (h.architecture === 'arm' && h.bitness === '64') arch = 'arm64';
+          else if (h.architecture === 'arm') arch = 'armv7';
+        } catch(_) {}
+      }
+      if (arch === 'amd64') {
+        if (/aarch64|arm64/.test(ua)) arch = 'arm64';
+        else if (/armv7|armhf/.test(ua)) arch = 'armv7';
+      }
+      return { arch, isAndroid };
+    }
+
+    /* ── Build download URLs from tag + arch ───────────── */
+    function buildUrls(tag, arch) {
+      const ver     = tag.replace(/^v/, '');
+      const debArch  = { amd64: 'amd64', arm64: 'arm64', armv7: 'armhf' }[arch] || 'amd64';
+      const termArch = { amd64: 'x86_64', arm64: 'aarch64', armv7: 'arm' }[arch]  || 'x86_64';
+      const base = `https://github.com/adrianpriza-ai/alps/releases/download/${tag}`;
+      return {
+        binary: { url: `${base}/alps-linux-${arch}`,          label: `alps-linux-${arch}` },
+        deb:    { url: `${base}/alps_${ver}_${debArch}.deb`,  label: `alps_${ver}_${debArch}.deb` },
+        termux: { url: `${base}/alps-termux-${termArch}`,     label: `alps-termux-${termArch}` },
+      };
+    }
+
+    /* ── Apply download links ──────────────────────────── */
+    let _tag = null, _arch = 'amd64';
+
+    function applyLinks(tag, arch) {
+      _tag = tag; _arch = arch;
+      const u = buildUrls(tag, arch);
+      [['dl-binary-btn', u.binary], ['dl-deb-btn', u.deb], ['dl-termux-btn', u.termux]]
+        .forEach(([id, info]) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.href = info.url;
+          const inner = el.querySelector('.dl-btn-inner');
+          if (inner) inner.textContent = info.label;
+        });
+    }
+
+    /* ── Sync arch button highlights ───────────────────── */
+    function syncArchBtns(arch) {
+      document.querySelectorAll('.dl-arch-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.arch === arch)
+      );
+    }
+
+    /* ── Arch override click ────────────────────────────── */
+    document.addEventListener('click', e => {
+      const btn = e.target.closest('.dl-arch-btn');
+      if (!btn) return;
+      const arch = btn.dataset.arch;
+      syncArchBtns(arch);
+      const lbl = document.getElementById('dl-detected-label');
+      if (lbl) lbl.textContent = arch;
+      if (_tag) applyLinks(_tag, arch);
+    });
+
+    /* ── Init ──────────────────────────────────────────── */
+    (async function init() {
+      const { arch, isAndroid } = await detectArch();
+      _arch = arch;
+
+      const lbl = document.getElementById('dl-detected-label');
+      if (lbl) lbl.textContent = isAndroid ? `Android · ${arch}` : arch;
+      syncArchBtns(arch);
+
+      if (isAndroid) {
+        const tile = document.getElementById('dl-termux');
+        if (tile) tile.style.outline = '2px solid var(--accent)';
+      }
+
       try {
         const res = await fetch(
           'https://api.github.com/repos/adrianpriza-ai/alps/releases/latest',
           { headers: { Accept: 'application/vnd.github+json' } }
         );
-        if (!res.ok) return;                  // no releases yet → keep fallback
-        const { tag_name, html_url } = await res.json();
+        if (!res.ok) return;
+        const { tag_name } = await res.json();
         if (!tag_name) return;
+
         const v = tag_name.startsWith('v') ? tag_name : 'v' + tag_name;
+        _tag = tag_name;
 
-        /* nav badge */
-        const navTag = document.getElementById('ver-nav');
-        if (navTag) navTag.textContent = v;
+        ['ver-nav', 'ver-hero-num'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = v;
+        });
+        const fm = document.getElementById('ver-footer');
+        if (fm) fm.textContent = `${v} \u00a0/\u00a0 MIT License \u00a0/\u00a0 Go 1.22+`;
 
-        /* hero stat */
-        const heroNum = document.getElementById('ver-hero-num');
-        if (heroNum) heroNum.textContent = v;
+        applyLinks(tag_name, arch);
 
-        /* footer */
-        const footerMeta = document.getElementById('ver-footer');
-        if (footerMeta) footerMeta.textContent = v + ' \u00a0/\u00a0 MIT License \u00a0/\u00a0 Go 1.22+';
-
-        /* releases link in download section */
-        const dlLink = document.getElementById('ver-dl-link');
-        if (dlLink) {
-          dlLink.href = html_url;
-          dlLink.textContent = 'Download ' + v + ' from GitHub';
-        }
-      } catch (_) { /* network unavailable — silently keep static fallback */ }
+      } catch(_) { /* network unavailable — keep fallback text */ }
     })();
   </script>
 </body>
