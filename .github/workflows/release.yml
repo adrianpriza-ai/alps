@@ -196,7 +196,10 @@ APTCONF
             alps-linux-amd64
             alps-linux-arm64
             alps-linux-armv7
+            
             alps-termux-aarch64
             alps-termux-arm
+            
             *.deb
+            
             SHA256SUMS
