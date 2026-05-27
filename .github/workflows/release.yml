@@ -28,53 +28,49 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.22.x"
 
       - name: Install packaging tools
         run: |
-          sudo apt update
-          sudo apt install -y dpkg-dev apt-utils
+          sudo apt-get update -q
+          sudo apt-get install -y dpkg-dev apt-utils
 
       - name: Build binaries
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
 
-          GOOS=linux GOARCH=amd64 \
-            go build \
-            -ldflags="-s -w -X main.Version=$TAG" \
+          # Linux
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-amd64 .
 
-          GOOS=linux GOARCH=arm64 \
-            go build \
-            -ldflags="-s -w -X main.Version=$TAG" \
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go build -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-arm64 .
 
-          GOOS=linux GOARCH=arm GOARM=7 \
-            go build \
-            -ldflags="-s -w -X main.Version=$TAG" \
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 \
+            go build -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-armv7 .
-            
-          GOOS=android GOARCH=amd64 \
-            go build \
-            -ldflags="-s -w -X main.Version=$TAG" \
-            -o alps-termux-x86_64 .
 
-          GOOS=android GOARCH=arm64 \
-            go build \
-            -ldflags="-s -w -X main.Version=$TAG" \
+          # Termux (android — uses Android linker, required for Termux)
+          CGO_ENABLED=0 GOOS=android GOARCH=arm64 \
+            go build -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-termux-aarch64 .
 
-          GOOS=android GOARCH=arm GOARM=7 \
-            go build \
-            -ldflags="-s -w -X main.Version=$TAG" \
+          CGO_ENABLED=0 GOOS=android GOARCH=arm GOARM=7 \
+            go build -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-termux-arm .
 
       - name: Build .deb packages
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
+          VER="${TAG#v}"
 
           for ARCH in amd64 arm64 armv7; do
             rm -rf pkg
+
+            DEBARCH=$ARCH
+            [ "$ARCH" = "armv7" ] && DEBARCH="armhf"
 
             mkdir -p pkg/usr/local/bin
             mkdir -p pkg/usr/share/fish/vendor_completions.d
@@ -85,42 +81,33 @@ jobs:
 
             cp alps-linux-$ARCH pkg/usr/local/bin/alps
 
-            # Always generate completions from the amd64 binary (runs on this runner)
-            ./alps-linux-amd64 completion fish \
-              > pkg/usr/share/fish/vendor_completions.d/alps.fish
+            # Generate completions using the amd64 binary (runs on this runner)
+            ./alps-linux-amd64 completion fish  > pkg/usr/share/fish/vendor_completions.d/alps.fish
+            ./alps-linux-amd64 completion bash  > pkg/usr/share/bash-completion/completions/alps
+            ./alps-linux-amd64 completion zsh   > pkg/usr/share/zsh/site-functions/_alps
 
-            ./alps-linux-amd64 completion bash \
-              > pkg/usr/share/bash-completion/completions/alps
-
-            ./alps-linux-amd64 completion zsh \
-              > pkg/usr/share/zsh/site-functions/_alps
-
+            # Add ALPS APT repo so users get future upgrades via apt
             echo "deb [trusted=yes] https://adrianpriza-ai.github.io/alps-apt stable main" \
               > pkg/etc/apt/sources.list.d/alps.list
 
-            DEBARCH=$ARCH
-            if [ "$ARCH" = "armv7" ]; then
-              DEBARCH="armhf"
-            fi
+            cat > pkg/DEBIAN/control << CONTROL
+Package: alps
+Version: $VER
+Section: utils
+Priority: optional
+Architecture: $DEBARCH
+Maintainer: adrianpriza-ai
+Description: Advanced Linux Package System
+CONTROL
 
-            cat > pkg/DEBIAN/control <<EOF
-          Package: alps
-          Version: ${TAG#v}
-          Section: utils
-          Priority: optional
-          Architecture: $DEBARCH
-          Maintainer: adrianpriza-ai
-          Description: Advanced Linux Package System
-          EOF
-
-            cat > pkg/DEBIAN/postinst <<EOF
-          #!/bin/sh
-          apt update || true
-          exit 0
-          EOF
+            cat > pkg/DEBIAN/postinst << POSTINST
+#!/bin/sh
+echo "ALPS installed. Run 'sudo apt update' to register the ALPS apt repository."
+exit 0
+POSTINST
             chmod 755 pkg/DEBIAN/postinst
 
-            dpkg-deb --build pkg alps_${TAG#v}_$DEBARCH.deb
+            dpkg-deb --build pkg alps_${VER}_${DEBARCH}.deb
           done
 
           rm -rf pkg
@@ -133,7 +120,6 @@ jobs:
             alps-linux-armv7 \
             alps-termux-aarch64 \
             alps-termux-arm \
-            alps-termux-x86_64 \
             *.deb \
             > SHA256SUMS
 
@@ -146,63 +132,58 @@ jobs:
       - name: Update APT repository
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
+          VER="${TAG#v}"
 
           cd repo
 
-          mkdir -p pool/main
+          # Separate pool dirs per arch so each Packages index only lists its own arch
+          mkdir -p pool/main/amd64
+          mkdir -p pool/main/arm64
+          mkdir -p pool/main/armhf
           mkdir -p dists/stable/main/binary-amd64
           mkdir -p dists/stable/main/binary-arm64
           mkdir -p dists/stable/main/binary-armhf
           mkdir -p dists/stable/main/binary-all
 
-          cp ../alps_${TAG#v}_amd64.deb  pool/main/
-          cp ../alps_${TAG#v}_arm64.deb  pool/main/
-          cp ../alps_${TAG#v}_armhf.deb  pool/main/
+          cp ../alps_${VER}_amd64.deb pool/main/amd64/
+          cp ../alps_${VER}_arm64.deb pool/main/arm64/
+          cp ../alps_${VER}_armhf.deb pool/main/armhf/
 
-          # Rebuild Packages index for each arch
-          dpkg-scanpackages --multiversion pool \
-            > dists/stable/main/binary-amd64/Packages
+          dpkg-scanpackages --multiversion pool/main/amd64 > dists/stable/main/binary-amd64/Packages
           gzip -kf dists/stable/main/binary-amd64/Packages
 
-          dpkg-scanpackages --multiversion pool \
-            > dists/stable/main/binary-arm64/Packages
+          dpkg-scanpackages --multiversion pool/main/arm64 > dists/stable/main/binary-arm64/Packages
           gzip -kf dists/stable/main/binary-arm64/Packages
 
-          dpkg-scanpackages --multiversion pool \
-            > dists/stable/main/binary-armhf/Packages
+          dpkg-scanpackages --multiversion pool/main/armhf > dists/stable/main/binary-armhf/Packages
           gzip -kf dists/stable/main/binary-armhf/Packages
 
           touch dists/stable/main/binary-all/Packages
           gzip -kf dists/stable/main/binary-all/Packages
 
-          cat > apt.conf <<EOF
-          APT::FTPArchive::Release {
-            Origin "ALPS";
-            Label "ALPS";
-            Suite "stable";
-            Codename "stable";
-            Architectures "amd64 arm64 armhf all";
-            Components "main";
-            Description "ALPS APT Repository";
-          };
-          EOF
+          cat > apt.conf << APTCONF
+APT::FTPArchive::Release {
+  Origin "ALPS";
+  Label "ALPS";
+  Suite "stable";
+  Codename "stable";
+  Architectures "amd64 arm64 armhf all";
+  Components "main";
+  Description "ALPS APT Repository";
+};
+APTCONF
 
-          apt-ftparchive \
-            -c apt.conf \
-            release dists/stable \
-            > dists/stable/Release
+          apt-ftparchive -c apt.conf release dists/stable > dists/stable/Release
 
       - name: Push APT repository
         run: |
           cd repo
 
-          git config user.name github-actions
+          git config user.name  github-actions
           git config user.email github-actions@github.com
 
           git add .
-
           git commit -m "Release ${{ inputs.tag || github.ref_name }}" || true
-
           git push
 
       - name: Create GitHub release
@@ -210,18 +191,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
-
           generate_release_notes: ${{ inputs.tag == '' }}
-
           files: |
             alps-linux-amd64
             alps-linux-arm64
             alps-linux-armv7
-
             alps-termux-aarch64
             alps-termux-arm
-            alps-termux-x86_64
-
             *.deb
-
             SHA256SUMS
