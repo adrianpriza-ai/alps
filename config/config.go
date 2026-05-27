@@ -34,6 +34,7 @@ type Config struct {
 	Aliases    map[string]string
 	GlobalPath string
 	UserPath   string
+	Version    string
 }
 
 var defaults = map[string]string{

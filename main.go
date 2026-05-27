@@ -23,6 +23,7 @@ const author = "\033]8;;https://github.com/adrianpriza-ai\aadrianpriza-ai\033]8;
 
 func main() {
 	cfg := config.Load()
+	cfg.Version = Version
 
 	if len(os.Args) < 2 {
 		printDiagnostic(cfg)

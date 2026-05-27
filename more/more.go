@@ -22,6 +22,7 @@ type Entry struct {
 	Arch         []string
 	OS           []string
 	Deps         []string
+	Servers      []string // optional mirror list for {server} placeholder
 	Sudo         bool
 	CmdLines     []string
 	RemoveLines  []string
@@ -106,6 +107,8 @@ func Parse(data []byte) (map[string]*Entry, error) {
 				current.Arch = splitTrim(val)
 			case "os":
 				current.OS = splitTrim(val)
+			case "servers":
+				current.Servers = splitTrim(val)
 			case "deps":
 				current.Deps = splitTrim(val)
 			case "sudo":
@@ -307,7 +310,15 @@ func Remove(e *Entry, cfg *config.Config) error {
 			return fmt.Errorf("sudo authentication failed: %w", err)
 		}
 	}
-	return runLines(e.RemoveLines)
+	server := ""
+	if needsServer(e) {
+		var err error
+		server, err = resolveServer(e.Servers)
+		if err != nil {
+			return fmt.Errorf("cannot resolve {server}: %w", err)
+		}
+	}
+	return runLines(e.RemoveLines, server)
 }
 
 // Upgrade upgrades a single installed package if a newer version is available.
@@ -417,16 +428,25 @@ func Purge(name string, cfg *config.Config) error {
 		}
 	}
 
+	server := ""
+	if needsServer(e) {
+		var err error
+		server, err = resolveServer(e.Servers)
+		if err != nil {
+			return fmt.Errorf("cannot resolve {server}: %w", err)
+		}
+	}
+
 	// Step 1: remove (binary, service)
 	if len(e.RemoveLines) > 0 {
-		if err := runLines(e.RemoveLines); err != nil {
+		if err := runLines(e.RemoveLines, server); err != nil {
 			return fmt.Errorf("remove step failed: %w", err)
 		}
 	}
 
 	// Step 2: purge (configs, data)
 	if len(e.PurgeLines) > 0 {
-		if err := runLines(e.PurgeLines); err != nil {
+		if err := runLines(e.PurgeLines, server); err != nil {
 			return fmt.Errorf("purge step failed: %w", err)
 		}
 	}
@@ -440,10 +460,20 @@ func runInstall(e *Entry, cfg *config.Config) error {
 	if len(e.CmdLines) == 0 {
 		return fmt.Errorf("package %q has no install commands", e.Name)
 	}
-	if err := runLines(e.CmdLines); err != nil {
+
+	server := ""
+	if needsServer(e) {
+		var err error
+		server, err = resolveServer(e.Servers)
+		if err != nil {
+			return fmt.Errorf("cannot resolve {server}: %w", err)
+		}
+	}
+
+	if err := runLines(e.CmdLines, server); err != nil {
 		if len(e.RemoveLines) > 0 {
 			fmt.Printf("  %s  install failed — running cleanup to undo partial install...\n", cfg.Style.SymWarn)
-			if rerr := runLines(e.RemoveLines); rerr != nil {
+			if rerr := runLines(e.RemoveLines, server); rerr != nil {
 				fmt.Printf("  %s  cleanup also failed: %v\n", cfg.Style.SymErr, rerr)
 				fmt.Printf("  %s  you may need to clean up manually before retrying.\n", cfg.Style.SymWarn)
 			} else {
@@ -465,10 +495,20 @@ func runUpgrade(e *Entry, cfg *config.Config) error {
 	if len(lines) == 0 {
 		return fmt.Errorf("package %q has no upgrade or install commands", e.Name)
 	}
-	if err := runLines(lines); err != nil {
+
+	server := ""
+	if needsServer(e) {
+		var err error
+		server, err = resolveServer(e.Servers)
+		if err != nil {
+			return fmt.Errorf("cannot resolve {server}: %w", err)
+		}
+	}
+
+	if err := runLines(lines, server); err != nil {
 		if len(e.RemoveLines) > 0 {
 			fmt.Printf("  %s  upgrade failed — running cleanup...\n", cfg.Style.SymWarn)
-			if rerr := runLines(e.RemoveLines); rerr != nil {
+			if rerr := runLines(e.RemoveLines, server); rerr != nil {
 				fmt.Printf("  %s  cleanup also failed: %v\n", cfg.Style.SymErr, rerr)
 				fmt.Printf("  %s  you may need to clean up manually before retrying.\n", cfg.Style.SymWarn)
 			} else {
@@ -489,10 +529,25 @@ func ensureSudo() error {
 	return priv.Ensure()
 }
 
-func runLines(lines []string) error {
+// needsServer reports whether any command in the entry uses the {server} placeholder.
+func needsServer(e *Entry) bool {
+	for _, lines := range [][]string{e.CmdLines, e.UpgradeLines, e.RemoveLines, e.PurgeLines} {
+		for _, l := range lines {
+			if strings.Contains(l, "{server}") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func runLines(lines []string, server string) error {
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
+		}
+		if server != "" {
+			line = strings.ReplaceAll(line, "{server}", server)
 		}
 		cmd := exec.Command("bash", "-c", line)
 		cmd.Env = append(os.Environ(), "TERM=xterm-256color")

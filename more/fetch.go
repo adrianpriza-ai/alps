@@ -22,9 +22,17 @@ const (
 	fallbackURL = "https://moreland.codeberg.page/alps-more/main.txt"
 
 	downloadTimeout = 15 * time.Second
+	serverTimeout   = 5 * time.Second
 	maxRetries      = 3
 	retryDelay      = 2 * time.Second
 )
+
+// defaultServers are the two official alps-more mirrors.
+// Used as fallback when a package entry has no servers= field.
+var defaultServers = []string{
+	"https://adrianpriza-ai.github.io/alps-more/",
+	"https://moreland.codeberg.page/alps-more/",
+}
 
 // getCacheDir returns the cache directory, respecting Termux PREFIX.
 func getCacheDir() string {
@@ -38,9 +46,9 @@ func getCacheDir() string {
 	return defaultCacheDir
 }
 
-func getCacheFile() string     { return filepath.Join(getCacheDir(), "main.txt") }
-func getLastSyncFile() string  { return filepath.Join(getCacheDir(), "last_sync") }
-func getInstalledFile() string { return filepath.Join(getCacheDir(), "installed.json") }
+func getCacheFile() string      { return filepath.Join(getCacheDir(), "main.txt") }
+func getLastSyncFile() string   { return filepath.Join(getCacheDir(), "last_sync") }
+func getInstalledFile() string  { return filepath.Join(getCacheDir(), "installed.json") }
 
 // ensureCacheDir creates the cache directory using sudo on Linux, directly on Termux.
 func ensureCacheDir() error {
@@ -106,24 +114,93 @@ func isCacheValid() bool {
 	return false
 }
 
-// FetchAndCache downloads main.txt and writes to cache.
-// Tries primary (GitHub) first with retries, falls back to Codeberg.
-// Validates content before overwriting existing cache.
-func FetchAndCache(cfg *config.Config) error {
-	content, err := downloadWithRetry(primaryURL)
-	if err != nil {
-		fmt.Printf("  %s  Primary failed (%v), trying fallback...\n", cfg.Style.SymWarn, err)
-		content, err = downloadWithRetry(fallbackURL)
-		if err != nil {
-			return fmt.Errorf("both sources failed: %w", err)
-		}
-		fmt.Println("  Using fallback (Codeberg Pages).")
+// fetchResult holds the outcome of a single download attempt.
+type fetchResult struct {
+	data []byte
+	src  string
+	err  error
+}
+
+// fetchRace fires both mirrors simultaneously and returns the first
+// response that contains valid content. Whichever mirror is faster wins.
+func fetchRace() (data []byte, src string, err error) {
+	sources := []struct{ url, name string }{
+		{primaryURL, "GitHub Pages"},
+		{fallbackURL, "Codeberg Pages"},
 	}
 
-	// Validate before writing — never overwrite good cache with garbage
+	ch := make(chan fetchResult, len(sources))
+	for _, s := range sources {
+		go func(url, name string) {
+			d, e := downloadOnce(url)
+			ch <- fetchResult{d, name, e}
+		}(s.url, s.name)
+	}
+
+	var lastErr error
+	for range sources {
+		r := <-ch
+		if r.err == nil && hasValidEntries(r.data) {
+			return r.data, r.src, nil
+		}
+		if r.err != nil {
+			lastErr = r.err
+		} else {
+			lastErr = fmt.Errorf("invalid content from %s", r.src)
+		}
+	}
+	return nil, "", fmt.Errorf("all sources failed: %w", lastErr)
+}
+
+// resolveServer returns the first reachable server from the list.
+// If servers is empty, falls back to defaultServers.
+// Fires all requests simultaneously and returns the fastest responding one.
+func resolveServer(servers []string) (string, error) {
+	if len(servers) == 0 {
+		servers = defaultServers
+	}
+
+	type result struct {
+		url string
+		ok  bool
+	}
+
+	ch := make(chan result, len(servers))
+	client := &http.Client{Timeout: serverTimeout}
+
+	for _, s := range servers {
+		go func(url string) {
+			resp, err := client.Head(url)
+			if err != nil || resp.StatusCode >= 400 {
+				ch <- result{url, false}
+				return
+			}
+			ch <- result{url, true}
+		}(s)
+	}
+
+	for range servers {
+		r := <-ch
+		if r.ok {
+			return r.url, nil
+		}
+	}
+	return "", fmt.Errorf("no reachable server found")
+}
+
+// FetchAndCache downloads main.txt from both mirrors simultaneously,
+// takes the fastest valid response, and writes it to cache.
+func FetchAndCache(cfg *config.Config) error {
+	content, src, err := fetchRace()
+	if err != nil {
+		return fmt.Errorf("failed to fetch repo: %w", err)
+	}
+
 	if !hasValidEntries(content) {
 		return fmt.Errorf("downloaded content is empty or invalid — cache not updated")
 	}
+
+	fmt.Printf("  fetched from %s\n", src)
 
 	if err := ensureCacheDir(); err != nil {
 		return fmt.Errorf("failed to create cache dir: %w", err)

@@ -177,7 +177,7 @@ func genBash(cmds []string, backend string) {
 	moreInstalled := moreInstalledCmd(installedFile())
 
 	fmt.Printf(`# alps bash completion
-# Install: alps completion bash > /etc/bash_completion.d/alps
+# Install: alps completion bash | sudo tee /usr/share/bash-completion/completions/alps
 # or:      source <(alps completion bash)
 
 _alps_completions() {

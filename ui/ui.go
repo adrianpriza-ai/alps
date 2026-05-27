@@ -73,7 +73,7 @@ func PrintHeader(cfg *config.Config) {
 
 	term := os.Getenv("TERM")
 	if term == "linux" || term == "" {
-		fmt.Printf("\n  \033[1;97mALPS\033[0m \033[2mv0.9\033[0m\n\n")
+		fmt.Printf("\n  \033[1;97mALPS\033[0m \033[2m%s\033[0m\n\n", cfg.Version)
 		return
 	}
 
@@ -117,7 +117,7 @@ func PrintHelp(cfg *config.Config) {
 		{"repo remove <pkg>", "remove from alps-more"},
 		{"repo purge <pkg>", "remove package including configs/data"},
 		{"repo search <query>", "search alps-more repo"},
-		{"repo upgrade <pkg>", "upgrade installed package(s)"},
+		{"repo upgrade [pkg]", "upgrade installed package(s)"},
 	}
 	for _, r := range repoSubs {
 		fmt.Printf("  %s%s%s  %-24s %s%s%s\n",
