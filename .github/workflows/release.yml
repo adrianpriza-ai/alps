@@ -53,11 +53,21 @@ jobs:
             go build \
             -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-armv7 .
+            
+          GOOS=android GOARCH=amd64 \
+            go build \
+            -ldflags="-s -w -X main.Version=$TAG" \
+            -o alps-termux-x86_64 .
 
-          # Termux (Android) — same Linux kernel, same archs, separate labels
-          cp alps-linux-amd64  alps-termux-x86_64
-          cp alps-linux-arm64  alps-termux-aarch64
-          cp alps-linux-armv7  alps-termux-arm
+          GOOS=android GOARCH=arm64 \
+            go build \
+            -ldflags="-s -w -X main.Version=$TAG" \
+            -o alps-termux-aarch64 .
+
+          GOOS=android GOARCH=arm GOARM=7 \
+            go build \
+            -ldflags="-s -w -X main.Version=$TAG" \
+            -o alps-termux-arm .
 
       - name: Build .deb packages
         run: |
