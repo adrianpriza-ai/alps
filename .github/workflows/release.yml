@@ -28,48 +28,55 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22.x"
+          go-version: "1.22"
 
       - name: Install packaging tools
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y dpkg-dev apt-utils
+          sudo apt update
+          sudo apt install -y dpkg-dev apt-utils
 
       - name: Build binaries
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
 
-          # Linux
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-            go build -ldflags="-s -w -X main.Version=$TAG" \
+          # Linux Binaries
+          GOOS=linux GOARCH=amd64 \
+            go build \
+            -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-amd64 .
 
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-            go build -ldflags="-s -w -X main.Version=$TAG" \
+          GOOS=linux GOARCH=arm64 \
+            go build \
+            -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-arm64 .
 
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 \
-            go build -ldflags="-s -w -X main.Version=$TAG" \
+          GOOS=linux GOARCH=arm GOARM=7 \
+            go build \
+            -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-armv7 .
 
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+          CGO_ENABLED=0 GOOS=android GOARCH=arm64 \
             go build -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-termux-aarch64 .
 
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 \
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+          CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 \
+            CC="$NDK_BIN/armv7a-linux-androideabi24-clang" \
             go build -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-termux-arm .
+
+          CGO_ENABLED=1 GOOS=android GOARCH=amd64 \
+            CC="$NDK_BIN/x86_64-linux-android24-clang" \
+            go build -ldflags="-s -w -X main.Version=$TAG" \
+            -o alps-termux-x86_64 .
 
       - name: Build .deb packages
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
-          VER="${TAG#v}"
 
           for ARCH in amd64 arm64 armv7; do
             rm -rf pkg
-
-            DEBARCH=$ARCH
-            [ "$ARCH" = "armv7" ] && DEBARCH="armhf"
 
             mkdir -p pkg/usr/local/bin
             mkdir -p pkg/usr/share/fish/vendor_completions.d
@@ -80,15 +87,20 @@ jobs:
 
             cp alps-linux-$ARCH pkg/usr/local/bin/alps
 
-            ./alps-linux-amd64 completion fish  > pkg/usr/share/fish/vendor_completions.d/alps.fish
-            ./alps-linux-amd64 completion bash  > pkg/usr/share/bash-completion/completions/alps
-            ./alps-linux-amd64 completion zsh   > pkg/usr/share/zsh/site-functions/_alps
+            ./alps-linux-amd64 completion fish > pkg/usr/share/fish/vendor_completions.d/alps.fish
+            ./alps-linux-amd64 completion bash > pkg/usr/share/bash-completion/completions/alps
+            ./alps-linux-amd64 completion zsh > pkg/usr/share/zsh/site-functions/_alps
 
             echo "deb [trusted=yes] https://adrianpriza-ai.github.io/alps-apt stable main" \
               > pkg/etc/apt/sources.list.d/alps.list
 
+            DEBARCH=$ARCH
+            if [ "$ARCH" = "armv7" ]; then
+              DEBARCH="armhf"
+            fi
+
             echo "Package: alps" > pkg/DEBIAN/control
-            echo "Version: $VER" >> pkg/DEBIAN/control
+            echo "Version: ${TAG#v}" >> pkg/DEBIAN/control
             echo "Section: utils" >> pkg/DEBIAN/control
             echo "Priority: optional" >> pkg/DEBIAN/control
             echo "Architecture: $DEBARCH" >> pkg/DEBIAN/control
@@ -96,11 +108,11 @@ jobs:
             echo "Description: Advanced Linux Package System" >> pkg/DEBIAN/control
 
             echo '#!/bin/sh' > pkg/DEBIAN/postinst
-            echo 'echo "ALPS installed. Run '\''sudo apt update'\'' to register the ALPS apt repository."' >> pkg/DEBIAN/postinst
+            echo 'apt update || true' >> pkg/DEBIAN/postinst
             echo 'exit 0' >> pkg/DEBIAN/postinst
             chmod 755 pkg/DEBIAN/postinst
 
-            dpkg-deb --build pkg alps_${VER}_${DEBARCH}.deb
+            dpkg-deb --build pkg alps_${TAG#v}_$DEBARCH.deb
           done
 
           rm -rf pkg
@@ -113,6 +125,7 @@ jobs:
             alps-linux-armv7 \
             alps-termux-aarch64 \
             alps-termux-arm \
+            alps-termux-x86_64 \
             *.deb \
             > SHA256SUMS
 
@@ -125,7 +138,6 @@ jobs:
       - name: Update APT repository
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
-          VER="${TAG#v}"
 
           cd repo
 
@@ -137,9 +149,9 @@ jobs:
           mkdir -p dists/stable/main/binary-armhf
           mkdir -p dists/stable/main/binary-all
 
-          cp ../alps_${VER}_amd64.deb pool/main/amd64/
-          cp ../alps_${VER}_arm64.deb pool/main/arm64/
-          cp ../alps_${VER}_armhf.deb pool/main/armhf/
+          cp ../alps_${TAG#v}_amd64.deb  pool/main/amd64/
+          cp ../alps_${TAG#v}_arm64.deb  pool/main/arm64/
+          cp ../alps_${TAG#v}_armhf.deb  pool/main/armhf/
 
           dpkg-scanpackages --multiversion pool/main/amd64 > dists/stable/main/binary-amd64/Packages
           gzip -kf dists/stable/main/binary-amd64/Packages
@@ -163,13 +175,16 @@ jobs:
           echo "  Description \"ALPS APT Repository\";" >> apt.conf
           echo "};" >> apt.conf
 
-          apt-ftparchive -c apt.conf release dists/stable > dists/stable/Release
+          apt-ftparchive \
+            -c apt.conf \
+            release dists/stable \
+            > dists/stable/Release
 
       - name: Push APT repository
         run: |
           cd repo
 
-          git config user.name  github-actions
+          git config user.name github-actions
           git config user.email github-actions@github.com
 
           git add .
@@ -186,10 +201,11 @@ jobs:
             alps-linux-amd64
             alps-linux-arm64
             alps-linux-armv7
-            
+
             alps-termux-aarch64
             alps-termux-arm
-            
+            alps-termux-x86_64
+
             *.deb
-            
+
             SHA256SUMS
