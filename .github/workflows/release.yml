@@ -52,7 +52,6 @@ jobs:
             go build -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-armv7 .
 
-          # Termux (android — uses Android linker, required for Termux)
           CGO_ENABLED=0 GOOS=android GOARCH=arm64 \
             go build -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-termux-aarch64 .
@@ -81,30 +80,24 @@ jobs:
 
             cp alps-linux-$ARCH pkg/usr/local/bin/alps
 
-            # Generate completions using the amd64 binary (runs on this runner)
             ./alps-linux-amd64 completion fish  > pkg/usr/share/fish/vendor_completions.d/alps.fish
             ./alps-linux-amd64 completion bash  > pkg/usr/share/bash-completion/completions/alps
             ./alps-linux-amd64 completion zsh   > pkg/usr/share/zsh/site-functions/_alps
 
-            # Add ALPS APT repo so users get future upgrades via apt
             echo "deb [trusted=yes] https://adrianpriza-ai.github.io/alps-apt stable main" \
               > pkg/etc/apt/sources.list.d/alps.list
 
-            cat > pkg/DEBIAN/control << CONTROL
-Package: alps
-Version: $VER
-Section: utils
-Priority: optional
-Architecture: $DEBARCH
-Maintainer: adrianpriza-ai
-Description: Advanced Linux Package System
-CONTROL
+            echo "Package: alps" > pkg/DEBIAN/control
+            echo "Version: $VER" >> pkg/DEBIAN/control
+            echo "Section: utils" >> pkg/DEBIAN/control
+            echo "Priority: optional" >> pkg/DEBIAN/control
+            echo "Architecture: $DEBARCH" >> pkg/DEBIAN/control
+            echo "Maintainer: adrianpriza-ai" >> pkg/DEBIAN/control
+            echo "Description: Advanced Linux Package System" >> pkg/DEBIAN/control
 
-            cat > pkg/DEBIAN/postinst << POSTINST
-#!/bin/sh
-echo "ALPS installed. Run 'sudo apt update' to register the ALPS apt repository."
-exit 0
-POSTINST
+            echo '#!/bin/sh' > pkg/DEBIAN/postinst
+            echo 'echo "ALPS installed. Run '\''sudo apt update'\'' to register the ALPS apt repository."' >> pkg/DEBIAN/postinst
+            echo 'exit 0' >> pkg/DEBIAN/postinst
             chmod 755 pkg/DEBIAN/postinst
 
             dpkg-deb --build pkg alps_${VER}_${DEBARCH}.deb
@@ -136,7 +129,6 @@ POSTINST
 
           cd repo
 
-          # Separate pool dirs per arch so each Packages index only lists its own arch
           mkdir -p pool/main/amd64
           mkdir -p pool/main/arm64
           mkdir -p pool/main/armhf
@@ -161,17 +153,15 @@ POSTINST
           touch dists/stable/main/binary-all/Packages
           gzip -kf dists/stable/main/binary-all/Packages
 
-          cat > apt.conf << APTCONF
-APT::FTPArchive::Release {
-  Origin "ALPS";
-  Label "ALPS";
-  Suite "stable";
-  Codename "stable";
-  Architectures "amd64 arm64 armhf all";
-  Components "main";
-  Description "ALPS APT Repository";
-};
-APTCONF
+          echo "APT::FTPArchive::Release {" > apt.conf
+          echo "  Origin \"ALPS\";" >> apt.conf
+          echo "  Label \"ALPS\";" >> apt.conf
+          echo "  Suite \"stable\";" >> apt.conf
+          echo "  Codename \"stable\";" >> apt.conf
+          echo "  Architectures \"amd64 arm64 armhf all\";" >> apt.conf
+          echo "  Components \"main\";" >> apt.conf
+          echo "  Description \"ALPS APT Repository\";" >> apt.conf
+          echo "};" >> apt.conf
 
           apt-ftparchive -c apt.conf release dists/stable > dists/stable/Release
 
