@@ -1,7 +1,7 @@
 version: 2.1
 
 jobs:
-  build-termux-arm64:
+  build-termux-arm64
     docker:
       - image: cimg/go:1.26.3
     steps:
