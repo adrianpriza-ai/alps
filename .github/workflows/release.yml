@@ -55,12 +55,11 @@ jobs:
             -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-armv7 .
 
-          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-
-          CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
-            CC="$NDK_BIN/aarch64-linux-android24-clang" \
+          GOOS=android GOARCH=arm64 \
             go build -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-termux-aarch64 .
+
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
           CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 \
             CC="$NDK_BIN/armv7a-linux-androideabi24-clang" \
