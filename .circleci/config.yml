@@ -40,11 +40,12 @@ jobs:
               sudo apt install gh -y
             fi
             
-            TAG=${CIRCLE_TAG:-${CIRCLE_SHA1:0:7}}
+            # PERBAIKAN: Jika jalan lewat Tag resmi, gunakan tag tersebut.
+            # Jika klik manual dari branch, arahkan paksa ke tag rilis aktifmu saat ini (contoh: v0.9.6)
+            TARGET_TAG=${CIRCLE_TAG:-"v0.9.6"} 
             
-            if [ -n "$CIRCLE_TAG" ]; then
-              gh release upload "$TAG" alps-termux-aarch64 --clobber
-            fi
+            echo "Mengupload biner ke GitHub Release pada tag: $TARGET_TAG"
+            gh release upload "$TARGET_TAG" alps-termux-aarch64 --clobber
 
 workflows:
   version: 2
@@ -54,9 +55,13 @@ workflows:
           filters:
             tags:
               only: /^v.*/
+            branches:
+              only: /.*/ # <-- PERBAIKAN: Mengizinkan branch biasa jalan saat diklik manual
       - upload-to-github-release:
           requires:
             - build-termux-arm64
           filters:
             tags:
               only: /^v.*/
+            branches:
+              only: /.*/ # <-- PERBAIKAN: Mengizinkan upload berjalan saat diklik manual
