@@ -54,8 +54,9 @@ jobs:
             -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-armv7 .
 
-          GOOS=android GOARCH=arm64 \
-            go build -ldflags="-s -w -X main.Version=$TAG" \
+          GOEXPERIMENT=nodwarf5 GOOS=android GOARCH=arm64 \
+            go build \
+            -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-termux-aarch64 .
 
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
