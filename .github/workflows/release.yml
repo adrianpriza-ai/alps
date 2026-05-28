@@ -38,25 +38,22 @@ jobs:
           sudo apt-get update && sudo apt-get install -y --no-install-recommends \
             dpkg-dev apt-utils
 
-      - name: Build Multi-Architecture Binaries
+      - name: Build binaries
         run: |
+          TARGET_TAG=${{ inputs.tag || github.ref_name }}
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
-          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.Version=$TARGET_TAG" -o alps-linux-amd64 .
-          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.Version=$TARGET_TAG" -o alps-linux-arm64 .
-          GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w -X main.Version=$TARGET_TAG" -o alps-linux-armv7 .
-          
-          CGO_ENABLED=0 GOOS=android GOARCH=arm64 \
-            go build -ldflags="-s -w -X main.Version=$TARGET_TAG" \
-            -o alps-termux-aarch64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.Version=$TARGET_TAG" -o alps-linux-amd64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.Version=$TARGET_TAG" -o alps-linux-arm64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w -X main.Version=$TARGET_TAG" -o alps-linux-armv7 .
 
-          CGO_ENABLED=0 GOOS=android GOARCH=arm \
-            GOARM=7 \
+          CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -ldflags="-s -w -X main.Version=$TARGET_TAG" -o alps-termux-aarch64 .
+          CGO_ENABLED=0 GOOS=android GOARCH=amd64 go build -ldflags="-s -w -X main.Version=$TARGET_TAG" -o alps-termux-x86_64 .
+
+          CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 \
+            CC="$NDK_BIN/armv7a-linux-androideabi24-clang" \
             go build -ldflags="-s -w -X main.Version=$TARGET_TAG" \
             -o alps-termux-arm .
-
-          CGO_ENABLED=0 GOOS=android GOARCH=amd64 \
-            go build -ldflags="-s -w -X main.Version=$TARGET_TAG" \
-            -o alps-termux-x86_64 .
 
 
       - name: Build Debian (.deb) Packages
