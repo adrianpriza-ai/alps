@@ -21,7 +21,7 @@ jobs:
           paths:
             - alps-termux-aarch64
 
-  upload-to-github-release:
+upload-to-github-release:
     docker:
       - image: cimg/base:stable
     steps:
@@ -40,9 +40,9 @@ jobs:
               sudo apt install gh -y
             fi
             
-            # PERBAIKAN: Jika jalan lewat Tag resmi, gunakan tag tersebut.
-            # Jika klik manual dari branch, arahkan paksa ke tag rilis aktifmu saat ini (contoh: v0.9.6)
             TARGET_TAG=${CIRCLE_TAG:-"v0.9.6"} 
+            
+            export GH_TOKEN=$GITHUB_TOKEN
             
             echo "Mengupload biner ke GitHub Release pada tag: $TARGET_TAG"
             gh release upload "$TARGET_TAG" alps-termux-aarch64 --clobber
@@ -56,7 +56,7 @@ workflows:
             tags:
               only: /^v.*/
             branches:
-              only: /.*/ # <-- PERBAIKAN: Mengizinkan branch biasa jalan saat diklik manual
+              only: /.*/ 
       - upload-to-github-release:
           requires:
             - build-termux-arm64
@@ -64,4 +64,4 @@ workflows:
             tags:
               only: /^v.*/
             branches:
-              only: /.*/ # <-- PERBAIKAN: Mengizinkan upload berjalan saat diklik manual
+              only: /.*/ 
