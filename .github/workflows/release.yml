@@ -57,7 +57,6 @@ jobs:
          run: |
            wget -q https://dl.google.com/android/repository/android-ndk-r26b-linux.zip
            unzip -q android-ndk-r26b-linux.zip
-           echo "ANDROID_NDK_HOME=$(pwd)/android-ndk-r26b" | tee -a $GITHUB_ENV
 
       - name: Build Android binaries
         run: |
