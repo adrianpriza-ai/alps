@@ -46,9 +46,9 @@ func getCacheDir() string {
 	return defaultCacheDir
 }
 
-func getCacheFile() string     { return filepath.Join(getCacheDir(), "main.txt") }
-func getLastSyncFile() string  { return filepath.Join(getCacheDir(), "last_sync") }
-func getInstalledFile() string { return filepath.Join(getCacheDir(), "installed.json") }
+func getCacheFile() string      { return filepath.Join(getCacheDir(), "main.txt") }
+func getLastSyncFile() string   { return filepath.Join(getCacheDir(), "last_sync") }
+func getInstalledFile() string  { return filepath.Join(getCacheDir(), "installed.json") }
 
 // ensureCacheDir creates the cache directory using sudo on Linux, directly on Termux.
 func ensureCacheDir() error {
