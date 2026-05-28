@@ -1,0 +1,62 @@
+version: 2.1
+
+jobs:
+  build-termux-arm64:
+    docker:
+      - image: cimg/go:1.26.3
+    steps:
+      - checkout
+      - run:
+          name: Build Termux ARM64 Binary
+          command: |
+            TAG=${CIRCLE_TAG:-${CIRCLE_SHA1:0:7}}
+            
+            GOEXPERIMENT=nodwarf5 CGO_ENABLED=0 GOOS=android GOARCH=arm64 \
+              go build \
+              -buildmode=pie \
+              -ldflags="-s -w -X main.Version=$TAG" \
+              -o alps-termux-aarch64 .
+      - persist_to_workspace:
+          root: .
+          paths:
+            - alps-termux-aarch64
+
+  upload-to-github-release:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: Upload to GitHub Release
+          command: |
+            if ! command -v gh &> /dev/null; then
+              sudo mkdir -p -m 755 /etc/apt/keyrings
+              wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+              sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+              sudo apt update
+              sudo apt install gh -y
+            fi
+            
+            TAG=${CIRCLE_TAG:-${CIRCLE_SHA1:0:7}}
+            
+            if [ -n "$CIRCLE_TAG" ]; then
+              gh release upload "$TAG" alps-termux-aarch64 --clobber
+            fi
+
+workflows:
+  version: 2
+  release-pipeline:
+    jobs:
+      - build-termux-arm64:
+          filters:
+            tags:
+              only: /^v.*/
+      - upload-to-github-release:
+          requires:
+            - build-termux-arm64
+          filters:
+            tags:
+              only: /^v.*/
