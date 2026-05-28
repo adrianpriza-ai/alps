@@ -54,8 +54,9 @@ jobs:
             -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-armv7 .
 
-          GOEXPERIMENT=nodwarf5 GOOS=android GOARCH=arm64 \
+          CGO_ENABLED=0 GOEXPERIMENT=nodwarf5 GOOS=android GOARCH=arm64 \
             go build \
+            -buildmode=pie \
             -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-termux-aarch64 .
 
