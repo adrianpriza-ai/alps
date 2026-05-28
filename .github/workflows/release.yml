@@ -28,7 +28,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.22.x"
 
       - name: Install packaging tools
         run: |
@@ -55,22 +55,18 @@ jobs:
             -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-linux-armv7 .
 
-          GOOS=android GOARCH=arm64 \
+          # Termux (GOOS=android for correct Android linker, CGO_ENABLED=0 — no NDK needed)
+          CGO_ENABLED=0 GOOS=android GOARCH=arm64 \
             go build -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-termux-aarch64 .
 
-          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-
-          CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 \
-            CC="$NDK_BIN/armv7a-linux-androideabi24-clang" \
+          CGO_ENABLED=0 GOOS=android GOARCH=arm GOARM=7 \
             go build -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-termux-arm .
 
-          CGO_ENABLED=1 GOOS=android GOARCH=amd64 \
-            CC="$NDK_BIN/x86_64-linux-android24-clang" \
+          CGO_ENABLED=0 GOOS=android GOARCH=amd64 \
             go build -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-termux-x86_64 .
-
 
       - name: Build .deb packages
         run: |
@@ -109,7 +105,7 @@ jobs:
             echo "Description: Advanced Linux Package System" >> pkg/DEBIAN/control
 
             echo '#!/bin/sh' > pkg/DEBIAN/postinst
-            echo 'apt update || true' >> pkg/DEBIAN/postinst
+            echo "echo 'ALPS installed. Run sudo apt update to register the ALPS apt repository.'" >> pkg/DEBIAN/postinst
             echo 'exit 0' >> pkg/DEBIAN/postinst
             chmod 755 pkg/DEBIAN/postinst
 
