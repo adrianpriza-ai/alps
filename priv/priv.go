@@ -63,36 +63,6 @@ func Command(args ...string) (*exec.Cmd, error) {
 }
 
 // Ensure gets a valid privilege token (sudo -v or no-op if root/su/Termux).
-func Ensure() error {
-	// Termux owns its prefix — no escalation needed or available
-	if isTermux() {
-		return nil
-	}
-
-	if IsRoot() {
-		return nil
-	}
-
-	if HasSudo() {
-		// Check if sudo token already valid
-		if exec.Command("sudo", "-n", "true").Run() == nil {
-			return nil
-		}
-		fmt.Println()
-		pw := exec.Command("sudo", "-v")
-		pw.Stdout = os.Stdout
-		pw.Stderr = os.Stderr
-		pw.Stdin = os.Stdin
-		return pw.Run()
-	}
-
-	if HasSu() {
-		// su will prompt when command is run, nothing to pre-auth
-		return nil
-	}
-
-	return fmt.Errorf("no privilege escalation available (no sudo or su)")
-}
 
 func Ensure() error {
     fmt.Println("DEBUG isTermux:", isTermux())
