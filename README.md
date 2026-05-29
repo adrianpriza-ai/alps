@@ -206,7 +206,7 @@ purge_end
 
 `{CURL_RUN}<path>` fetches and executes a script from the resolved mirror
 at install time. The fastest responding server from `servers=` wins.
-If servers= is omitted, the default GitHub/Codeberg mirrors are used.
+If `servers=` is omitted, the default GitHub/Codeberg mirrors are used.
 
 `remove` runs `remove_begin` only. `purge` runs `remove_begin` then `purge_begin` — mirrors `apt remove` vs `apt purge`.
 
