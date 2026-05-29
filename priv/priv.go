@@ -8,9 +8,10 @@ import (
 )
 
 // isTermux returns true when running inside Termux on Android.
+// isTermux is overridden by termux build tag
 func isTermux() bool {
-	return os.Getenv("TERMUX_VERSION") != "" ||
-		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
+    return os.Getenv("TERMUX_VERSION") != "" ||
+        os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
 }
 
 // IsRoot returns true if current process is running as root.
@@ -65,7 +66,7 @@ func Command(args ...string) (*exec.Cmd, error) {
 // Ensure gets a valid privilege token (sudo -v or no-op if root/su/Termux).
 func Ensure() error {
 	fmt.Fprintln(os.Stderr, "DEBUG isTermux:", isTermux())
-	fmt.Fprintln(os.Stderr, "DEBUG TERMUX_VERSION:", os.Getenv("TERMUX_VERSION"))
+    fmt.Fprintln(os.Stderr, "DEBUG TERMUX_VERSION:", os.Getenv("TERMUX_VERSION"))
 
 	// Termux owns its prefix — no escalation needed or available
 	if isTermux() {
