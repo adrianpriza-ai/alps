@@ -9,7 +9,7 @@ import (
 
 // isTermux returns true when running inside Termux on Android.
 func isTermux() bool {
-    return os.Getenv("TERMUX_VERSION") != "" || os.Getenv("PREFIX") != ""
+	return os.Getenv("TERMUX_VERSION") != "" || os.Getenv("PREFIX") != ""
 }
 
 // IsRoot returns true if current process is running as root.
@@ -24,8 +24,9 @@ func HasSudo() bool {
 }
 
 // HasSu returns true if su binary exists.
-if HasSu() {
-    return exec.Command("su", append([]string{"-c", args[0]}, args[1:]...)...), nil
+func HasSu() bool {
+	_, err := exec.LookPath("su")
+	return err == nil
 }
 
 // Command returns a command with appropriate privilege escalation.
@@ -53,8 +54,7 @@ func Command(args ...string) (*exec.Cmd, error) {
 
 	// su fallback
 	if HasSu() {
-		joined := strings.Join(args, " ")
-		return exec.Command("su", "-c", joined), nil
+		return exec.Command("su", append([]string{"-c", args[0]}, args[1:]...)...), nil
 	}
 
 	return nil, fmt.Errorf("no privilege escalation available (no sudo or su)")
@@ -63,7 +63,7 @@ func Command(args ...string) (*exec.Cmd, error) {
 // Ensure gets a valid privilege token (sudo -v or no-op if root/su/Termux).
 func Ensure() error {
 	fmt.Fprintln(os.Stderr, "DEBUG isTermux:", isTermux())
-    fmt.Fprintln(os.Stderr, "DEBUG TERMUX_VERSION:", os.Getenv("TERMUX_VERSION"))
+	fmt.Fprintln(os.Stderr, "DEBUG TERMUX_VERSION:", os.Getenv("TERMUX_VERSION"))
 
 	// Termux owns its prefix — no escalation needed or available
 	if isTermux() {
