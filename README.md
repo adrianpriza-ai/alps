@@ -191,10 +191,10 @@ deps    = curl                # binaries that must exist before install
 sudo    = true
 servers = https://adrianpriza-ai.github.io/alps-more/, https://moreland.codeberg.page/alps-more/
 cmd_begin
-  curl -fsSL {server}scripts/my-tool/install.sh | sh
+  {CURL_RUN}scripts/my-tool/install.sh
 cmd_end
 upgrade_begin
-  curl -fsSL {server}scripts/my-tool/install.sh | sh
+  {CURL_RUN}}scripts/my-tool/install.sh
 upgrade_end
 remove_begin
   sudo rm -f /usr/local/bin/my-tool
@@ -204,7 +204,9 @@ purge_begin
 purge_end
 ```
 
-`{server}` is resolved at install time to the fastest responding mirror. If `servers =` is omitted, the default GitHub/Codeberg mirrors are used as fallback.
+`{CURL_RUN}<path>` fetches and executes a script from the resolved mirror
+at install time. The fastest responding server from `servers=` wins.
+If servers= is omitted, the default GitHub/Codeberg mirrors are used.
 
 `remove` runs `remove_begin` only. `purge` runs `remove_begin` then `purge_begin` — mirrors `apt remove` vs `apt purge`.
 
