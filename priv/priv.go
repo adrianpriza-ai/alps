@@ -64,6 +64,9 @@ func Command(args ...string) (*exec.Cmd, error) {
 
 // Ensure gets a valid privilege token (sudo -v or no-op if root/su/Termux).
 func Ensure() error {
+	fmt.Fprintln(os.Stderr, "DEBUG isTermux:", isTermux())
+    fmt.Fprintln(os.Stderr, "DEBUG TERMUX_VERSION:", os.Getenv("TERMUX_VERSION"))
+
 	// Termux owns its prefix — no escalation needed or available
 	if isTermux() {
 		return nil
