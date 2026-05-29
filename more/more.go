@@ -22,7 +22,7 @@ type Entry struct {
 	Arch         []string
 	OS           []string
 	Deps         []string
-	Servers      []string // optional mirror list for {server} placeholder
+	Servers      []string // optional mirror list; falls back to defaultServers if empty
 	Sudo         bool
 	CmdLines     []string
 	RemoveLines  []string
@@ -311,11 +311,11 @@ func Remove(e *Entry, cfg *config.Config) error {
 		}
 	}
 	server := ""
-	if needsServer(e) {
+	if needsCurlRun(e) {
 		var err error
 		server, err = resolveServer(e.Servers)
 		if err != nil {
-			return fmt.Errorf("cannot resolve {server}: %w", err)
+			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}: %w", err)
 		}
 	}
 	return runLines(e.RemoveLines, server)
@@ -429,11 +429,11 @@ func Purge(name string, cfg *config.Config) error {
 	}
 
 	server := ""
-	if needsServer(e) {
+	if needsCurlRun(e) {
 		var err error
 		server, err = resolveServer(e.Servers)
 		if err != nil {
-			return fmt.Errorf("cannot resolve {server}: %w", err)
+			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}: %w", err)
 		}
 	}
 
@@ -462,11 +462,11 @@ func runInstall(e *Entry, cfg *config.Config) error {
 	}
 
 	server := ""
-	if needsServer(e) {
+	if needsCurlRun(e) {
 		var err error
 		server, err = resolveServer(e.Servers)
 		if err != nil {
-			return fmt.Errorf("cannot resolve {server}: %w", err)
+			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}: %w", err)
 		}
 	}
 
@@ -497,11 +497,11 @@ func runUpgrade(e *Entry, cfg *config.Config) error {
 	}
 
 	server := ""
-	if needsServer(e) {
+	if needsCurlRun(e) {
 		var err error
 		server, err = resolveServer(e.Servers)
 		if err != nil {
-			return fmt.Errorf("cannot resolve {server}: %w", err)
+			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}: %w", err)
 		}
 	}
 
@@ -529,11 +529,11 @@ func ensureSudo() error {
 	return priv.Ensure()
 }
 
-// needsServer reports whether any command in the entry uses the {server} placeholder.
-func needsServer(e *Entry) bool {
+// needsCurlRun reports whether any command in the entry uses the {CURL_RUN} macro.
+func needsCurlRun(e *Entry) bool {
 	for _, lines := range [][]string{e.CmdLines, e.UpgradeLines, e.RemoveLines, e.PurgeLines} {
 		for _, l := range lines {
-			if strings.Contains(l, "{server}") {
+			if strings.Contains(l, "{CURL_RUN}") {
 				return true
 			}
 		}
@@ -541,13 +541,18 @@ func needsServer(e *Entry) bool {
 	return false
 }
 
+// runLines executes a slice of shell commands in order.
+// {CURL_RUN}<path> is expanded to: curl -fsSL <resolved_server><path> | sh
+// The server URL comes from resolveServer; if the entry has no servers= field
+// it automatically falls back to the default alps-more mirrors.
 func runLines(lines []string, server string) error {
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if server != "" {
-			line = strings.ReplaceAll(line, "{server}", server)
+		if server != "" && strings.Contains(line, "{CURL_RUN}") {
+			line = strings.ReplaceAll(line, "{CURL_RUN}", "curl -fsSL "+server)
+			line = strings.TrimRight(line, " \t") + " | sh"
 		}
 		cmd := exec.Command("bash", "-c", line)
 		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
