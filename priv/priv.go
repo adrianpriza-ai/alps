@@ -93,3 +93,8 @@ func Ensure() error {
 
 	return fmt.Errorf("no privilege escalation available (no sudo or su)")
 }
+
+func Ensure() error {
+    fmt.Println("DEBUG isTermux:", isTermux())
+    fmt.Println("DEBUG TERMUX_VERSION:", os.Getenv("TERMUX_VERSION"))
+    fmt.Println("DEBUG PREFIX:", os.Getenv("PREFIX"))
