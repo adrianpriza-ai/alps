@@ -698,14 +698,7 @@
     .dl-tile.available:hover { background: var(--fg); }
 
     .dl-tile.available:hover .dl-name,
-    .dl-tile.available:hover .dl-ext,
-    .dl-tile.available:hover .dl-arch-item,
-    .dl-tile.available:hover .dl-btn { color: var(--bg); }
-
-    .dl-tile.available:hover .dl-btn-inner {
-      background: var(--bg);
-      color: var(--fg);
-    }
+    .dl-tile.available:hover .dl-ext { color: var(--bg); }
 
     .dl-coming-badge {
       position: absolute;
@@ -751,33 +744,113 @@
       margin-bottom: 20px;
     }
 
-    .dl-arch-list {
+    /* ─── UNIFIED DOWNLOAD WIDGET ────────────────────── */
+    .dl-widget {
       display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      margin-bottom: 28px;
+      flex-direction: column;
+      margin-top: 24px;
     }
-
-    .dl-arch-item {
+    
+    .dl-widget-tabs {
+      display: flex;
+      width: 100%;
+      border: 1px solid var(--border);
+      background: rgba(5, 50, 111, 0.04);
+      margin-bottom: 12px;
+      transition: border-color 0.2s var(--ease), background-color 0.2s var(--ease);
+    }
+    
+    .dl-tile.available:hover .dl-widget-tabs {
+      border-color: rgba(255, 255, 255, 0.3);
+      background: rgba(255, 255, 255, 0.05);
+    }
+    
+    .dl-widget-tab {
+      flex: 1;
       font-family: var(--f-mono);
       font-size: 10px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
-      padding: 3px 8px;
-      border: 1px solid currentColor;
-      color: var(--muted);
-      transition: color 0.2s, background 0.2s;
-      background: none;
-      cursor: pointer;
-    }
-    .dl-arch-item.active {
+      padding: 8px 4px;
+      border: none;
+      border-right: 1px solid var(--border);
+      background: transparent;
       color: var(--fg);
-      background: var(--surface);
+      cursor: pointer;
+      text-align: center;
+      transition: background 0.2s var(--ease), color 0.2s var(--ease), border-color 0.2s var(--ease);
     }
-    .dl-tile.available:hover .dl-arch-item.active {
-      color: var(--bg);
-      background: rgba(255,255,255,0.2);
+    
+    .dl-widget-tab:last-child {
+      border-right: none;
     }
+    
+    .dl-widget-tab.active {
+      background: var(--fg);
+      color: #ffffff;
+      font-weight: 600;
+    }
+    
+    .dl-tile.available:hover .dl-widget-tab {
+      color: rgba(255, 255, 255, 0.8);
+      border-right-color: rgba(255, 255, 255, 0.3);
+    }
+    
+    .dl-tile.available:hover .dl-widget-tab.active {
+      background: #ffffff;
+      color: var(--fg);
+      font-weight: 600;
+    }
+    
+    .dl-tile.available:hover .dl-widget-tab:hover:not(.active) {
+      background: rgba(255, 255, 255, 0.2);
+      color: #ffffff;
+    }
+    
+    .dl-widget-tab:hover:not(.active) {
+      background: rgba(5, 50, 111, 0.08);
+      color: var(--fg);
+    }
+    
+    .dl-widget-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 11px 16px;
+      background: var(--fg);
+      color: #ffffff;
+      border: 1px solid var(--fg);
+      font-family: var(--f-mono);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      text-decoration: none;
+      cursor: pointer;
+      transition: background 0.2s var(--ease), color 0.2s var(--ease), border-color 0.2s var(--ease);
+      width: 100%;
+      text-align: center;
+      font-weight: 500;
+    }
+    
+    .dl-widget-btn:hover {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
+    
+    .dl-tile.available:hover .dl-widget-btn {
+      background: #ffffff;
+      color: var(--fg);
+      border-color: #ffffff;
+    }
+    
+    .dl-tile.available:hover .dl-widget-btn:hover {
+      background: var(--bg);
+      color: var(--fg);
+      border-color: var(--bg);
+    }
+
     .dl-release-link {
       display: inline-block;
       margin-top: 16px;
@@ -787,48 +860,33 @@
       text-transform: uppercase;
       color: var(--muted);
       text-decoration: none;
-      transition: color 0.2s;
+      transition: color 0.2s var(--ease);
     }
     .dl-release-link:hover { color: var(--accent); }
     .dl-tile.available:hover .dl-release-link { color: rgba(255,255,255,0.7); }
     .dl-tile.available:hover .dl-release-link:hover { color: #fff; }
 
-    .dl-btn {
-      font-family: var(--f-mono);
-      font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
+    /* For coming soon / unavailable cards */
+    .dl-tile.coming-soon .dl-widget {
+      opacity: 0.6;
+    }
+    
+    .dl-tile.coming-soon .dl-widget-tabs {
+      border: 1px solid #9195B6;
+      background: transparent;
+    }
+    
+    .dl-tile.coming-soon .dl-widget-tab {
+      border-right: 1px solid #9195B6;
       color: var(--muted);
-      text-decoration: none;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      transition: color 0.2s;
       cursor: not-allowed;
     }
-
-    .dl-tile.available .dl-btn { cursor: pointer; }
-
-    .dl-btn-inner {
-      padding: 9px 18px;
-      background: var(--fg);
-      color: var(--bg);
-      font-family: var(--f-mono);
-      font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      border: none;
-      cursor: pointer;
-      text-decoration: none;
-      transition: background 0.2s, color 0.2s;
-      display: inline-block;
-    }
-
-    .dl-tile.coming-soon .dl-btn-inner {
+    
+    .dl-tile.coming-soon .dl-widget-btn {
       background: var(--surface);
       color: var(--muted);
-      cursor: not-allowed;
       border: 1px solid #9195B6;
+      cursor: not-allowed;
     }
 
     /* ─── LINKS / MORE ───────────────────────────────── */
@@ -1014,7 +1072,7 @@
         <div class="hero-install-block">
           <div class="hero-install-label">Quick install</div>
           <div class="hero-install-code">
-            <code><span>$</span> git clone github.com/adrianpriza-ai/alps &amp;&amp; cd alps &amp;&amp; make install</code>
+            <code><span>$</span> curl -fsSL https://alps-project.pages.dev/install.sh | sh</code>
             <button class="copy-btn" onclick="copyInstall(this)">copy</button>
           </div>
         </div>
@@ -1036,7 +1094,7 @@
         </div>
         <div class="hero-stat-sep"></div>
         <div class="hero-stat">
-          <span class="hero-stat-num" id="ver-hero-num">v0.9</span>
+          <span class="hero-stat-num" id="ver-hero-num">v1.0</span>
           <span class="hero-stat-label">Current</span>
         </div>
       </div>
@@ -1222,7 +1280,18 @@
 
       <div class="cmd-block">
         <div class="cmd-header">
-          <span class="cmd-method">Quick — recommended</span>
+          <span class="cmd-method">One-line — recommended</span>
+          <span class="cmd-tag">curl install</span>
+        </div>
+        <div class="cmd-body">
+          <span class="c"># auto-detects system and architecture</span><br>
+          <span class="p">$</span> <span class="k">curl</span> -fsSL https://alps-project.pages.dev/install.sh | <span class="k">sh</span>
+        </div>
+      </div>
+
+      <div class="cmd-block" style="margin-top: 1px;">
+        <div class="cmd-header">
+          <span class="cmd-method">From source</span>
           <span class="cmd-tag">make install</span>
         </div>
         <div class="cmd-body">
@@ -1274,9 +1343,9 @@
           <span class="c"># fish</span><br>
           <span class="p">$</span> alps completion fish &gt; ~/.config/fish/completions/alps.fish<br>
           <span class="c"># bash</span><br>
-          <span class="p">$</span> alps completion bash &gt; /etc/bash_completion.d/alps<br>
+          <span class="p">$</span> alps completion bash &gt; /usr/share/bash-completion/completions/alps<br>
           <span class="c"># zsh</span><br>
-          <span class="p">$</span> alps completion zsh &gt; "${fpath[1]}/_alps" &amp;&amp; compinit
+          <span class="p">$</span> alps completion zsh &gt; "${fpath[1]}/_alps" &amp;&amp; autoload -U compinit &amp;&amp; compinit
         </div>
       </div>
 
@@ -1303,14 +1372,16 @@
         <div>
           <div class="dl-name">Debian / Ubuntu package</div>
           <div class="dl-desc">Native apt-compatible .deb package for Debian, Ubuntu, Linux Mint, Pop!_OS, and compatible distributions.</div>
-          <div class="dl-arch-list" id="arch-list-deb">
-            <button class="dl-arch-item active" onclick="setArch(this, 'deb', 'amd64')">amd64</button>
-            <button class="dl-arch-item" onclick="setArch(this, 'deb', 'arm64')">arm64</button>
-            <button class="dl-arch-item" onclick="setArch(this, 'deb', 'armhf')">armhf</button>
+          <div class="dl-widget">
+            <div class="dl-widget-tabs" id="arch-list-deb">
+              <button class="dl-widget-tab active" onclick="setArch(this, 'deb', 'amd64')">amd64</button>
+              <button class="dl-widget-tab" onclick="setArch(this, 'deb', 'arm64')">arm64</button>
+              <button class="dl-widget-tab" onclick="setArch(this, 'deb', 'armhf')">armhf</button>
+            </div>
+            <a href="https://github.com/adrianpriza-ai/alps/releases/latest" target="_blank" rel="noopener" class="dl-widget-btn" id="dl-deb-link">
+              <span id="dl-deb-text">Download for amd64</span>
+            </a>
           </div>
-          <a href="https://github.com/adrianpriza-ai/alps/releases/latest" target="_blank" rel="noopener" class="dl-btn" id="dl-deb-link">
-            <span class="dl-btn-inner" id="dl-deb-text">Download for amd64</span>
-          </a>
         </div>
       </div>
 
@@ -1321,13 +1392,15 @@
         <div>
           <div class="dl-name">Fedora / RHEL package</div>
           <div class="dl-desc">Native dnf-compatible .rpm package for Fedora, RHEL, AlmaLinux, Rocky Linux, and compatible distributions.</div>
-          <div class="dl-arch-list">
-            <span class="dl-arch-item">x86_64</span>
-            <span class="dl-arch-item">aarch64</span>
+          <div class="dl-widget">
+            <div class="dl-widget-tabs">
+              <button class="dl-widget-tab" disabled>x86_64</button>
+              <button class="dl-widget-tab" disabled>aarch64</button>
+            </div>
+            <a class="dl-widget-btn" style="pointer-events: none;">
+              <span>Not yet available</span>
+            </a>
           </div>
-          <a class="dl-btn">
-            <span class="dl-btn-inner">Not yet available</span>
-          </a>
         </div>
       </div>
 
@@ -1337,14 +1410,16 @@
         <div>
           <div class="dl-name">Termux / Android binary</div>
           <div class="dl-desc">Standalone static binary for Android via Termux. Installs to $PREFIX/bin/alps natively without root.</div>
-          <div class="dl-arch-list" id="arch-list-termux">
-            <button class="dl-arch-item" onclick="setArch(this, 'termux', 'x86_64')">x86_64</button>
-            <button class="dl-arch-item active" onclick="setArch(this, 'termux', 'aarch64')">aarch64</button>
-            <button class="dl-arch-item" onclick="setArch(this, 'termux', 'arm')">arm</button>
+          <div class="dl-widget">
+            <div class="dl-widget-tabs" id="arch-list-termux">
+              <button class="dl-widget-tab" onclick="setArch(this, 'termux', 'x86_64')">x86_64</button>
+              <button class="dl-widget-tab active" onclick="setArch(this, 'termux', 'aarch64')">aarch64</button>
+              <button class="dl-widget-tab" onclick="setArch(this, 'termux', 'arm')">arm</button>
+            </div>
+            <a href="https://github.com/adrianpriza-ai/alps/releases/latest" target="_blank" rel="noopener" class="dl-widget-btn" id="dl-termux-link">
+              <span id="dl-termux-text">Download for aarch64</span>
+            </a>
           </div>
-          <a href="https://github.com/adrianpriza-ai/alps/releases/latest" target="_blank" rel="noopener" class="dl-btn" id="dl-termux-link">
-            <span class="dl-btn-inner" id="dl-termux-text">Download for aarch64</span>
-          </a>
         </div>
       </div>
 
@@ -1354,15 +1429,16 @@
         <div>
           <div class="dl-name">Pre-compiled Linux binary</div>
           <div class="dl-desc">Standalone static binary. Download, chmod +x, copy to /usr/local/bin. No dependencies required.</div>
-          <div class="dl-arch-list" id="arch-list-linux">
-            <button class="dl-arch-item active" onclick="setArch(this, 'linux', 'amd64')">amd64</button>
-            <button class="dl-arch-item" onclick="setArch(this, 'linux', 'arm64')">arm64</button>
-            <button class="dl-arch-item" onclick="setArch(this, 'linux', 'armv7')">armv7</button>
+          <div class="dl-widget">
+            <div class="dl-widget-tabs" id="arch-list-linux">
+              <button class="dl-widget-tab active" onclick="setArch(this, 'linux', 'amd64')">amd64</button>
+              <button class="dl-widget-tab" onclick="setArch(this, 'linux', 'arm64')">arm64</button>
+              <button class="dl-widget-tab" onclick="setArch(this, 'linux', 'armv7')">armv7</button>
+            </div>
+            <a href="https://github.com/adrianpriza-ai/alps/releases/latest" target="_blank" rel="noopener" class="dl-widget-btn" id="ver-dl-link">
+              <span id="dl-linux-text">Download for amd64</span>
+            </a>
           </div>
-          <a href="https://github.com/adrianpriza-ai/alps/releases/latest" target="_blank" rel="noopener" class="dl-btn" id="ver-dl-link">
-            <span class="dl-btn-inner" id="dl-linux-text">Download for amd64</span>
-          </a>
-          <br>
           <a href="https://github.com/adrianpriza-ai/alps/releases/latest" target="_blank" rel="noopener" class="dl-release-link">View latest release on GitHub &rarr;</a>
         </div>
       </div>
@@ -1413,7 +1489,7 @@
   <footer>
     <div class="footer-left">
       <span class="footer-brand">ALPS</span>
-      <span class="footer-meta" id="ver-footer">v0.9 &nbsp;/&nbsp; MIT License &nbsp;/&nbsp; Go 1.22+</span>
+      <span class="footer-meta" id="ver-footer">v1.0 &nbsp;/&nbsp; MIT License &nbsp;/&nbsp; Go 1.22+</span>
     </div>
     <div class="footer-right">
       by <a href="https://github.com/adrianpriza-ai" target="_blank" rel="noopener">adrianpriza-ai</a>
@@ -1423,8 +1499,12 @@
   </footer>
 
   <script>
+    // Global variable to hold version, default is the static fallback from HTML
+    window.alpsVersion = 'v1.0';
+
+    // Copy to clipboard function
     function copyInstall(btn) {
-      const text = 'git clone https://github.com/adrianpriza-ai/alps && cd alps && make install';
+      const text = 'curl -fsSL https://alps-project.pages.dev/install.sh | sh';
       navigator.clipboard.writeText(text).then(() => {
         btn.textContent = 'copied';
         btn.classList.add('copied');
@@ -1435,64 +1515,7 @@
       });
     }
 
-    /* ── GitHub Release version fetch ─────────────────── */
-    (async function fetchVersion() {
-      try {
-        const res = await fetch(
-          'https://api.github.com/repos/adrianpriza-ai/alps/releases/latest',
-          { headers: { Accept: 'application/vnd.github+json' } }
-        );
-        if (!res.ok) return;                  // no releases yet → keep fallback
-        const { tag_name, html_url } = await res.json();
-        if (!tag_name) return;
-        const v = tag_name.startsWith('v') ? tag_name : 'v' + tag_name;
-
-        /* nav badge */
-        const navTag = document.getElementById('ver-nav');
-        if (navTag) navTag.textContent = v;
-
-        /* hero stat */
-        const heroNum = document.getElementById('ver-hero-num');
-        if (heroNum) heroNum.textContent = v;
-
-        /* footer */
-        const footerMeta = document.getElementById('ver-footer');
-        if (footerMeta) footerMeta.textContent = v + ' \u00a0/\u00a0 MIT License \u00a0/\u00a0 Go 1.22+';
-
-        window.alpsVersion = v;
-
-        /* Auto CPU Arch detection */
-        let archLinux = 'amd64';
-        let archDeb = 'amd64';
-        let archTermux = 'x86_64';
-        
-        const ua = navigator.userAgent.toLowerCase();
-        if (ua.includes('aarch64') || ua.includes('arm64') || (navigator.platform && navigator.platform.toLowerCase().includes('arm64'))) {
-          archLinux = 'arm64';
-          archDeb = 'arm64';
-          archTermux = 'aarch64';
-        } else if (ua.includes('arm')) {
-          archLinux = 'armv7';
-          archDeb = 'armhf';
-          archTermux = 'arm';
-        }
-
-        /* update active arch buttons and links via setArch */
-        function triggerArch(type, arch) {
-          const list = document.getElementById('arch-list-' + type);
-          if (list) {
-            const btn = Array.from(list.children).find(b => b.textContent.trim() === arch);
-            if (btn) setArch(btn, type, arch);
-          }
-        }
-
-        triggerArch('linux', archLinux);
-        triggerArch('deb', archDeb);
-        triggerArch('termux', archTermux);
-        
-      } catch (_) { /* network unavailable — silently keep static fallback */ }
-    })();
-
+    // Dynamic layout state for setting active architecture and link
     function setArch(btn, type, arch) {
       const list = btn.parentElement;
       for (const child of list.children) {
@@ -1505,7 +1528,7 @@
       if (!link || !text) return;
       
       const v = window.alpsVersion || 'v1.0';
-      const pureV = v.replace('v', '');
+      const pureV = v.replace(/^v/, '');
       
       if (type === 'deb') {
         link.href = `https://github.com/adrianpriza-ai/alps/releases/download/${v}/alps_${pureV}_${arch}.deb`;
@@ -1516,6 +1539,124 @@
       }
       text.textContent = `Download for ${arch}`;
     }
+
+    // Helper to find and trigger setArch on the correct button
+    function triggerArch(type, arch) {
+      const list = document.getElementById('arch-list-' + type);
+      if (list) {
+        const btn = Array.from(list.children).find(b => b.textContent.trim() === arch);
+        if (btn) {
+          setArch(btn, type, arch);
+        }
+      }
+    }
+
+    // Re-apply links when version is dynamically fetched
+    function refreshDownloadLinks() {
+      ['deb', 'termux', 'linux'].forEach(type => {
+        const list = document.getElementById('arch-list-' + type);
+        if (list) {
+          const activeBtn = list.querySelector('.dl-widget-tab.active');
+          if (activeBtn) {
+            const arch = activeBtn.textContent.trim();
+            setArch(activeBtn, type, arch);
+          }
+        }
+      });
+    }
+
+    // Sync initialization of arch detection & default links
+    function initDownloads() {
+      // 1. Get fallback version from DOM if possible
+      const heroNum = document.getElementById('ver-hero-num');
+      if (heroNum && heroNum.textContent.trim()) {
+        window.alpsVersion = heroNum.textContent.trim();
+      }
+
+      // 2. Perform client-side CPU architecture detection
+      let archLinux = 'amd64';
+      let archDeb = 'amd64';
+      let archTermux = 'aarch64';
+      
+      const ua = navigator.userAgent.toLowerCase();
+      const platform = (navigator.platform || '').toLowerCase();
+      
+      const isArm64 = ua.includes('aarch64') || ua.includes('arm64') || 
+                      platform.includes('arm64') || platform.includes('aarch64') ||
+                      (navigator.userAgentData && navigator.userAgentData.platform === 'Android');
+      const isArm32 = ua.includes('arm') || platform.includes('arm');
+
+      if (isArm64) {
+        archLinux = 'arm64';
+        archDeb = 'arm64';
+        archTermux = 'aarch64';
+      } else if (isArm32) {
+        archLinux = 'armv7';
+        archDeb = 'armhf';
+        archTermux = 'arm';
+      } else {
+        // x86_64
+        if (ua.includes('x86_64') || platform.includes('x86_64') || platform.includes('win64') || platform.includes('wow64') || ua.includes('amd64')) {
+          archLinux = 'amd64';
+          archDeb = 'amd64';
+          archTermux = 'x86_64';
+        }
+      }
+
+      // 3. Trigger initial setup for each category
+      triggerArch('linux', archLinux);
+      triggerArch('deb', archDeb);
+      triggerArch('termux', archTermux);
+
+      // 4. Try high entropy userAgentData for modern browsers (async fallback)
+      if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+        navigator.userAgentData.getHighEntropyValues(['architecture']).then(values => {
+          const entropyArch = (values.architecture || '').toLowerCase();
+          if (entropyArch === 'arm64' || entropyArch === 'aarch64') {
+            triggerArch('linux', 'arm64');
+            triggerArch('deb', 'arm64');
+            triggerArch('termux', 'aarch64');
+          } else if (entropyArch === 'arm') {
+            triggerArch('linux', 'armv7');
+            triggerArch('deb', 'armhf');
+            triggerArch('termux', 'arm');
+          }
+        }).catch(() => {});
+      }
+    }
+
+    // Async fetch version from GitHub API
+    async function fetchVersion() {
+      try {
+        const res = await fetch(
+          'https://api.github.com/repos/adrianpriza-ai/alps/releases/latest',
+          { headers: { Accept: 'application/vnd.github+json' } }
+        );
+        if (!res.ok) return;
+        const { tag_name } = await res.json();
+        if (!tag_name) return;
+        const v = tag_name.startsWith('v') ? tag_name : 'v' + tag_name;
+
+        window.alpsVersion = v;
+
+        /* Update version labels on the page */
+        const navTag = document.getElementById('ver-nav');
+        if (navTag) navTag.textContent = v;
+
+        const heroNum = document.getElementById('ver-hero-num');
+        if (heroNum) heroNum.textContent = v;
+
+        const footerMeta = document.getElementById('ver-footer');
+        if (footerMeta) footerMeta.textContent = v + ' \u00a0/\u00a0 MIT License \u00a0/\u00a0 Go 1.22+';
+
+        /* Update active download links with the newly fetched version tag */
+        refreshDownloadLinks();
+      } catch (_) { /* Keep static fallback if offline */ }
+    }
+
+    // Kickstart the processes
+    initDownloads();
+    fetchVersion();
   </script>
 </body>
 </html>
