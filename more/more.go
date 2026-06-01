@@ -311,11 +311,11 @@ func Remove(e *Entry, cfg *config.Config) error {
 		}
 	}
 	server := ""
-	if needsCurlRun(e) {
+	if needsMirror(e) {
 		var err error
 		server, err = resolveServer(e.Servers)
 		if err != nil {
-			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}: %w", err)
+			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}/{SERVER}: %w", err)
 		}
 	}
 	return runLines(e.RemoveLines, server)
@@ -429,11 +429,11 @@ func Purge(name string, cfg *config.Config) error {
 	}
 
 	server := ""
-	if needsCurlRun(e) {
+	if needsMirror(e) {
 		var err error
 		server, err = resolveServer(e.Servers)
 		if err != nil {
-			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}: %w", err)
+			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}/{SERVER}: %w", err)
 		}
 	}
 
@@ -462,11 +462,11 @@ func runInstall(e *Entry, cfg *config.Config) error {
 	}
 
 	server := ""
-	if needsCurlRun(e) {
+	if needsMirror(e) {
 		var err error
 		server, err = resolveServer(e.Servers)
 		if err != nil {
-			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}: %w", err)
+			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}/{SERVER}: %w", err)
 		}
 	}
 
@@ -497,11 +497,11 @@ func runUpgrade(e *Entry, cfg *config.Config) error {
 	}
 
 	server := ""
-	if needsCurlRun(e) {
+	if needsMirror(e) {
 		var err error
 		server, err = resolveServer(e.Servers)
 		if err != nil {
-			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}: %w", err)
+			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}/{SERVER}: %w", err)
 		}
 	}
 
@@ -526,14 +526,14 @@ func ensureSudo() error {
 	if isTermux() {
 		return nil // Termux owns its prefix — no privilege escalation needed
 	}
-	return priv.Ensure()
+	return priv.EnsureSudoOnly()
 }
 
-// needsCurlRun reports whether any command in the entry uses the {CURL_RUN} macro.
-func needsCurlRun(e *Entry) bool {
+// needsMirror reports whether any command in the entry uses {CURL_RUN} or {SERVER}.
+func needsMirror(e *Entry) bool {
 	for _, lines := range [][]string{e.CmdLines, e.UpgradeLines, e.RemoveLines, e.PurgeLines} {
 		for _, l := range lines {
-			if strings.Contains(l, "{CURL_RUN}") {
+			if strings.Contains(l, "{CURL_RUN}") || strings.Contains(l, "{SERVER}") {
 				return true
 			}
 		}
@@ -550,9 +550,12 @@ func runLines(lines []string, server string) error {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if server != "" && strings.Contains(line, "{CURL_RUN}") {
-			line = strings.ReplaceAll(line, "{CURL_RUN}", "curl -fsSL "+server)
-			line = strings.TrimRight(line, " \t") + " | sh"
+		if server != "" {
+			if strings.Contains(line, "{CURL_RUN}") {
+				line = strings.ReplaceAll(line, "{CURL_RUN}", "curl -fsSL "+server)
+				line = strings.TrimRight(line, " \t") + " | sh"
+			}
+			line = strings.ReplaceAll(line, "{SERVER}", server)
 		}
 		cmd := exec.Command("bash", "-c", line)
 		cmd.Env = append(os.Environ(), "TERM=xterm-256color")

@@ -19,8 +19,10 @@ import (
 const (
 	aurRPCSearch = "https://aur.archlinux.org/rpc/v5/search/"
 	aurRPCInfo   = "https://aur.archlinux.org/rpc/v5/info/"
+	absGitLab    = "https://gitlab.archlinux.org/archlinux/packaging/packages/"
 )
 
+// Package represents an AUR package from the RPC API.
 type Package struct {
 	Name        string   `json:"Name"`
 	Version     string   `json:"Version"`
@@ -41,7 +43,15 @@ type rpcResponse struct {
 	Error   string    `json:"error"`
 }
 
-// symSet returns TTY-safe symbols for ok, warn, and arrow.
+// installPlan holds the fully resolved work for an install.
+// All user input is collected from this before any build starts.
+type installPlan struct {
+	AURPackages   []*Package // in build order (deps first)
+	RepoDeps      []string   // installed from pacman before building
+	MakeDepsAdded []string   // makedeps not pre-installed; offered for removal after
+}
+
+// symSet returns TTY-safe symbols.
 func symSet() (ok, warn, arrow string) {
 	t := os.Getenv("TERM")
 	if t == "linux" || t == "dumb" || t == "" {
@@ -64,16 +74,13 @@ func fetchRPC(url string) (*rpcResponse, error) {
 		return nil, fmt.Errorf("AUR request failed: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("AUR returned HTTP %d", resp.StatusCode)
 	}
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read AUR response: %w", err)
 	}
-
 	var result rpcResponse
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to parse AUR response: %w", err)
@@ -84,7 +91,7 @@ func fetchRPC(url string) (*rpcResponse, error) {
 	return &result, nil
 }
 
-// Search searches for packages in AUR sorted by votes.
+// Search searches AUR sorted by votes.
 func Search(query string) ([]Package, error) {
 	result, err := fetchRPC(aurRPCSearch + query)
 	if err != nil {
@@ -94,6 +101,32 @@ func Search(query string) ([]Package, error) {
 		return result.Results[i].Votes > result.Results[j].Votes
 	})
 	return result.Results, nil
+}
+
+// SearchNarrow searches AUR using all words in query.
+// The first word hits the AUR RPC; remaining words narrow results in-memory
+// against name and description (case-insensitive). Mirrors yay's behaviour.
+func SearchNarrow(query string) ([]Package, error) {
+	words := strings.Fields(query)
+	if len(words) == 0 {
+		return nil, fmt.Errorf("empty search query")
+	}
+	results, err := Search(words[0])
+	if err != nil {
+		return nil, err
+	}
+	for _, word := range words[1:] {
+		w := strings.ToLower(word)
+		var filtered []Package
+		for _, p := range results {
+			if strings.Contains(strings.ToLower(p.Name), w) ||
+				strings.Contains(strings.ToLower(p.Description), w) {
+				filtered = append(filtered, p)
+			}
+		}
+		results = filtered
+	}
+	return results, nil
 }
 
 // Info fetches detailed info for a single package by exact name.
@@ -149,7 +182,7 @@ func PrintSearchResult(idx int, p Package, source string) {
 		source, p.Name, p.Version, ood, orphan, p.Description)
 }
 
-// PrintPackageInfo prints full package details before install.
+// PrintPackageInfo prints full package details.
 func PrintPackageInfo(p *Package) {
 	ood := ""
 	if p.OutOfDate != 0 {
@@ -180,20 +213,27 @@ func PrintPackageInfo(p *Package) {
 	fmt.Println()
 }
 
+// Install
+
 // Install installs one or more AUR packages.
+// Uses yay if available; otherwise falls back to makepkg with full dep
+// resolution and all user prompts collected before any build starts.
 func Install(pkgNames []string, noConfirm bool) error {
 	if len(pkgNames) == 0 {
 		return nil
 	}
-	if helper := DetectHelper(); helper == "yay" {
+	if DetectHelper() == "yay" {
 		return installWithYay(pkgNames, noConfirm)
 	}
-	for _, name := range pkgNames {
-		if err := installWithMakepkg(name, noConfirm); err != nil {
-			return err
-		}
+
+	plan, err := buildInstallPlan(pkgNames)
+	if err != nil {
+		return err
 	}
-	return nil
+	if err := collectUserInputs(plan, noConfirm); err != nil {
+		return err
+	}
+	return executeInstallPlan(plan, noConfirm)
 }
 
 func installWithYay(pkgNames []string, noConfirm bool) error {
@@ -214,137 +254,239 @@ func installWithYay(pkgNames []string, noConfirm bool) error {
 	return nil
 }
 
-// aurCacheDir returns ~/.cache/alps/aur/<pkgname>
-func aurCacheDir(pkgName string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".cache", "alps", "aur", pkgName), nil
-}
+// Dep resolution
 
-// AURCacheRoot returns ~/.cache/alps/aur/
-func AURCacheRoot() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".cache", "alps", "aur"), nil
-}
+// buildInstallPlan resolves the full dep tree for the requested packages and
+// returns them in build order (all deps before the package that needs them).
+func buildInstallPlan(names []string) (*installPlan, error) {
+	_, warn, _ := symSet()
+	visited := make(map[string]bool)
+	var ordered []*Package
+	var repoDeps []string
 
-// ListInstalledAUR wraps GetInstalledAUR for external use.
-func ListInstalledAUR() (map[string]string, error) {
-	return GetInstalledAUR()
-}
-
-func installWithMakepkg(pkgName string, noConfirm bool) error {
-	ok, warn, arrow := symSet()
-	pkg, err := Info(pkgName)
-	if err != nil {
-		return err
-	}
-
-	PrintPackageInfo(pkg)
-
-	if pkg.OutOfDate != 0 {
-		fmt.Printf("  %s  out-of-date. Continue anyway? [y/N] ", warn)
-		var inp string
-		fmt.Scanln(&inp)
-		if strings.ToLower(strings.TrimSpace(inp)) != "y" {
-			return fmt.Errorf("install cancelled")
+	for _, name := range names {
+		pkg, err := Info(name)
+		if err != nil {
+			return nil, err
+		}
+		if err := resolveDepTree(pkg, visited, &ordered, &repoDeps, warn); err != nil {
+			return nil, err
 		}
 	}
 
-	// Check deps — stop if any are in AUR only
-	missingRepo, aurOnly, err := checkDeps(pkg)
-	if err != nil {
-		return err
-	}
-
-	if len(aurOnly) > 0 {
-		return fmt.Errorf(
-			"the following dependencies are only available in AUR — install them manually first:\n  %s",
-			strings.Join(aurOnly, "\n  "),
-		)
-	}
-
-	if len(missingRepo) > 0 {
-		fmt.Printf("  :: Missing deps (will be installed from repo): %s\n", strings.Join(missingRepo, "  "))
-		if !noConfirm {
-			fmt.Print("  Install missing deps? [Y/n] ")
-			var inp string
-			fmt.Scanln(&inp)
-			if strings.ToLower(strings.TrimSpace(inp)) == "n" {
-				return fmt.Errorf("install cancelled")
+	// Track which makedeps aren't currently installed (for post-build offer)
+	var makeAdded []string
+	for _, pkg := range ordered {
+		for _, dep := range pkg.MakeDepends {
+			n := stripVerConstraint(dep)
+			if !isInstalled(n) {
+				makeAdded = append(makeAdded, n)
 			}
 		}
-		fmt.Println()
 	}
 
-	// Track makedepends not installed before build
-	var toRemove []string
-	for _, dep := range pkg.MakeDepends {
+	return &installPlan{
+		AURPackages:   ordered,
+		RepoDeps:      dedup(repoDeps),
+		MakeDepsAdded: dedup(makeAdded),
+	}, nil
+}
+
+// resolveDepTree recursively walks deps for pkg, appending to ordered in
+// topological build order (dependencies always come before the package
+// that requires them). Uses pacman -T for accurate satisfier checking.
+func resolveDepTree(pkg *Package, visited map[string]bool, ordered *[]*Package, repoDeps *[]string, warn string) error {
+	if visited[pkg.Name] {
+		return nil
+	}
+	visited[pkg.Name] = true
+
+	allDeps := append(pkg.Depends, pkg.MakeDepends...)
+	for _, dep := range unsatisfiedDeps(allDeps) {
 		name := stripVerConstraint(dep)
-		if !isInstalled(name) {
-			toRemove = append(toRemove, name)
+
+		// Already handled above us in the tree?
+		if visited[name] {
+			continue
 		}
-	}
 
-	// Use ~/.cache/alps/aur/<pkgname> instead of /tmp
-	pkgDir, err := aurCacheDir(pkg.Name)
-	if err != nil {
-		return fmt.Errorf("failed to resolve cache dir: %w", err)
-	}
+		// Official repo?
+		if inPacmanRepo(name) {
+			*repoDeps = append(*repoDeps, name)
+			continue
+		}
 
-	// Clean previous cache if exists
-	if _, err := os.Stat(pkgDir); err == nil {
-		os.RemoveAll(pkgDir)
-	}
-	if err := os.MkdirAll(pkgDir, 0755); err != nil {
-		return fmt.Errorf("failed to create cache dir: %w", err)
-	}
+		// Provided by something already installed?
+		if hasProvider(name) {
+			continue
+		}
 
-	gitURL := fmt.Sprintf("https://aur.archlinux.org/%s.git", pkg.Name)
+		// AUR — find the right package (exact match or user-selected provider)
+		depPkg, err := findAURPackage(name)
+		if err != nil {
+			return fmt.Errorf("dep %q required by %s: %w", name, pkg.Name, err)
+		}
 
-	fmt.Printf("  %s cloning %s...\n", arrow, gitURL)
-	cloneCmd := exec.Command("git", "clone", "--depth=1", gitURL, pkgDir)
-	cloneCmd.Env = append(os.Environ(), "TERM=xterm-256color")
-	cloneCmd.Stdout = nil
-	cloneCmd.Stderr = os.Stderr
-	if err := cloneCmd.Run(); err != nil {
-		return fmt.Errorf("git clone failed: %w", err)
-	}
-	fmt.Printf("  %s  cloned\n\n", ok)
-
-	if !noConfirm {
-		if err := reviewPKGBUILD(filepath.Join(pkgDir, "PKGBUILD")); err != nil {
+		fmt.Printf("  %s  AUR dep: %s (required by %s)\n", warn, depPkg.Name, pkg.Name)
+		if err := resolveDepTree(depPkg, visited, ordered, repoDeps, warn); err != nil {
 			return err
 		}
 	}
 
-	makepkgArgs := []string{"-si"}
+	*ordered = append(*ordered, pkg)
+	return nil
+}
+
+// findAURPackage looks up a dep by exact name in AUR.
+// If no exact match exists, searches and asks the user to pick a provider.
+func findAURPackage(name string) (*Package, error) {
+	pkg, err := Info(name)
+	if err == nil {
+		return pkg, nil
+	}
+
+	// Exact lookup failed — search and let the user choose a provider
+	results, serr := Search(name)
+	if serr != nil || len(results) == 0 {
+		return nil, fmt.Errorf("not found in AUR")
+	}
+
+	limit := 5
+	if len(results) < limit {
+		limit = len(results)
+	}
+	fmt.Printf("\n  :: No exact AUR match for %q — select a provider:\n", name)
+	for i, p := range results[:limit] {
+		fmt.Printf("  %d) aur/%s %s — %s\n", i+1, p.Name, p.Version, p.Description)
+	}
+	fmt.Print("  0) abort\n  Choice: ")
+
+	var choice int
+	fmt.Scan(&choice)
+	if choice < 1 || choice > limit {
+		return nil, fmt.Errorf("no provider selected for %q", name)
+	}
+	selected := results[choice-1]
+	return &selected, nil
+}
+
+// Up-front user input collection
+
+// collectUserInputs gathers ALL confirmations and PKGBUILD reviews before any
+// build starts. After this returns nil, executeInstallPlan runs non-interactively.
+func collectUserInputs(plan *installPlan, noConfirm bool) error {
+	_, warn, arrow := symSet()
+
+	// Summary of everything about to happen
+	if len(plan.RepoDeps) > 0 {
+		fmt.Printf("\n  :: Repo dependencies: %s\n", strings.Join(plan.RepoDeps, "  "))
+	}
+
+	fmt.Printf("\n  :: AUR packages to build (%d):\n", len(plan.AURPackages))
+	for i, p := range plan.AURPackages {
+		ood := ""
+		if p.OutOfDate != 0 {
+			ood = " [out-of-date]"
+		}
+		fmt.Printf("  %d. aur/%s %s%s\n", i+1, p.Name, p.Version, ood)
+		if p.Description != "" {
+			fmt.Printf("     %s\n", p.Description)
+		}
+	}
+
 	if noConfirm {
-		makepkgArgs = append(makepkgArgs, "--noconfirm")
+		return nil
 	}
 
-	fmt.Printf("\n  %s building %s %s...\n\n", arrow, pkg.Name, pkg.Version)
-	makepkg := exec.Command("makepkg", makepkgArgs...)
-	makepkg.Env = append(os.Environ(), "TERM=xterm-256color")
-	makepkg.Dir = pkgDir
-	makepkg.Stdout = os.Stdout
-	makepkg.Stderr = os.Stderr
-	makepkg.Stdin = os.Stdin
-	if err := makepkg.Run(); err != nil {
-		return fmt.Errorf("makepkg failed: %w", err)
+	// Warn about out-of-date packages
+	for _, p := range plan.AURPackages {
+		if p.OutOfDate != 0 {
+			fmt.Printf("\n  %s  %s is flagged out-of-date\n", warn, p.Name)
+		}
 	}
 
-	// Ask to remove makedepends installed during build
-	if len(toRemove) > 0 {
-		fmt.Printf("\n  :: Build dependencies installed: %s\n", strings.Join(toRemove, "  "))
-		fmt.Print("  Remove build dependencies? [y/N] ")
-		var inp string
-		fmt.Scanln(&inp)
-		if strings.ToLower(strings.TrimSpace(inp)) == "y" {
+	// PKGBUILD review — clone all packages up-front so the user can read them
+	// before committing. buildAndInstall reuses the clone if it already exists.
+	fmt.Printf("\n  %s Review PKGBUILDs before building? [y/N] ", arrow)
+	var inp string
+	fmt.Scanln(&inp)
+	if strings.ToLower(strings.TrimSpace(inp)) == "y" {
+		for _, p := range plan.AURPackages {
+			pkgDir, err := aurCacheDir(p.Name)
+			if err != nil {
+				return err
+			}
+			if err := cloneAUR(p, pkgDir); err != nil {
+				return err
+			}
+			if err := reviewPKGBUILD(filepath.Join(pkgDir, "PKGBUILD")); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Single proceed prompt for everything
+	label := "Proceed with install?"
+	if len(plan.AURPackages) > 1 {
+		label = fmt.Sprintf("Proceed with all %d builds?", len(plan.AURPackages))
+	}
+	fmt.Printf("\n  %s %s [Y/n] ", arrow, label)
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	if strings.ToLower(strings.TrimSpace(scanner.Text())) == "n" {
+		return fmt.Errorf("install cancelled by user")
+	}
+	return nil
+}
+
+// Build execution
+
+// executeInstallPlan installs repo deps then builds AUR packages in dep order.
+// By this point all user input has already been collected.
+func executeInstallPlan(plan *installPlan, noConfirm bool) error {
+	ok, warn, arrow := symSet()
+
+	// Install repo deps first
+	if len(plan.RepoDeps) > 0 {
+		fmt.Printf("\n  %s installing repo deps: %s\n\n", arrow, strings.Join(plan.RepoDeps, " "))
+		args := append([]string{"pacman", "-S", "--noconfirm", "--needed"}, plan.RepoDeps...)
+		cmd, err := priv.Command(args...)
+		if err != nil {
+			return fmt.Errorf("privilege escalation failed: %w", err)
+		}
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to install repo deps: %w", err)
+		}
+	}
+
+	// Build each AUR package in dep order
+	for _, pkg := range plan.AURPackages {
+		if err := buildAndInstall(pkg, noConfirm); err != nil {
+			return fmt.Errorf("failed to build %s: %w", pkg.Name, err)
+		}
+	}
+
+	// Offer makedep removal once, at the very end
+	if len(plan.MakeDepsAdded) > 0 {
+		var toRemove []string
+		for _, dep := range plan.MakeDepsAdded {
+			if isInstalled(dep) {
+				toRemove = append(toRemove, dep)
+			}
+		}
+		if len(toRemove) > 0 {
+			fmt.Printf("\n  :: Build dependencies installed during build: %s\n", strings.Join(toRemove, "  "))
+			if !noConfirm {
+				fmt.Print("  Remove build dependencies? [y/N] ")
+				var inp string
+				fmt.Scanln(&inp)
+				if strings.ToLower(strings.TrimSpace(inp)) != "y" {
+					return nil
+				}
+			}
 			rmArgs := append([]string{"pacman", "-Rns", "--noconfirm"}, toRemove...)
 			rmCmd, err := priv.Command(rmArgs...)
 			if err != nil {
@@ -361,31 +503,256 @@ func installWithMakepkg(pkgName string, noConfirm bool) error {
 			}
 		}
 	}
-
-	// Ask to keep or remove build cache
-	fmt.Printf("\n  :: Build cache: %s\n", pkgDir)
-	fmt.Print("  Keep build cache? [y/N] ")
-	var keep string
-	fmt.Scanln(&keep)
-	if strings.ToLower(strings.TrimSpace(keep)) != "y" {
-		os.RemoveAll(pkgDir)
-		fmt.Printf("  %s  cache removed\n", ok)
-	}
-
 	return nil
 }
 
-// checkDeps checks all depends+makedepends of pkg.
-// Returns: missingRepo (not installed, but in repo), aurOnly (only in AUR — must stop).
-func checkDeps(pkg *Package) (missingRepo []string, aurOnly []string, err error) {
-	allDeps := append(pkg.Depends, pkg.MakeDepends...)
-	var missing []string
+// buildAndInstall clones (if not already present from review) and builds pkg.
+func buildAndInstall(pkg *Package, noConfirm bool) error {
+	ok, _, arrow := symSet()
 
-	for _, dep := range allDeps {
+	pkgDir, err := aurCacheDir(pkg.Name)
+	if err != nil {
+		return fmt.Errorf("failed to resolve cache dir: %w", err)
+	}
+
+	// Reuse clone from PKGBUILD review if already there
+	if _, err := os.Stat(filepath.Join(pkgDir, "PKGBUILD")); os.IsNotExist(err) {
+		if err := cloneAUR(pkg, pkgDir); err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("\n  %s building %s %s...\n\n", arrow, pkg.Name, pkg.Version)
+	args := []string{"-si", "--noconfirm"} // noconfirm here: user already confirmed above
+	makepkg := exec.Command("makepkg", args...)
+	makepkg.Env = append(os.Environ(), "TERM=xterm-256color")
+	makepkg.Dir = pkgDir
+	makepkg.Stdout = os.Stdout
+	makepkg.Stderr = os.Stderr
+	makepkg.Stdin = os.Stdin
+	if err := makepkg.Run(); err != nil {
+		return fmt.Errorf("makepkg failed: %w", err)
+	}
+	fmt.Printf("  %s  %s installed\n", ok, pkg.Name)
+
+	// Cache cleanup
+	if !noConfirm {
+		fmt.Printf("\n  :: Build cache: %s\n", pkgDir)
+		fmt.Print("  Keep build cache? [y/N] ")
+		var keep string
+		fmt.Scanln(&keep)
+		if strings.ToLower(strings.TrimSpace(keep)) != "y" {
+			os.RemoveAll(pkgDir)
+			fmt.Printf("  %s  cache removed\n", ok)
+		}
+	}
+	return nil
+}
+
+// cloneAUR clones the AUR git repo for pkg into pkgDir.
+// Removes any existing dir first so the clone is always fresh.
+func cloneAUR(pkg *Package, pkgDir string) error {
+	_, _, arrow := symSet()
+	if _, err := os.Stat(pkgDir); err == nil {
+		os.RemoveAll(pkgDir)
+	}
+	if err := os.MkdirAll(filepath.Dir(pkgDir), 0755); err != nil {
+		return fmt.Errorf("failed to create cache dir: %w", err)
+	}
+	gitURL := fmt.Sprintf("https://aur.archlinux.org/%s.git", pkg.Name)
+	fmt.Printf("  %s cloning %s...\n", arrow, gitURL)
+	cmd := exec.Command("git", "clone", "--depth=1", gitURL, pkgDir)
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Stdout = nil
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git clone failed for %s: %w", pkg.Name, err)
+	}
+	return nil
+}
+
+// Local PKGBUILD
+
+// BuildLocal builds a package from a local directory containing a PKGBUILD.
+// Resolves and installs any AUR or repo deps before building.
+func BuildLocal(dir string, noConfirm bool) error {
+	ok, _, arrow := symSet()
+
+	pkgbuildPath := filepath.Join(dir, "PKGBUILD")
+	if _, err := os.Stat(pkgbuildPath); os.IsNotExist(err) {
+		return fmt.Errorf("no PKGBUILD found in %s", dir)
+	}
+
+	deps, makedeps, pkgname, err := parsePKGBUILD(pkgbuildPath)
+	if err != nil {
+		return fmt.Errorf("failed to parse PKGBUILD: %w", err)
+	}
+	fmt.Printf("\n  :: Building local package: %s\n", pkgname)
+
+	allDeps := append(deps, makedeps...)
+	var repoDeps []string
+	var aurOrdered []*Package
+	visited := make(map[string]bool)
+	_, warn, _ := symSet()
+
+	for _, dep := range unsatisfiedDeps(allDeps) {
 		name := stripVerConstraint(dep)
-		if isInstalled(name) {
+		if inPacmanRepo(name) {
+			repoDeps = append(repoDeps, name)
 			continue
 		}
+		if hasProvider(name) {
+			continue
+		}
+		aurPkg, err := findAURPackage(name)
+		if err != nil {
+			return fmt.Errorf("dep %q: %w", name, err)
+		}
+		if err := resolveDepTree(aurPkg, visited, &aurOrdered, &repoDeps, warn); err != nil {
+			return err
+		}
+	}
+
+	repoDeps = dedup(repoDeps)
+
+	if len(repoDeps) > 0 {
+		fmt.Printf("  %s installing repo deps: %s\n", arrow, strings.Join(repoDeps, "  "))
+		args := append([]string{"pacman", "-S", "--noconfirm", "--needed"}, repoDeps...)
+		cmd, err := priv.Command(args...)
+		if err != nil {
+			return err
+		}
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to install repo deps: %w", err)
+		}
+	}
+
+	for _, aurPkg := range aurOrdered {
+		fmt.Printf("\n  %s building AUR dep: %s\n", arrow, aurPkg.Name)
+		if err := buildAndInstall(aurPkg, noConfirm); err != nil {
+			return fmt.Errorf("failed to build dep %s: %w", aurPkg.Name, err)
+		}
+	}
+
+	if !noConfirm {
+		if err := reviewPKGBUILD(pkgbuildPath); err != nil {
+			return err
+		}
+		fmt.Printf("  %s Proceed with build? [Y/n] ", arrow)
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Scan()
+		if strings.ToLower(strings.TrimSpace(scanner.Text())) == "n" {
+			return fmt.Errorf("build cancelled by user")
+		}
+	}
+
+	fmt.Printf("\n  %s building %s from local PKGBUILD...\n\n", arrow, pkgname)
+	args := []string{"-si"}
+	if noConfirm {
+		args = append(args, "--noconfirm")
+	}
+	makepkg := exec.Command("makepkg", args...)
+	makepkg.Env = append(os.Environ(), "TERM=xterm-256color")
+	makepkg.Dir = dir
+	makepkg.Stdout = os.Stdout
+	makepkg.Stderr = os.Stderr
+	makepkg.Stdin = os.Stdin
+	if err := makepkg.Run(); err != nil {
+		return fmt.Errorf("makepkg failed: %w", err)
+	}
+	fmt.Printf("  %s  %s built and installed\n", ok, pkgname)
+	return nil
+}
+
+// ABS — fetch official PKGBUILDs
+
+// FetchABS downloads an official package's PKGBUILD from the Arch Build System.
+// Uses asp if installed; otherwise clones directly from Arch GitLab.
+// Returns the directory containing the PKGBUILD.
+func FetchABS(pkgName string) (string, error) {
+	_, _, arrow := symSet()
+
+	outDir, err := aurCacheDir("abs-" + pkgName)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(outDir); err == nil {
+		os.RemoveAll(outDir)
+	}
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create dir: %w", err)
+	}
+
+	// asp is cleaner when available
+	if _, err := exec.LookPath("asp"); err == nil {
+		fmt.Printf("  %s fetching %s from ABS via asp...\n", arrow, pkgName)
+		cmd := exec.Command("asp", "export", pkgName)
+		cmd.Dir = outDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("asp export failed: %w", err)
+		}
+		// asp writes to a subdir named after the package
+		sub := filepath.Join(outDir, pkgName)
+		if _, err := os.Stat(sub); err == nil {
+			return sub, nil
+		}
+		return outDir, nil
+	}
+
+	// Fallback: Arch GitLab
+	gitURL := fmt.Sprintf("%s%s.git", absGitLab, pkgName)
+	fmt.Printf("  %s fetching %s from Arch GitLab...\n", arrow, pkgName)
+	cmd := exec.Command("git", "clone", "--depth=1", gitURL, outDir)
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Stdout = nil
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to fetch %s from ABS: %w\n  (is it a valid official package?)", pkgName, err)
+	}
+	return outDir, nil
+}
+
+// Dep helpers
+
+// unsatisfiedDeps uses pacman -T to find which deps are not currently met.
+// pacman -T exits non-zero and prints only the unsatisfied ones.
+func unsatisfiedDeps(deps []string) []string {
+	if len(deps) == 0 {
+		return nil
+	}
+	stripped := make([]string, len(deps))
+	for i, d := range deps {
+		stripped[i] = stripVerConstraint(d)
+	}
+	out, err := exec.Command("pacman", append([]string{"-T"}, stripped...)...).CombinedOutput()
+	if err == nil {
+		return nil // all satisfied
+	}
+	var result []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			result = append(result, line)
+		}
+	}
+	return result
+}
+
+// hasProvider checks whether any installed package satisfies the dep.
+func hasProvider(dep string) bool {
+	return exec.Command("pacman", "-T", dep).Run() == nil
+}
+
+// checkDeps is kept for backwards compatibility.
+func checkDeps(pkg *Package) (missingRepo []string, aurOnly []string, err error) {
+	allDeps := append(pkg.Depends, pkg.MakeDepends...)
+	for _, dep := range unsatisfiedDeps(allDeps) {
+		name := stripVerConstraint(dep)
 		if inPacmanRepo(name) {
 			missingRepo = append(missingRepo, name)
 			continue
@@ -393,39 +760,112 @@ func checkDeps(pkg *Package) (missingRepo []string, aurOnly []string, err error)
 		if Exists(name) {
 			aurOnly = append(aurOnly, name)
 		} else {
-			missing = append(missing, name)
+			err = fmt.Errorf("dep %q not found anywhere", name)
+			return
 		}
-	}
-
-	if len(missing) > 0 {
-		err = fmt.Errorf(
-			"missing dependencies not found anywhere: %s",
-			strings.Join(missing, ", "),
-		)
 	}
 	return
 }
 
-// stripVerConstraint removes version constraints from dep strings.
-// e.g. "curl>=7.0" → "curl", "python>3" → "python"
-func stripVerConstraint(dep string) string {
-	for _, op := range []string{">=", "<=", "!=", ">", "<", "="} {
-		if idx := strings.Index(dep, op); idx != -1 {
-			return dep[:idx]
+// PKGBUILD parser
+
+// parsePKGBUILD extracts pkgname, depends, and makedepends from a PKGBUILD.
+func parsePKGBUILD(path string) (deps, makedeps []string, pkgname string, err error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	var inDeps, inMake bool
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(t, "pkgname="):
+			pkgname = strings.Trim(t[8:], `'"() `)
+		case strings.HasPrefix(t, "depends=("):
+			inDeps = true
+			inner := strings.TrimPrefix(t, "depends=(")
+			inner = strings.TrimSuffix(inner, ")")
+			deps = append(deps, parseArrayLine(inner)...)
+			if strings.Contains(t, ")") {
+				inDeps = false
+			}
+		case strings.HasPrefix(t, "makedepends=("):
+			inMake = true
+			inner := strings.TrimPrefix(t, "makedepends=(")
+			inner = strings.TrimSuffix(inner, ")")
+			makedeps = append(makedeps, parseArrayLine(inner)...)
+			if strings.Contains(t, ")") {
+				inMake = false
+			}
+		case inDeps:
+			if strings.Contains(t, ")") {
+				inDeps = false
+				t = strings.TrimSuffix(t, ")")
+			}
+			deps = append(deps, parseArrayLine(t)...)
+		case inMake:
+			if strings.Contains(t, ")") {
+				inMake = false
+				t = strings.TrimSuffix(t, ")")
+			}
+			makedeps = append(makedeps, parseArrayLine(t)...)
 		}
 	}
-	return dep
+	return deps, makedeps, pkgname, nil
 }
 
-// isInstalled checks if a package is installed via pacman.
-func isInstalled(name string) bool {
-	return exec.Command("pacman", "-Qi", name).Run() == nil
+func parseArrayLine(s string) []string {
+	var out []string
+	for _, tok := range strings.Fields(s) {
+		tok = strings.Trim(tok, `'"`)
+		if tok != "" && !strings.HasPrefix(tok, "#") {
+			out = append(out, tok)
+		}
+	}
+	return out
 }
 
-// inPacmanRepo checks if a package exists in the sync db.
-func inPacmanRepo(name string) bool {
-	return exec.Command("pacman", "-Si", name).Run() == nil
+// PKGBUILD review
+
+func reviewPKGBUILD(path string) error {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read PKGBUILD: %w", err)
+	}
+	lines := strings.Split(string(content), "\n")
+	important := []string{"pkgname", "pkgver", "pkgrel", "arch", "license", "source", "sha", "md5", "url=", "depends", "makedepends"}
+
+	fmt.Println("\n  :: PKGBUILD summary ::")
+	fmt.Println("  " + strings.Repeat("-", 44))
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		lower := strings.ToLower(t)
+		for _, key := range important {
+			if strings.HasPrefix(lower, key) {
+				fmt.Printf("     %s\n", t)
+				break
+			}
+		}
+	}
+	fmt.Println("  " + strings.Repeat("-", 44))
+
+	fmt.Print("\n  View full PKGBUILD? [y/N] ")
+	var view string
+	fmt.Scanln(&view)
+	if strings.ToLower(strings.TrimSpace(view)) == "y" {
+		fmt.Println()
+		for _, line := range lines {
+			fmt.Printf("  %s\n", line)
+		}
+		fmt.Println()
+	}
+	return nil
 }
+
+// Remove / list / clean
 
 // Remove removes a package using pacman -R.
 func Remove(pkgName string, noConfirm bool) error {
@@ -462,48 +902,74 @@ func GetInstalledAUR() (map[string]string, error) {
 	return installed, nil
 }
 
-func reviewPKGBUILD(path string) error {
-	content, err := os.ReadFile(path)
+// ListInstalledAUR wraps GetInstalledAUR for external use.
+func ListInstalledAUR() (map[string]string, error) {
+	return GetInstalledAUR()
+}
+
+// CleanCache removes the build cache for pkgName, or all caches if pkgName is "".
+func CleanCache(pkgName string) error {
+	ok, _, _ := symSet()
+	var target string
+	var err error
+	if pkgName == "" {
+		target, err = AURCacheRoot()
+	} else {
+		target, err = aurCacheDir(pkgName)
+	}
 	if err != nil {
-		return fmt.Errorf("failed to read PKGBUILD: %w", err)
+		return err
 	}
-
-	lines := strings.Split(string(content), "\n")
-	important := []string{"pkgname", "pkgver", "pkgrel", "arch", "license", "source", "sha", "md5", "url=", "depends", "makedepends"}
-
-	fmt.Println("  :: PKGBUILD summary ::")
-	fmt.Println("  " + strings.Repeat("-", 44))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		lower := strings.ToLower(trimmed)
-		for _, key := range important {
-			if strings.HasPrefix(lower, key) {
-				fmt.Printf("     %s\n", trimmed)
-				break
-			}
-		}
+	if err := os.RemoveAll(target); err != nil {
+		return fmt.Errorf("failed to remove cache: %w", err)
 	}
-	fmt.Println("  " + strings.Repeat("-", 44))
-
-	fmt.Print("\n  View full PKGBUILD? [y/N] ")
-	var view string
-	fmt.Scanln(&view)
-	if strings.ToLower(strings.TrimSpace(view)) == "y" {
-		fmt.Println()
-		for _, line := range lines {
-			fmt.Printf("  %s\n", line)
-		}
-		fmt.Println()
-	}
-
-	fmt.Print("\n  Proceed with install? [Y/n] ")
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Scan()
-	if strings.ToLower(strings.TrimSpace(scanner.Text())) == "n" {
-		return fmt.Errorf("install cancelled by user")
-	}
+	fmt.Printf("  %s  cache removed: %s\n", ok, target)
 	return nil
+}
+
+// Misc helpers
+
+func stripVerConstraint(dep string) string {
+	for _, op := range []string{">=", "<=", "!=", ">", "<", "="} {
+		if idx := strings.Index(dep, op); idx != -1 {
+			return dep[:idx]
+		}
+	}
+	return dep
+}
+
+func isInstalled(name string) bool {
+	return exec.Command("pacman", "-Qi", name).Run() == nil
+}
+
+func inPacmanRepo(name string) bool {
+	return exec.Command("pacman", "-Si", name).Run() == nil
+}
+
+func dedup(in []string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func aurCacheDir(pkgName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".cache", "alps", "aur", pkgName), nil
+}
+
+func AURCacheRoot() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".cache", "alps", "aur"), nil
 }

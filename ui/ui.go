@@ -84,9 +84,7 @@ func PrintHeader(cfg *config.Config) {
 	fmt.Print("\033[1;32m           /_____\\_/___\\__\\\033[0m\n\n")
 }
 
-// ──────────────────────────────────────────
-// HELP / ALIASES / CONFIG-SHOW
-// ──────────────────────────────────────────
+// Help / Aliases / Config-show
 
 func PrintHelp(cfg *config.Config) {
 	s := cfg.Style
@@ -296,9 +294,7 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// ──────────────────────────────────────────
-// REPO OUTPUT HELPERS (TTY-aware)
-// ──────────────────────────────────────────
+// Repo output helpers (TTY-aware)
 
 // symUpgrade returns an upgrade arrow safe for the current terminal.
 func symUpgrade() string {

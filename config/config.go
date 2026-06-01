@@ -30,11 +30,12 @@ type Style struct {
 }
 
 type Config struct {
-	Style      Style
-	Aliases    map[string]string
-	GlobalPath string
-	UserPath   string
-	Version    string
+	ConfigAliases map[string]string // only aliases defined in config files (not defaults)
+	Style         Style
+	Aliases       map[string]string
+	GlobalPath    string
+	UserPath      string
+	Version       string
 }
 
 var defaults = map[string]string{
@@ -58,7 +59,9 @@ var defaults = map[string]string{
 	"header_text":   "alps",
 }
 
-var defaultAliases = map[string]string{
+// DefaultAliases are the built-in short aliases that ship with alps.
+// Exported so main.go can use them as the third resolution tier.
+var DefaultAliases = map[string]string{
 	"ins": "install",
 	"rm":  "remove",
 	"pu":  "purge",
@@ -72,6 +75,18 @@ var defaultAliases = map[string]string{
 	"ac":  "autoclean",
 	"cl":  "clean",
 	"ed":  "edit-sources",
+	// subsystem short aliases
+	"fp": "flatpak",
+	"sk": "snap",
+}
+
+// DefaultSubCmdAliases are built-in short aliases for subcommands only.
+// They apply inside subsystems (aur, repo, flatpak, snap) but NOT at the
+// top level, so they never interfere with top-level command resolution.
+var DefaultSubCmdAliases = map[string]string{
+	// aur-specific
+	"bl":  "build-local",
+	"abs": "fetch-abs",
 }
 
 func globalConfigPath() string { return "/etc/alps/config" }
@@ -97,16 +112,17 @@ func Load() *Config {
 	}
 
 	aliases := make(map[string]string)
+	configAliases := make(map[string]string)
 	headerLines := []string{}
 
 	globalPath := globalConfigPath()
 	userPath := userConfigPath()
 
-	parseFile(globalPath, kv, aliases, &headerLines)
-	parseFile(userPath, kv, aliases, &headerLines)
+	parseFile(globalPath, kv, aliases, configAliases, &headerLines)
+	parseFile(userPath, kv, aliases, configAliases, &headerLines)
 
 	// Fill in default aliases only if not overridden by config
-	for k, v := range defaultAliases {
+	for k, v := range DefaultAliases {
 		if _, exists := aliases[k]; !exists {
 			aliases[k] = v
 		}
@@ -142,13 +158,14 @@ func Load() *Config {
 			HeaderLines:  headerLines,
 			HeaderText:   kv["header_text"],
 		},
-		Aliases:    aliases,
-		GlobalPath: globalPath,
-		UserPath:   userPath,
+		Aliases:       aliases,
+		ConfigAliases: configAliases,
+		GlobalPath:    globalPath,
+		UserPath:      userPath,
 	}
 }
 
-func parseFile(path string, kv map[string]string, aliases map[string]string, headerLines *[]string) {
+func parseFile(path string, kv map[string]string, aliases map[string]string, configAliases map[string]string, headerLines *[]string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return // file not found is normal (e.g. no global config)
@@ -185,7 +202,9 @@ func parseFile(path string, kv map[string]string, aliases map[string]string, hea
 		switch {
 		case strings.HasPrefix(lowerKey, "alias_"):
 			// Preserve original case for alias name (e.g. alias_-S stays -S)
-			aliases[rawKey[len("alias_"):]] = val
+			aliasName := rawKey[len("alias_"):]
+			aliases[aliasName] = val
+			configAliases[aliasName] = val
 		case strings.HasPrefix(lowerKey, "title_line"):
 			*headerLines = append(*headerLines, unescape(val))
 		default:

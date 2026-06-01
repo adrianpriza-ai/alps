@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/adrianpriza-ai/alps/aur"
@@ -41,7 +43,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Usage: alps completion <fish|bash|zsh>")
 			os.Exit(1)
 		}
-		completion.Generate(args[0], cfg)
+		completion.Generate(args[0])
 	case "help", "--help", "-h":
 		ui.PrintHelp(cfg)
 	case "aliases":
@@ -57,16 +59,121 @@ func main() {
 	case "snap":
 		runSnap(args, cfg)
 	default:
-		resolved := resolveAlias(cmd, cfg)
-		runPkg(resolved, args, cfg)
+		resolved, err := resolveCmd(cmd, cfg)
+		if err != nil {
+			ui.Msgf(cfg, ui.LevelError, "%v", err)
+			os.Exit(1)
+		}
+		// A resolved alias may map to a subsystem — re-dispatch if so.
+		switch resolved {
+		case "repo":
+			runRepo(args, cfg)
+		case "aur":
+			runAUR(args, cfg)
+		case "flatpak":
+			runFlatpak(args, cfg)
+		case "snap":
+			runSnap(args, cfg)
+		default:
+			runPkg(resolved, args, cfg)
+		}
 	}
 }
 
-func resolveAlias(cmd string, cfg *config.Config) string {
-	if real, ok := cfg.Aliases[cmd]; ok {
-		return real
+// hardCommands is the complete set of built-in alps command names.
+// These are always valid regardless of aliases.
+var hardCommands = map[string]bool{
+	// meta
+	"help": true, "--help": true, "-h": true,
+	"version": true, "--version": true,
+	"aliases": true, "config-show": true, "completion": true,
+	// subsystems
+	"repo": true, "aur": true, "flatpak": true, "snap": true,
+	// package operations
+	"install": true, "remove": true, "purge": true,
+	"update": true, "upgrade": true, "full-upgrade": true,
+	"search": true, "show": true, "list": true,
+	"autoremove": true, "autoclean": true, "clean": true,
+	"edit-sources": true,
+}
+
+// resolveCmd implements 3-tier command resolution:
+//  1. Hard command  — always valid as-is (install, repo, aur, …)
+//  2. Config alias  — defined in /etc/alps/config or ~/.config/alps/config
+//  3. Default alias — built-in short names (ins, rm, se, …)
+//
+// Anything outside these three tiers returns an error.
+func resolveCmd(cmd string, cfg *config.Config) (string, error) {
+	// Tier 1: built-in command
+	if hardCommands[cmd] {
+		return cmd, nil
 	}
-	return cmd
+	// Tier 2: user-defined config alias
+	if v, ok := cfg.ConfigAliases[cmd]; ok {
+		return v, nil
+	}
+	// Tier 3: default short alias
+	if v, ok := config.DefaultAliases[cmd]; ok {
+		return v, nil
+	}
+	return "", fmt.Errorf("unknown command %q — run 'alps help' for available commands", cmd)
+}
+
+// validSubCmds lists the accepted subcommand names per subsystem.
+var validSubCmds = map[string]map[string]bool{
+	"aur": {
+		"install": true, "search": true, "list": true,
+		"remove": true, "clean": true, "build-local": true, "fetch-abs": true,
+	},
+	"repo": {
+		"update": true, "list": true, "install": true,
+		"remove": true, "purge": true, "search": true, "upgrade": true,
+	},
+	"flatpak": {
+		"install": true, "remove": true, "search": true, "list": true, "update": true,
+	},
+	"snap": {
+		"install": true, "remove": true, "search": true, "list": true, "update": true,
+	},
+}
+
+// resolveSubCmd applies the same 3-tier resolution as resolveCmd but for
+// subcommands inside a subsystem (aur, repo, flatpak, snap).
+//  1. Direct match   — "install", "search", etc.
+//  2. Config alias   — user-defined via alias_ins = install in config
+//  3. Default alias  — built-in shorts: ins, rm, se, ls, up, ug, …
+func resolveSubCmd(system, subcmd string, cfg *config.Config) (string, error) {
+	valid := validSubCmds[system]
+
+	// Tier 1: direct subcommand name
+	if valid[subcmd] {
+		return subcmd, nil
+	}
+	// Tier 2: config alias → check if it resolves to a valid subcommand
+	if v, ok := cfg.ConfigAliases[subcmd]; ok {
+		if valid[v] {
+			return v, nil
+		}
+	}
+	// Tier 3: default short alias → check DefaultAliases then DefaultSubCmdAliases
+	if v, ok := config.DefaultAliases[subcmd]; ok {
+		if valid[v] {
+			return v, nil
+		}
+	}
+	if v, ok := config.DefaultSubCmdAliases[subcmd]; ok {
+		if valid[v] {
+			return v, nil
+		}
+	}
+
+	// Build a sorted readable list for the error
+	names := make([]string, 0, len(valid))
+	for k := range valid {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return "", fmt.Errorf("unknown %s subcommand %q\n  valid: %s", system, subcmd, strings.Join(names, ", "))
 }
 
 func detectBackend() string {
@@ -412,7 +519,7 @@ func runPacmanSearch(args []string, cfg *config.Config) {
 	}
 	aurCh := make(chan aurResult, 1)
 	go func() {
-		pkgs, err := aur.Search(query)
+		pkgs, err := aur.SearchNarrow(query)
 		aurCh <- aurResult{pkgs, err}
 	}()
 
@@ -444,6 +551,7 @@ func runPacmanSearch(args []string, cfg *config.Config) {
 		aur.PrintSearchResult(i+1, p, "aur")
 	}
 	fmt.Println()
+	appendAURNamesCache(res.pkgs)
 }
 
 func runWithBackend(cmdArgs []string, args []string, cfg *config.Config, backend, subcmd string) bool {
@@ -568,7 +676,12 @@ func runRepo(args []string, cfg *config.Config) {
 		os.Exit(1)
 	}
 
-	subcmd := args[0]
+	rawSubcmd := args[0]
+	subcmd, err := resolveSubCmd("repo", rawSubcmd, cfg)
+	if err != nil {
+		ui.Msgf(cfg, ui.LevelError, "%v", err)
+		os.Exit(1)
+	}
 	rest := args[1:]
 
 	switch subcmd {
@@ -806,7 +919,7 @@ func isArch() bool {
 	return err == nil
 }
 
-// runAUR handles: alps aur install | search | list | clean
+// runAUR handles: alps aur install|search|list|remove|clean|build-local|fetch-abs
 func runAUR(args []string, cfg *config.Config) {
 	ui.PrintHeader(cfg)
 
@@ -816,11 +929,16 @@ func runAUR(args []string, cfg *config.Config) {
 	}
 
 	if len(args) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps aur <install|search|list|clean> [args]")
+		ui.Msg(cfg, ui.LevelError, "Usage: alps aur <install|search|list|remove|clean|build-local|fetch-abs> [args]")
 		os.Exit(1)
 	}
 
-	subcmd := args[0]
+	rawSubcmd := args[0]
+	subcmd, err := resolveSubCmd("aur", rawSubcmd, cfg)
+	if err != nil {
+		ui.Msgf(cfg, ui.LevelError, "%v", err)
+		os.Exit(1)
+	}
 	rest := args[1:]
 
 	switch subcmd {
@@ -845,7 +963,8 @@ func runAUR(args []string, cfg *config.Config) {
 		query := strings.Join(rest, " ")
 		ui.Msgf(cfg, ui.LevelInfo, "Searching '%s' in AUR...", query)
 		fmt.Println()
-		results, err := aur.Search(query)
+		// SearchNarrow: first word hits the API, remaining words narrow in-memory
+		results, err := aur.SearchNarrow(query)
 		if err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
@@ -858,6 +977,8 @@ func runAUR(args []string, cfg *config.Config) {
 			aur.PrintSearchResult(i+1, p, "aur")
 		}
 		fmt.Println()
+		// Populate completion cache so tab-complete works for future installs
+		appendAURNamesCache(results)
 
 	case "list":
 		installed, err := aur.ListInstalledAUR()
@@ -877,6 +998,60 @@ func runAUR(args []string, cfg *config.Config) {
 		}
 		fmt.Println()
 
+	case "remove":
+		if len(rest) == 0 {
+			ui.Msg(cfg, ui.LevelError, "Usage: alps aur remove <package>")
+			os.Exit(1)
+		}
+		_, noConfirm := splitFlags(rest)
+		pkgName := rest[0]
+		ui.Msgf(cfg, ui.LevelWarn, "Remove AUR package %s%s%s?",
+			cfg.Style.ColorBold, pkgName, cfg.Style.ColorReset+cfg.Style.ColorWarning)
+		fmt.Print(cfg.Style.ColorReset)
+		fmt.Println()
+		if !noConfirm && !ui.Confirm() {
+			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
+			return
+		}
+		if err := aur.Remove(pkgName, noConfirm); err != nil {
+			ui.Msgf(cfg, ui.LevelError, "%v", err)
+			os.Exit(1)
+		}
+		ui.Msg(cfg, ui.LevelOK, "Done.")
+
+	case "build-local":
+		dir := "."
+		if len(rest) > 0 {
+			dir = rest[0]
+		}
+		_, noConfirm := splitFlags(rest)
+		ui.Msgf(cfg, ui.LevelInfo, "Building local PKGBUILD in %s%s%s...",
+			cfg.Style.ColorBold, dir, cfg.Style.ColorReset+cfg.Style.ColorInfo)
+		fmt.Print(cfg.Style.ColorReset)
+		fmt.Println()
+		if err := aur.BuildLocal(dir, noConfirm); err != nil {
+			ui.Msgf(cfg, ui.LevelError, "%v", err)
+			os.Exit(1)
+		}
+		ui.Msg(cfg, ui.LevelOK, "Done.")
+
+	case "fetch-abs":
+		if len(rest) == 0 {
+			ui.Msg(cfg, ui.LevelError, "Usage: alps aur fetch-abs <package>")
+			os.Exit(1)
+		}
+		pkgName := rest[0]
+		ui.Msgf(cfg, ui.LevelInfo, "Fetching PKGBUILD for %s%s%s from ABS...",
+			cfg.Style.ColorBold, pkgName, cfg.Style.ColorReset+cfg.Style.ColorInfo)
+		fmt.Print(cfg.Style.ColorReset)
+		fmt.Println()
+		dir, err := aur.FetchABS(pkgName)
+		if err != nil {
+			ui.Msgf(cfg, ui.LevelError, "%v", err)
+			os.Exit(1)
+		}
+		ui.Msgf(cfg, ui.LevelOK, "PKGBUILD saved to: %s", dir)
+
 	case "clean":
 		cacheRoot, err := aur.AURCacheRoot()
 		if err != nil {
@@ -892,8 +1067,8 @@ func runAUR(args []string, cfg *config.Config) {
 			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
 			return
 		}
-		if err := os.RemoveAll(cacheRoot); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "failed to remove cache: %v", err)
+		if err := aur.CleanCache(""); err != nil {
+			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
 		}
 		ui.Msg(cfg, ui.LevelOK, "Cache removed.")
@@ -1040,7 +1215,12 @@ func runFlatpak(args []string, cfg *config.Config) {
 		os.Exit(1)
 	}
 
-	subcmd := args[0]
+	rawSubcmd := args[0]
+	subcmd, err := resolveSubCmd("flatpak", rawSubcmd, cfg)
+	if err != nil {
+		ui.Msgf(cfg, ui.LevelError, "%v", err)
+		os.Exit(1)
+	}
 	rest := args[1:]
 	_, noConfirm := splitFlags(rest)
 	pkgs, _ := splitFlags(rest)
@@ -1106,7 +1286,12 @@ func runSnap(args []string, cfg *config.Config) {
 		os.Exit(1)
 	}
 
-	subcmd := args[0]
+	rawSubcmd := args[0]
+	subcmd, err := resolveSubCmd("snap", rawSubcmd, cfg)
+	if err != nil {
+		ui.Msgf(cfg, ui.LevelError, "%v", err)
+		os.Exit(1)
+	}
 	rest := args[1:]
 	pkgs, _ := splitFlags(rest)
 
@@ -1161,6 +1346,23 @@ func runSnap(args []string, cfg *config.Config) {
 func isTermux() bool {
 	return os.Getenv("TERMUX_VERSION") != "" ||
 		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
+}
+
+// appendAURNamesCache writes package names from search results into the AUR
+// name cache used by shell completions. Duplicates are harmless — shells dedup.
+func appendAURNamesCache(pkgs []aur.Package) {
+	path := completion.AURNamesCachePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	for _, p := range pkgs {
+		fmt.Fprintln(f, p.Name)
+	}
 }
 
 // printDiagnostic shows a quick system overview when alps is run with no args.

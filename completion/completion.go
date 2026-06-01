@@ -6,13 +6,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"github.com/adrianpriza-ai/alps/config"
 )
 
 // Generate prints a shell completion script to stdout.
-func Generate(shell string, cfg *config.Config) {
-	cmds := effectiveCmds(cfg)
+func Generate(shell string) {
+	cmds := effectiveCmds()
 	backend := detectBackend()
 
 	switch shell {
@@ -28,7 +26,7 @@ func Generate(shell string, cfg *config.Config) {
 	}
 }
 
-// ── Environment detection ─────────────────────────────────────────
+// Environment detection
 
 func isTermux() bool {
 	return os.Getenv("TERMUX_VERSION") != "" ||
@@ -58,13 +56,22 @@ func cacheDir() string {
 	return "/var/cache/alps/more"
 }
 
-// cacheFile returns the full path to main.txt in the cache.
-func cacheFile() string { return filepath.Join(cacheDir(), "main.txt") }
-
-// installedFile returns the full path to installed.json in the cache.
+func cacheFile() string     { return filepath.Join(cacheDir(), "main.txt") }
 func installedFile() string { return filepath.Join(cacheDir(), "installed.json") }
 
-// ── Backend detection ─────────────────────────────────────────────
+// AURNamesCachePath returns the path where aur.go should write AUR package
+// names after a search. Used by completion scripts to complete aur install/search.
+// This is user-specific (not system-wide) so it lives under $HOME.
+// aur.go writes here; completion scripts read from here at tab-complete time.
+func AURNamesCachePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.Getenv("HOME"), ".cache", "alps", "aur-names.txt")
+	}
+	return filepath.Join(home, ".cache", "alps", "aur-names.txt")
+}
+
+// Backend detection
 
 func detectBackend() string {
 	for _, b := range []string{"apt", "apt-get", "dnf", "pacman"} {
@@ -72,56 +79,62 @@ func detectBackend() string {
 			return b
 		}
 	}
-	return "apt" // fallback
+	return "apt"
 }
 
-// pkgListCmd returns the shell snippet that lists available packages for the backend.
 func pkgListCmd(backend string) string {
 	switch backend {
 	case "pacman":
 		return "pacman -Ssq 2>/dev/null"
 	case "dnf":
 		return "dnf repoquery --quiet --qf '%{name}' 2>/dev/null"
-	default: // apt / apt-get
+	default:
 		return "apt-cache pkgnames 2>/dev/null"
 	}
 }
 
-// installedListCmd returns the shell snippet that lists installed packages.
 func installedListCmd(backend string) string {
 	switch backend {
 	case "pacman":
 		return "pacman -Qq 2>/dev/null"
 	case "dnf":
 		return "dnf list --installed --quiet 2>/dev/null | awk 'NR>1{print $1}'"
-	default: // apt / apt-get
+	default:
 		return "dpkg --get-selections 2>/dev/null | awk '{print $1}'"
 	}
 }
 
-// moreListCmd returns a POSIX-compatible shell snippet that lists
-// all package names from the alps-more main.txt cache.
-// Uses tr+grep instead of grep -oP (PCRE unavailable on some systems / Termux).
+// moreListCmd lists all package names from the alps-more main.txt cache.
+// POSIX-compatible: no grep -oP (unavailable on Termux).
 func moreListCmd(path string) string {
-	return fmt.Sprintf(
-		`grep '^\[' %s 2>/dev/null | tr -d '[]'`,
-		path,
-	)
+	return fmt.Sprintf(`grep '^\[' %s 2>/dev/null | tr -d '[]'`, path)
 }
 
-// moreInstalledCmd returns a shell snippet that lists packages
-// installed via alps-more (from installed.json).
+// moreInstalledCmd lists packages installed via alps-more (installed.json keys).
 func moreInstalledCmd(path string) string {
 	return fmt.Sprintf(`jq -r 'keys[]' %s 2>/dev/null`, path)
 }
 
-// ── Fish ──────────────────────────────────────────────────────────
+// aurNamesCmd reads the AUR package name cache populated by `alps aur search`.
+// Uses $HOME so it expands correctly at tab-complete time, not at generation time.
+func aurNamesCmd() string {
+	return `cat "$HOME/.cache/alps/aur-names.txt" 2>/dev/null`
+}
+
+// aurInstalledCmd lists AUR-installed packages via pacman -Qm (foreign packages).
+func aurInstalledCmd() string {
+	return `pacman -Qm 2>/dev/null | awk '{print $1}'`
+}
+
+// Fish
 
 func genFish(cmds []string, backend string) {
 	pkgList := pkgListCmd(backend)
 	installedList := installedListCmd(backend)
 	morePkgs := moreListCmd(cacheFile())
 	moreInstalled := moreInstalledCmd(installedFile())
+	aurNames := aurNamesCmd()
+	aurInstalled := aurInstalledCmd()
 
 	fmt.Println("# alps fish completion")
 	fmt.Println("# Install: alps completion fish > ~/.config/fish/completions/alps.fish")
@@ -139,7 +152,6 @@ func genFish(cmds []string, backend string) {
 complete -c alps -n '__fish_seen_subcommand_from repo' \
     -a 'update list install remove purge search upgrade' -d 'repo subcommand'
 
-# repo install/remove/search/purge: complete from alps-more cache
 complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from install search' \
     -a "(%s)" -d 'alps-more package'
 complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcommand_from remove purge' \
@@ -149,7 +161,18 @@ complete -c alps -n '__fish_seen_subcommand_from repo; and __fish_seen_subcomman
 
 # ── aur subcommands ───────────────────────────────────────────────
 complete -c alps -n '__fish_seen_subcommand_from aur' \
-    -a 'install search list clean' -d 'aur subcommand'
+    -a 'install search list remove clean build-local fetch-abs' -d 'aur subcommand'
+
+# aur install/search: complete from local AUR name cache (~/.cache/alps/aur-names.txt)
+# Cache is populated automatically when 'alps aur search' is run.
+complete -c alps -n '__fish_seen_subcommand_from aur; and __fish_seen_subcommand_from install search' \
+    -a "(%s)" -d 'AUR package'
+# aur remove: complete from pacman -Qm (foreign/AUR-installed packages)
+complete -c alps -n '__fish_seen_subcommand_from aur; and __fish_seen_subcommand_from remove' \
+    -a "(%s)" -d 'AUR installed package'
+# aur build-local: complete directories
+complete -c alps -n '__fish_seen_subcommand_from aur; and __fish_seen_subcommand_from build-local' \
+    -a "(__fish_complete_directories)" -d 'directory'
 
 # ── flatpak subcommands ───────────────────────────────────────────
 complete -c alps -n '__fish_seen_subcommand_from flatpak' \
@@ -164,10 +187,12 @@ complete -c alps -n '__fish_seen_subcommand_from install search' \
     -a "(%s)" -d 'package'
 complete -c alps -n '__fish_seen_subcommand_from remove purge' \
     -a "(%s)" -d 'installed package'
-`, morePkgs, moreInstalled, moreInstalled, pkgList, installedList)
+`, morePkgs, moreInstalled, moreInstalled,
+		aurNames, aurInstalled,
+		pkgList, installedList)
 }
 
-// ── Bash ──────────────────────────────────────────────────────────
+// Bash
 
 func genBash(cmds []string, backend string) {
 	cmdList := strings.Join(cmds, " ")
@@ -175,6 +200,8 @@ func genBash(cmds []string, backend string) {
 	installedList := installedListCmd(backend)
 	morePkgs := moreListCmd(cacheFile())
 	moreInstalled := moreInstalledCmd(installedFile())
+	aurNames := aurNamesCmd()
+	aurInstalled := aurInstalledCmd()
 
 	fmt.Printf(`# alps bash completion
 # Install: alps completion bash | sudo tee /usr/share/bash-completion/completions/alps
@@ -214,14 +241,39 @@ _alps_completions() {
                     ;;
             esac
             ;;
+        aur)
+            case "${words[2]}" in
+                install|search)
+                    # AUR name cache — populated by 'alps aur search'
+                    COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
+                    ;;
+                remove)
+                    # Foreign packages installed via pacman (AUR)
+                    COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
+                    ;;
+                build-local)
+                    # Directory completion
+                    COMPREPLY=($(compgen -d -- "$cur"))
+                    ;;
+                fetch-abs)
+                    # Official package names — no local cache, leave empty
+                    ;;
+                *)
+                    COMPREPLY=($(compgen -W "install search list remove clean build-local fetch-abs" -- "$cur"))
+                    ;;
+            esac
+            ;;
     esac
 }
 
 complete -F _alps_completions alps
-`, cmdList, pkgList, installedList, morePkgs, moreInstalled, moreInstalled)
+`, cmdList,
+		pkgList, installedList,
+		morePkgs, moreInstalled, moreInstalled,
+		aurNames, aurInstalled)
 }
 
-// ── Zsh ───────────────────────────────────────────────────────────
+// Zsh
 
 func genZsh(cmds []string, backend string) {
 	cmdList := make([]string, 0, len(cmds))
@@ -233,6 +285,8 @@ func genZsh(cmds []string, backend string) {
 	installedList := installedListCmd(backend)
 	morePkgs := moreListCmd(cacheFile())
 	moreInstalled := moreInstalledCmd(installedFile())
+	aurNames := aurNamesCmd()
+	aurInstalled := aurInstalledCmd()
 
 	fmt.Printf(`#compdef alps
 # alps zsh completion
@@ -289,6 +343,33 @@ _alps() {
                             ;;
                     esac
                     ;;
+                aur)
+                    case ${words[3]} in
+                        install|search)
+                            # AUR name cache — populated by 'alps aur search'
+                            local aurpkgs
+                            aurpkgs=(${(f)"$(%s)"})
+                            _describe 'AUR package' aurpkgs
+                            ;;
+                        remove)
+                            # Foreign packages installed via pacman (AUR)
+                            local aurinst
+                            aurinst=(${(f)"$(%s)"})
+                            _describe 'AUR installed package' aurinst
+                            ;;
+                        build-local)
+                            # Directory completion
+                            _path_files -/
+                            ;;
+                        fetch-abs)
+                            # Official package names — no local cache
+                            ;;
+                        *)
+                            _describe 'aur subcommand' \
+                                '(install search list remove clean build-local fetch-abs)'
+                            ;;
+                    esac
+                    ;;
             esac
             ;;
     esac
@@ -297,10 +378,11 @@ _alps() {
 _alps
 `, strings.Join(cmdList, "\n                "),
 		pkgList, installedList,
-		morePkgs, moreInstalled, moreInstalled)
+		morePkgs, moreInstalled, moreInstalled,
+		aurNames, aurInstalled)
 }
 
-// ── Command metadata ──────────────────────────────────────────────
+// Command metadata
 
 func cmdDesc(cmd string) string {
 	descs := map[string]string{
@@ -325,18 +407,6 @@ func cmdDesc(cmd string) string {
 		"autoremove":   "remove unused packages",
 		"autoclean":    "clean partial packages",
 		"clean":        "clean package cache",
-		"ins":          "alias: install",
-		"rm":           "alias: remove",
-		"pu":           "alias: purge",
-		"up":           "alias: update",
-		"ug":           "alias: upgrade",
-		"fug":          "alias: full-upgrade",
-		"se":           "alias: search",
-		"sh":           "alias: show",
-		"ls":           "alias: list",
-		"au":           "alias: autoremove",
-		"ac":           "alias: autoclean",
-		"cl":           "alias: clean",
 	}
 	if d, ok := descs[cmd]; ok {
 		return d
@@ -345,7 +415,7 @@ func cmdDesc(cmd string) string {
 }
 
 // effectiveCmds returns the command list for this distro/environment.
-func effectiveCmds(cfg *config.Config) []string {
+func effectiveCmds() []string {
 	base := []string{
 		"help", "aliases", "config-show", "version", "repo", "flatpak",
 		"install", "remove", "purge", "update", "upgrade",
@@ -353,53 +423,24 @@ func effectiveCmds(cfg *config.Config) []string {
 		"autoremove", "autoclean", "clean",
 	}
 
-	// Termux: no AUR, no snap
 	if isTermux() {
-		return applyAliasFilter(base, cfg)
+		return base
 	}
 
 	distro := detectDistroID()
 
-	// Arch-based: add aur
 	switch distro {
 	case "arch", "manjaro", "endeavouros", "garuda", "artix":
 		base = append(base, "aur")
-	// Debian/Ubuntu-based: add snap if available
 	case "ubuntu", "debian", "linuxmint", "pop", "elementary", "kali":
 		if isSnapAvailable() {
 			base = append(base, "snap")
 		}
-	// WSL: snap usually blocked, skip silently; no aur
-	default:
-		if isWSL() {
-			// no extra subcommands for WSL specifically
-		}
 	}
 
-	return applyAliasFilter(base, cfg)
+	return base
 }
 
-// applyAliasFilter returns base commands, replacing package commands with
-// active aliases when the user has custom aliases configured.
-func applyAliasFilter(base []string, cfg *config.Config) []string {
-	if !hasCustomAliases(cfg) {
-		return base
-	}
-	cmds := []string{}
-	for _, b := range base {
-		switch b {
-		case "help", "aliases", "config-show", "version", "repo", "aur", "flatpak", "snap":
-			cmds = append(cmds, b)
-		}
-	}
-	for k := range cfg.Aliases {
-		cmds = append(cmds, k)
-	}
-	return cmds
-}
-
-// detectDistroID reads /etc/os-release ID field.
-// Returns "termux" on Termux where the file does not exist.
 func detectDistroID() string {
 	if isTermux() {
 		return "termux"
@@ -416,7 +457,6 @@ func detectDistroID() string {
 	return ""
 }
 
-// isSnapAvailable checks if snap is usable on this system.
 func isSnapAvailable() bool {
 	if _, err := exec.LookPath("snap"); err != nil {
 		return false
@@ -425,22 +465,4 @@ func isSnapAvailable() bool {
 		return false
 	}
 	return true
-}
-
-var defaultAliasKeys = map[string]string{
-	"ins": "install", "rm": "remove", "pu": "purge",
-	"up": "update", "ug": "upgrade", "fug": "full-upgrade",
-	"se": "search", "sh": "show", "ls": "list",
-	"au": "autoremove", "ac": "autoclean", "cl": "clean",
-	"ed": "edit-sources",
-}
-
-func hasCustomAliases(cfg *config.Config) bool {
-	for k, v := range cfg.Aliases {
-		def, ok := defaultAliasKeys[k]
-		if !ok || def != v {
-			return true
-		}
-	}
-	return false
 }

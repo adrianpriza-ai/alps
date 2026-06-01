@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // isTermux returns true when running inside Termux on Android.
 func isTermux() bool {
-	return os.Getenv("TERMUX_VERSION") != "" || os.Getenv("PREFIX") != ""
+	return os.Getenv("TERMUX_VERSION") != "" ||
+		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
 }
 
 // IsRoot returns true if current process is running as root.
@@ -53,7 +55,8 @@ func Command(args ...string) (*exec.Cmd, error) {
 
 	// su fallback
 	if HasSu() {
-		return exec.Command("su", append([]string{"-c", args[0]}, args[1:]...)...), nil
+		joined := strings.Join(args, " ")
+		return exec.Command("su", "-c", joined), nil
 	}
 
 	return nil, fmt.Errorf("no privilege escalation available (no sudo or su)")
@@ -61,9 +64,6 @@ func Command(args ...string) (*exec.Cmd, error) {
 
 // Ensure gets a valid privilege token (sudo -v or no-op if root/su/Termux).
 func Ensure() error {
-	fmt.Fprintln(os.Stderr, "DEBUG isTermux:", isTermux())
-	fmt.Fprintln(os.Stderr, "DEBUG TERMUX_VERSION:", os.Getenv("TERMUX_VERSION"))
-
 	// Termux owns its prefix — no escalation needed or available
 	if isTermux() {
 		return nil
@@ -92,4 +92,55 @@ func Ensure() error {
 	}
 
 	return fmt.Errorf("no privilege escalation available (no sudo or su)")
+}
+
+// CommandSudoOnly is like Command but never falls back to su.
+// Use for alps-more scripts, AUR builds, flatpak, and snap — contexts
+// where su cannot reliably authenticate arbitrary script execution.
+// Priority: already root > sudo > error
+func CommandSudoOnly(args ...string) (*exec.Cmd, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("no command provided")
+	}
+
+	if isTermux() {
+		return exec.Command(args[0], args[1:]...), nil
+	}
+
+	if IsRoot() {
+		return exec.Command(args[0], args[1:]...), nil
+	}
+
+	if HasSudo() {
+		return exec.Command("sudo", args...), nil
+	}
+
+	return nil, fmt.Errorf("sudo is required for this operation — install sudo or run as root")
+}
+
+// EnsureSudoOnly is like Ensure but never accepts su as a fallback.
+// Use for alps-more, AUR, flatpak, and snap.
+// Errors immediately if neither root nor sudo is available.
+func EnsureSudoOnly() error {
+	if isTermux() {
+		return nil
+	}
+
+	if IsRoot() {
+		return nil
+	}
+
+	if HasSudo() {
+		if exec.Command("sudo", "-n", "true").Run() == nil {
+			return nil
+		}
+		fmt.Println()
+		pw := exec.Command("sudo", "-v")
+		pw.Stdout = os.Stdout
+		pw.Stderr = os.Stderr
+		pw.Stdin = os.Stdin
+		return pw.Run()
+	}
+
+	return fmt.Errorf("sudo is required for this operation — install sudo or run as root")
 }
