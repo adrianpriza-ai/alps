@@ -104,10 +104,10 @@ func PrintHelp(cfg *config.Config) {
 		{"repo list", "list available packages"},
 		{"repo list install", "list installed packages"},
 		{"repo list remove", "list stale packages"},
-		{"repo install <pkg>", "install from alps-more (or github.com/u/r, gitlab.com/u/r)"},
+		{"repo install <pkg|url>", "install package or remote ALPSMORE file"},
 		{"repo remove <pkg>", "remove alps-more package"},
 		{"repo purge <pkg>", "remove package including configs/data"},
-		{"repo search <query>", "search alps-more repo"},
+		{"repo search <query>", "search alps-more packages"},
 		{"repo upgrade [pkg]", "upgrade installed package(s)"},
 	}
 	for _, r := range repoSubs {
