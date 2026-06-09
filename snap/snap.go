@@ -9,7 +9,7 @@ import (
 	"github.com/adrianpriza-ai/alps/priv"
 )
 
-// IsAvailable returns true if snapd is running and not blocked.
+// IsAvailable checks if snapd is running.
 func IsAvailable() bool {
 	if _, err := exec.LookPath("snap"); err != nil {
 		return false
@@ -20,7 +20,7 @@ func IsAvailable() bool {
 	return exec.Command("systemctl", "is-active", "--quiet", "snapd").Run() == nil
 }
 
-// Install installs one or more packages via snap.
+// Install installs packages via snap.
 func Install(pkgNames []string, classic bool) error {
 	args := append([]string{"snap", "install"}, pkgNames...)
 	if classic {
@@ -54,7 +54,7 @@ func Remove(pkgName string) error {
 	return nil
 }
 
-// Search searches for packages in the snap store.
+// Search searches snap store.
 func Search(query string) error {
 	cmd := exec.Command("snap", "find", query)
 	cmd.Stdout = os.Stdout
@@ -73,7 +73,7 @@ func List() error {
 	return cmd.Run()
 }
 
-// Update updates all snap packages.
+// Update updates snap packages.
 func Update() error {
 	cmd, err := priv.Command("snap", "refresh")
 	if err != nil {
@@ -88,7 +88,7 @@ func Update() error {
 	return nil
 }
 
-// Exists reports whether a package exists in snap store.
+// Exists checks if a package exists in snap store.
 func Exists(pkgName string) bool {
 	out, err := exec.Command("snap", "find", "--narrow", pkgName).Output()
 	if err != nil {

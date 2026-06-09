@@ -44,7 +44,7 @@ func Msgf(cfg *config.Config, l Level, format string, a ...any) {
 	fmt.Printf("  %s%s%s  %s%s\n", color, symbol, cfg.Style.ColorReset, text, cfg.Style.ColorReset)
 }
 
-// Confirm prints "[Y/n]" and returns true unless user explicitly says no.
+// Confirm prompts for confirmation.
 func Confirm() bool {
 	fmt.Print("  Continue? [Y/n] ")
 	var input string
@@ -52,10 +52,6 @@ func Confirm() bool {
 	input = strings.ToLower(strings.TrimSpace(input))
 	return input == "" || input == "y" || input == "yes"
 }
-
-// ──────────────────────────────────────────
-// HEADER
-// ──────────────────────────────────────────
 
 func PrintHeader(cfg *config.Config) {
 	if !cfg.Style.ShowHeader {
@@ -76,15 +72,10 @@ func PrintHeader(cfg *config.Config) {
 		fmt.Printf("\n  \033[1;97mALPS\033[0m \033[2m%s\033[0m\n\n", cfg.Version)
 		return
 	}
-
-	fmt.Print("\033[0m\033[97m                   *\n")
-	fmt.Print("\033[97m                  /^\\ \033[37m *             \033[97mCustomizable\033[37m\n")
-	fmt.Print("\033[97m ALPS\033[37m        /^\\ /   \\/^\\\n")
-	fmt.Print("\033[37m   v0.9     /   \\   /^\\  \\         \033[97mpackage manager\033[37m\n")
-	fmt.Print("\033[1;32m           /_____\\_/___\\__\\\033[0m\n\n")
+	fmt.Print("\n\033[97m                   /^\\ \n")
+	fmt.Print("\033[97m   ALPS\033[37m        /^\\/   \\/\\ \n")
+	fmt.Print("\033[37m     v0.9     \033[1;32m/___\\____\\_\\\033[0m\n\n")
 }
-
-// Help / Aliases / Config-show
 
 func PrintHelp(cfg *config.Config) {
 	s := cfg.Style
@@ -111,8 +102,10 @@ func PrintHelp(cfg *config.Config) {
 	repoSubs := [][2]string{
 		{"repo update", "refresh alps-more cache"},
 		{"repo list", "list available packages"},
-		{"repo install <pkg>", "install from alps-more"},
-		{"repo remove <pkg>", "remove from alps-more"},
+		{"repo list install", "list installed packages"},
+		{"repo list remove", "list stale packages"},
+		{"repo install <pkg>", "install from alps-more (or github.com/u/r, gitlab.com/u/r)"},
+		{"repo remove <pkg>", "remove alps-more package"},
 		{"repo purge <pkg>", "remove package including configs/data"},
 		{"repo search <query>", "search alps-more repo"},
 		{"repo upgrade [pkg]", "upgrade installed package(s)"},
@@ -133,7 +126,10 @@ func PrintHelp(cfg *config.Config) {
 			{"aur install <pkg>", "install directly from AUR"},
 			{"aur search <query>", "search AUR only"},
 			{"aur list", "list installed AUR packages"},
+			{"aur remove <pkg>", "remove via pacman -R"},
 			{"aur clean", "remove build cache"},
+			{"aur build-local [dir]", "build a local PKGBUILD"},
+			{"aur fetch-abs <pkg>", "fetch official PKGBUILD"},
 		}
 		for _, a := range aurSubs {
 			fmt.Printf("  %s%s%s  %-24s %s%s%s\n",
@@ -195,10 +191,20 @@ func PrintHelp(cfg *config.Config) {
 			s.SymArrow, cfg.Aliases[k])
 	}
 	fmt.Println()
+
+	fmt.Printf("  %sSubcommand Aliases:%s\n", s.ColorBold, s.ColorReset)
+	subKeys := sortedKeys(config.DefaultSubCmdAliases)
+	for _, k := range subKeys {
+		fmt.Printf("  %s%s%s  %s%-15s%s %s %s\n",
+			s.ColorDim, s.SymBullet, s.ColorReset,
+			s.ColorPrimary, k, s.ColorReset,
+			s.SymArrow, config.DefaultSubCmdAliases[k])
+	}
+	fmt.Println()
 	fmt.Printf("  %sOther commands are passed directly to the backend.%s\n\n", s.ColorDim, s.ColorReset)
 }
 
-// detectDistroID reads /etc/os-release ID field.
+// detectDistroID reads /etc/os-release ID.
 func detectDistroID() string {
 	data, err := os.ReadFile("/etc/os-release")
 	if err != nil {
@@ -294,9 +300,7 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// Repo output helpers (TTY-aware)
-
-// symUpgrade returns an upgrade arrow safe for the current terminal.
+// symUpgrade returns an upgrade arrow.
 func symUpgrade() string {
 	if isTTY() {
 		return "->"
@@ -304,7 +308,7 @@ func symUpgrade() string {
 	return "↑"
 }
 
-// symReinstall returns a reinstall symbol safe for the current terminal.
+// symReinstall returns a reinstall symbol.
 func symReinstall() string {
 	if isTTY() {
 		return ">>"
@@ -312,14 +316,13 @@ func symReinstall() string {
 	return "⟳"
 }
 
-// isTTY returns true when running in a basic TTY with no unicode support.
+// isTTY checks for basic TTY.
 func isTTY() bool {
 	term := os.Getenv("TERM")
 	return term == "linux" || term == "dumb" || term == ""
 }
 
-// PrintRepoEntry prints one line of `alps repo list` output.
-// installedVer is empty when the package is not installed.
+// PrintRepoEntry prints a repo list entry.
 func PrintRepoEntry(cfg *config.Config, name, version, desc string, arch []string, installedVer string) {
 	s := cfg.Style
 
@@ -349,7 +352,7 @@ func PrintRepoEntry(cfg *config.Config, name, version, desc string, arch []strin
 		archStr)
 }
 
-// PrintRepoSearchResult prints one result from `alps repo search`.
+// PrintRepoSearchResult prints a repo search result.
 func PrintRepoSearchResult(cfg *config.Config, name, version, desc string) {
 	s := cfg.Style
 
@@ -363,7 +366,7 @@ func PrintRepoSearchResult(cfg *config.Config, name, version, desc string) {
 		verStr, desc)
 }
 
-// PrintUpgradeStatus prints the status line before running an upgrade.
+// PrintUpgradeStatus prints upgrade status.
 func PrintUpgradeStatus(cfg *config.Config, name, fromVer, toVer string) {
 	s := cfg.Style
 	arrow := symUpgrade()
@@ -380,7 +383,7 @@ func PrintUpgradeStatus(cfg *config.Config, name, fromVer, toVer string) {
 	}
 }
 
-// PrintReinstallStatus prints the status line before reinstalling.
+// PrintReinstallStatus prints reinstall status.
 func PrintReinstallStatus(cfg *config.Config, name, version string) {
 	s := cfg.Style
 	sym := symReinstall()

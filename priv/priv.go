@@ -7,32 +7,30 @@ import (
 	"strings"
 )
 
-// isTermux returns true when running inside Termux on Android.
+// isTermux checks if running in Termux.
 func isTermux() bool {
 	return os.Getenv("TERMUX_VERSION") != "" ||
 		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
 }
 
-// IsRoot returns true if current process is running as root.
+// IsRoot checks if running as root.
 func IsRoot() bool {
 	return os.Getuid() == 0
 }
 
-// HasSudo returns true if sudo binary exists.
+// HasSudo checks if sudo exists.
 func HasSudo() bool {
 	_, err := exec.LookPath("sudo")
 	return err == nil
 }
 
-// HasSu returns true if su binary exists.
+// HasSu checks if su exists.
 func HasSu() bool {
 	_, err := exec.LookPath("su")
 	return err == nil
 }
 
-// Command returns a command with appropriate privilege escalation.
-// On Termux: runs directly — no escalation needed or available.
-// Priority elsewhere: already root > sudo > su -c > error
+// Command returns a command with privilege escalation.
 func Command(args ...string) (*exec.Cmd, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("no command provided")
@@ -62,7 +60,7 @@ func Command(args ...string) (*exec.Cmd, error) {
 	return nil, fmt.Errorf("no privilege escalation available (no sudo or su)")
 }
 
-// Ensure gets a valid privilege token (sudo -v or no-op if root/su/Termux).
+// Ensure gets a valid privilege token.
 func Ensure() error {
 	// Termux owns its prefix — no escalation needed or available
 	if isTermux() {
@@ -95,9 +93,6 @@ func Ensure() error {
 }
 
 // CommandSudoOnly is like Command but never falls back to su.
-// Use for alps-more scripts, AUR builds, flatpak, and snap — contexts
-// where su cannot reliably authenticate arbitrary script execution.
-// Priority: already root > sudo > error
 func CommandSudoOnly(args ...string) (*exec.Cmd, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("no command provided")
@@ -118,9 +113,7 @@ func CommandSudoOnly(args ...string) (*exec.Cmd, error) {
 	return nil, fmt.Errorf("sudo is required for this operation — install sudo or run as root")
 }
 
-// EnsureSudoOnly is like Ensure but never accepts su as a fallback.
-// Use for alps-more, AUR, flatpak, and snap.
-// Errors immediately if neither root nor sudo is available.
+// EnsureSudoOnly is like Ensure but never accepts su.
 func EnsureSudoOnly() error {
 	if isTermux() {
 		return nil

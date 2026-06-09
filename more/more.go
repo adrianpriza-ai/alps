@@ -7,13 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/adrianpriza-ai/alps/config"
 	"github.com/adrianpriza-ai/alps/priv"
 )
 
-// Entry represents a single package entry from main.txt.
+// Entry represents a package entry.
 type Entry struct {
 	Name         string
 	Desc         string
@@ -28,9 +29,12 @@ type Entry struct {
 	RemoveLines  []string
 	UpgradeLines []string
 	PurgeLines   []string
+	// Source is set for entries fetched outside alps-more.
+	// Format: "github:user/repo"
+	Source string
 }
 
-// Parse parses main.txt content into a map of entries.
+// Parse parses main.txt content.
 func Parse(data []byte) (map[string]*Entry, error) {
 	entries := make(map[string]*Entry)
 	var current *Entry
@@ -125,7 +129,7 @@ func Parse(data []byte) (map[string]*Entry, error) {
 	return entries, scanner.Err()
 }
 
-// Find looks up a package by name from cache, matching current distro.
+// Find looks up a package by name.
 func Find(name string, cfg *config.Config) (*Entry, error) {
 	exists, expired := CacheStatus()
 	if !exists {
@@ -164,7 +168,9 @@ func Find(name string, cfg *config.Config) (*Entry, error) {
 	return e, nil
 }
 
-// List returns all entries filtered to the current distro.
+// List returns all entries for current distro from main.txt,
+// plus any GitHub-sourced packages currently installed.
+// Official alps-more entries always win on name conflict.
 func List(cfg *config.Config) (map[string]*Entry, error) {
 	exists, expired := CacheStatus()
 	if !exists {
@@ -194,11 +200,34 @@ func List(cfg *config.Config) (map[string]*Entry, error) {
 			filtered[e.Name] = e
 		}
 	}
+
+	// Append GitHub-sourced installed packages not in main.txt.
+	records, err := ReadInstalled()
+	if err == nil {
+		for name, rec := range records {
+			if !isRemoteSource(rec.Source) {
+				continue
+			}
+			if _, exists := filtered[name]; exists {
+				// Official entry wins — skip
+				continue
+			}
+			filtered[name] = &Entry{
+				Name:        name,
+				Version:     rec.Version,
+				RemoveLines: append([]string(nil), rec.RemoveLines...),
+				PurgeLines:  append([]string(nil), rec.PurgeLines...),
+				Servers:     append([]string(nil), rec.Servers...),
+				Sudo:        rec.Sudo,
+				Source:      rec.Source,
+			}
+		}
+	}
+
 	return filtered, nil
 }
 
-// Search returns entries whose name or desc contains query (case-insensitive).
-// Filters to current distro, like pacman -Ss.
+// Search returns entries matching query.
 func Search(query string, cfg *config.Config) ([]*Entry, error) {
 	entries, err := List(cfg)
 	if err != nil {
@@ -216,9 +245,9 @@ func Search(query string, cfg *config.Config) ([]*Entry, error) {
 	return results, nil
 }
 
-// Validate checks arch, os, and deps compatibility.
+// Validate checks compatibility.
 func Validate(e *Entry) error {
-	// --- arch check (required) ---
+	// arch check (required)
 	if len(e.Arch) == 0 {
 		return fmt.Errorf(
 			"package %q has no 'arch' field defined in repo — cannot install safely",
@@ -233,7 +262,7 @@ func Validate(e *Entry) error {
 		)
 	}
 
-	// --- os/distro check ---
+	// os/distro check
 	if len(e.OS) == 0 {
 		return fmt.Errorf(
 			"package %q has no 'os' field defined in repo — cannot install safely",
@@ -248,7 +277,7 @@ func Validate(e *Entry) error {
 		)
 	}
 
-	// --- deps check ---
+	// deps check
 	if len(e.Deps) > 0 {
 		var missing []string
 		for _, dep := range e.Deps {
@@ -267,11 +296,7 @@ func Validate(e *Entry) error {
 	return nil
 }
 
-// Install installs a package, handling already-installed and upgrade cases.
-//
-//   - Not installed                    → install
-//   - Installed, new version available → upgrade (upgrade_cmd or fallback to install cmd)
-//   - Installed, same/no version       → reinstall
+// Install installs a package from alps-more.
 func Install(e *Entry, cfg *config.Config) error {
 	if e.Sudo {
 		if err := ensureSudo(); err != nil {
@@ -300,7 +325,35 @@ func Install(e *Entry, cfg *config.Config) error {
 	return runInstall(e, cfg)
 }
 
-// Remove runs the remove lines for a package.
+// InstallFromGitHub fetches an ALPSMORE file from a GitHub repo and installs it.
+// repoPath must be in the form "user/repo".
+// Official alps-more entries always take priority — if the package name exists
+// in main.txt, that entry is used instead.
+func InstallFromGitHub(repoPath string, cfg *config.Config) error {
+	fmt.Printf("  fetching ALPSMORE from github.com/%s...\n", repoPath)
+
+	e, err := FetchALPSMORE(repoPath)
+	if err != nil {
+		return err
+	}
+
+	// Official alps-more takes priority.
+	if official, err := Find(e.Name, cfg); err == nil {
+		fmt.Printf("  %s  %q found in official alps-more repo — using that instead.\n",
+			cfg.Style.SymInfo, official.Name)
+		return Install(official, cfg)
+	}
+
+	e.Source = "github:" + repoPath
+
+	if err := Validate(e); err != nil {
+		return err
+	}
+
+	return Install(e, cfg)
+}
+
+// Remove runs remove commands for a package.
 func Remove(e *Entry, cfg *config.Config) error {
 	if len(e.RemoveLines) == 0 {
 		return fmt.Errorf("package %q has no remove commands defined", e.Name)
@@ -321,16 +374,51 @@ func Remove(e *Entry, cfg *config.Config) error {
 	return runLines(e.RemoveLines, server)
 }
 
-// Upgrade upgrades a single installed package if a newer version is available.
-func Upgrade(name string, cfg *config.Config) error {
+// RemovalEntry returns the repo entry or saved uninstall snapshot.
+func RemovalEntry(name string, cfg *config.Config) (*Entry, bool, error) {
 	e, err := Find(name, cfg)
-	if err != nil {
-		return err
+	if err == nil {
+		return e, false, nil
+	}
+	if !strings.Contains(err.Error(), "not found in alps-more repo") {
+		return nil, false, err
 	}
 
 	rec, isInstalled := GetInstalled(name)
 	if !isInstalled {
+		return nil, true, err
+	}
+	if len(rec.RemoveLines) == 0 && len(rec.PurgeLines) == 0 {
+		return nil, true, fmt.Errorf("package %q is stale and has no saved remove/purge commands", name)
+	}
+
+	return &Entry{
+		Name:        name,
+		Version:     rec.Version,
+		Servers:     append([]string(nil), rec.Servers...),
+		Sudo:        rec.Sudo,
+		RemoveLines: append([]string(nil), rec.RemoveLines...),
+		PurgeLines:  append([]string(nil), rec.PurgeLines...),
+		Source:      rec.Source,
+	}, true, nil
+}
+
+// Upgrade upgrades a single package by name.
+// Handles both alps-more and GitHub-sourced packages.
+func Upgrade(name string, cfg *config.Config) error {
+	rec, isInstalled := GetInstalled(name)
+	if !isInstalled {
 		return fmt.Errorf("package %q is not installed via alps-more", name)
+	}
+
+	// Remote-sourced (github/gitlab): re-fetch ALPSMORE and compare versions.
+	if isRemoteSource(rec.Source) {
+		return UpgradeFromSource(name, rec.Source, cfg)
+	}
+
+	e, err := Find(name, cfg)
+	if err != nil {
+		return err
 	}
 
 	if e.Version == "" || rec.Version == "" {
@@ -353,8 +441,47 @@ func Upgrade(name string, cfg *config.Config) error {
 	return runUpgrade(e, cfg)
 }
 
-// UpgradeAll upgrades all packages tracked in installed.json.
-// Stale entries (removed from repo) are reported but not removed automatically.
+// isRemoteSource returns true if the source string refers to a known remote
+// provider (currently github and gitlab).
+func isRemoteSource(source string) bool {
+	return strings.HasPrefix(source, "github:") || strings.HasPrefix(source, "gitlab:")
+}
+
+// UpgradeFromSource re-fetches an ALPSMORE file from a remote source string
+// ("github:user/repo" or "gitlab:user/repo") and upgrades if newer.
+func UpgradeFromSource(name, source string, cfg *config.Config) error {
+	e, err := FetchALPSMOREFromSource(source)
+	if err != nil {
+		return fmt.Errorf("failed to fetch ALPSMORE from %s: %w", source, err)
+	}
+	e.Source = source
+
+	rec, isInstalled := GetInstalled(name)
+	if !isInstalled {
+		return fmt.Errorf("package %q is not installed", name)
+	}
+
+	if e.Version == "" || rec.Version == "" {
+		fmt.Printf("  %s  %s: no version info, reinstalling...\n", cfg.Style.SymInfo, name)
+		return runInstall(e, cfg)
+	}
+	if e.Version == rec.Version {
+		fmt.Printf("  %s  %s %s is already up to date.\n", cfg.Style.SymOK, name, e.Version)
+		return nil
+	}
+
+	fmt.Printf("  %s  %s: %s -> %s\n", cfg.Style.SymArrow, name, rec.Version, e.Version)
+
+	if e.Sudo {
+		if err := ensureSudo(); err != nil {
+			return fmt.Errorf("sudo authentication failed: %w", err)
+		}
+	}
+	return runUpgrade(e, cfg)
+}
+
+// UpgradeAll upgrades all installed packages.
+// GitHub-sourced packages are upgraded by re-fetching their ALPSMORE file.
 func UpgradeAll(cfg *config.Config) error {
 	records, err := ReadInstalled()
 	if err != nil {
@@ -367,6 +494,19 @@ func UpgradeAll(cfg *config.Config) error {
 
 	var upgraded, upToDate, failed, stale int
 	for name := range records {
+		rec := records[name]
+
+		// Remote-sourced (github/gitlab): upgrade by re-fetching ALPSMORE.
+		if isRemoteSource(rec.Source) {
+			if err := UpgradeFromSource(name, rec.Source, cfg); err != nil {
+				fmt.Printf("  %s  %s: %v\n", cfg.Style.SymErr, name, err)
+				failed++
+			} else {
+				upgraded++
+			}
+			continue
+		}
+
 		e, err := Find(name, cfg)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found in alps-more repo") {
@@ -380,7 +520,6 @@ func UpgradeAll(cfg *config.Config) error {
 			continue
 		}
 
-		rec := records[name]
 		if e.Version != "" && rec.Version != "" && e.Version == rec.Version {
 			fmt.Printf("  %s  %s %s\n", cfg.Style.SymOK, name, e.Version)
 			upToDate++
@@ -403,12 +542,125 @@ func UpgradeAll(cfg *config.Config) error {
 	return nil
 }
 
-// Purge removes a package and deletes its config/data files.
-// Runs remove_begin first (uninstall binary/service),
-// then purge_begin (delete configs/user data).
-// Falls back to remove-only if no purge_begin is defined.
+// ListInstalled prints all packages installed via alps-more or GitHub.
+func ListInstalled(cfg *config.Config) error {
+	records, err := ReadInstalled()
+	if err != nil {
+		return err
+	}
+	if len(records) == 0 {
+		fmt.Println("  No packages installed via alps-more.")
+		return nil
+	}
+
+	names := make([]string, 0, len(records))
+	for name := range records {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		rec := records[name]
+		ver := rec.Version
+		if ver == "" {
+			ver = "(no version)"
+		}
+		tag := ""
+		if isRemoteSource(rec.Source) {
+			tag = "  [" + rec.Source + "]"
+		}
+		fmt.Printf("  %s  %s %s%s\n", cfg.Style.SymOK, name, ver, tag)
+		if rec.InstalledAt != "" {
+			fmt.Printf("         installed: %s\n", rec.InstalledAt)
+		}
+	}
+	return nil
+}
+
+// ListStale prints packages that are in installed.json but no longer in main.txt.
+// GitHub-sourced packages are not considered stale.
+func ListStale(cfg *config.Config) error {
+	records, err := ReadInstalled()
+	if err != nil {
+		return err
+	}
+	if len(records) == 0 {
+		fmt.Println("  No packages installed via alps-more.")
+		return nil
+	}
+
+	var stale []string
+	for name, rec := range records {
+		if isRemoteSource(rec.Source) {
+			continue
+		}
+		_, findErr := Find(name, cfg)
+		if findErr != nil && strings.Contains(findErr.Error(), "not found in alps-more repo") {
+			stale = append(stale, name)
+		}
+	}
+
+	if len(stale) == 0 {
+		fmt.Printf("  %s  No stale packages found.\n", cfg.Style.SymOK)
+		return nil
+	}
+
+	sort.Strings(stale)
+	fmt.Printf("  %s  Packages no longer in alps-more repo:\n", cfg.Style.SymWarn)
+	for _, name := range stale {
+		fmt.Printf("    %s  %s\n", cfg.Style.SymBullet, name)
+		fmt.Printf("         to remove: alps repo remove %s\n", name)
+	}
+	return nil
+}
+
+// UpdateSummary holds upgrade and stale package info.
+type UpdateSummary struct {
+	Upgradeable []string // formatted: "name oldver → newver"
+	Stale       []string // package names absent from repo
+}
+
+// CheckUpdates checks for upgrades and stale packages.
+func CheckUpdates(cfg *config.Config) (*UpdateSummary, error) {
+	records, err := ReadInstalled()
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return nil, nil
+	}
+
+	summary := &UpdateSummary{}
+
+	for name, rec := range records {
+		// GitHub-sourced: skip stale detection, not applicable.
+		if isRemoteSource(rec.Source) {
+			continue
+		}
+
+		e, findErr := Find(name, cfg)
+		if findErr != nil {
+			if strings.Contains(findErr.Error(), "not found in alps-more repo") {
+				summary.Stale = append(summary.Stale, name)
+				continue
+			}
+			return nil, findErr
+		}
+
+		if e.Version != "" && rec.Version != "" && e.Version != rec.Version {
+			summary.Upgradeable = append(summary.Upgradeable,
+				fmt.Sprintf("%s %s → %s", name, rec.Version, e.Version))
+		}
+	}
+
+	sort.Strings(summary.Upgradeable)
+	sort.Strings(summary.Stale)
+	return summary, nil
+}
+
+// Purge removes a package and its config/data files.
 func Purge(name string, cfg *config.Config) error {
-	e, err := Find(name, cfg)
+	e, _, err := RemovalEntry(name, cfg)
 	if err != nil {
 		return err
 	}
@@ -454,8 +706,6 @@ func Purge(name string, cfg *config.Config) error {
 	return UnmarkInstalled(name)
 }
 
-// --- internal helpers ---
-
 func runInstall(e *Entry, cfg *config.Config) error {
 	if len(e.CmdLines) == 0 {
 		return fmt.Errorf("package %q has no install commands", e.Name)
@@ -484,7 +734,7 @@ func runInstall(e *Entry, cfg *config.Config) error {
 		}
 		return err
 	}
-	return MarkInstalled(e.Name, e.Version)
+	return MarkInstalledEntry(e)
 }
 
 func runUpgrade(e *Entry, cfg *config.Config) error {
@@ -519,7 +769,7 @@ func runUpgrade(e *Entry, cfg *config.Config) error {
 		}
 		return err
 	}
-	return MarkInstalled(e.Name, e.Version)
+	return MarkInstalledEntry(e)
 }
 
 func ensureSudo() error {
@@ -529,7 +779,7 @@ func ensureSudo() error {
 	return priv.EnsureSudoOnly()
 }
 
-// needsMirror reports whether any command in the entry uses {CURL_RUN} or {SERVER}.
+// needsMirror checks if commands use {CURL_RUN} or {SERVER}.
 func needsMirror(e *Entry) bool {
 	for _, lines := range [][]string{e.CmdLines, e.UpgradeLines, e.RemoveLines, e.PurgeLines} {
 		for _, l := range lines {
@@ -541,10 +791,7 @@ func needsMirror(e *Entry) bool {
 	return false
 }
 
-// runLines executes a slice of shell commands in order.
-// {CURL_RUN}<path> is expanded to: curl -fsSL <resolved_server><path> | sh
-// The server URL comes from resolveServer; if the entry has no servers= field
-// it automatically falls back to the default alps-more mirrors.
+// runLines executes shell commands.
 func runLines(lines []string, server string) error {
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
@@ -569,13 +816,13 @@ func runLines(lines []string, server string) error {
 	return nil
 }
 
-// isTermux returns true when running inside Termux on Android.
+// isTermux checks if running in Termux.
 func isTermux() bool {
 	return os.Getenv("TERMUX_VERSION") != "" ||
 		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
 }
 
-// isWSL returns true when running inside Windows Subsystem for Linux.
+// isWSL checks if running in WSL.
 func isWSL() bool {
 	if os.Getenv("WSL_DISTRO_NAME") != "" || os.Getenv("WSL_INTEROP") != "" {
 		return true
@@ -655,7 +902,7 @@ func osMatches(osList []string, distro string, idLike []string) bool {
 	for _, o := range osList {
 		o = strings.ToLower(strings.TrimSpace(o))
 		if o == "linux" {
-			return true
+			return !isTermux() && !isWSL()
 		}
 		if strings.ToLower(distro) == o {
 			return true

@@ -27,12 +27,12 @@ ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, and `pacman` with built
 
 | | |
 |---|---|
-| **Multi-distro** | Auto-detects `apt`, `apt-get`, `dnf`, or `pacman` |
+| **Multi-distro** | Auto-detects `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, or `apk` |
 | **Termux support** | Full support on Android — no sudo, native `$PREFIX` paths |
 | **WSL support** | Works on WSL; alps-more entries can target `os = wsl` |
 | **Built-in AUR** | Full recursive dep resolution, PKGBUILD review, yay fallback |
 | **Snap & Flatpak** | First-class subcommands; snap auto-offered on Ubuntu/Debian |
-| **alps-more** | Cross-distro script repo with version tracking, mirror failover, and purge support |
+| **alps-more** | Cross-distro script repo with version tracking, mirror failover, purge support, and remote installs from GitHub/GitLab |
 | **3-tier aliases** | Hard commands → config aliases → default shorts. Unknown commands error cleanly |
 | **Fully customizable** | Colors, symbols, header, aliases — all via config file |
 | **Smart completion** | fish, bash, zsh — distro-aware, AUR name cache, live package completion |
@@ -211,16 +211,22 @@ Cross-distro script repo for tools not in standard package managers. Both mirror
 ### Commands
 
 ```bash
-alps repo update            # refresh cache
-alps repo list              # list available packages for your distro
-alps repo search <query>    # search by name or description
-alps repo install <pkg>     # install with preview and validation
-alps repo upgrade [pkg]     # upgrade one or all installed packages
-alps repo remove <pkg>      # remove package
-alps repo purge <pkg>       # remove package and delete config/data
+alps repo update                        # refresh cache
+alps repo list                          # list available packages for your distro
+alps repo list install                  # list installed packages (alps-more + remote)
+alps repo list remove                   # list stale packages no longer in repo
+alps repo search <query>                # search by name or description
+alps repo install <pkg>                 # install with preview and validation
+alps repo install github.com/user/repo  # install from a GitHub ALPSMORE file
+alps repo install gitlab.com/user/repo  # install from a GitLab ALPSMORE file
+alps repo upgrade [pkg]                 # upgrade one or all installed packages
+alps repo remove <pkg>                  # remove package
+alps repo purge <pkg>                   # remove package and delete config/data
 ```
 
 `remove` runs `remove_begin` only. `purge` runs `remove_begin` then `purge_begin` — mirrors `apt remove` vs `apt purge`.
+
+Remote installs fetch an `ALPSMORE` file from the repo root. Official alps-more entries always win on name conflict. The `[name]` header is required (recommended) — falls back to repo name if missing. Installed remote packages are tracked in state just like alps-more packages and support `upgrade`, `remove`, and `purge`.
 
 ### Package format
 
@@ -230,7 +236,7 @@ desc    = Does something useful
 author  = someone
 version = 1.0.0
 arch    = x86_64, aarch64
-os      = linux               # linux, termux, wsl, arch, debian, ubuntu, fedora, ...
+os      = linux               # linux (native distros only), termux, wsl, arch, debian, ubuntu, fedora, suse, alpine, ...
 deps    = curl                # binaries that must exist before install
 sudo    = true
 servers = https://my-mirror.example.com/

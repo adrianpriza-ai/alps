@@ -30,7 +30,7 @@ type Style struct {
 }
 
 type Config struct {
-	ConfigAliases map[string]string // only aliases defined in config files (not defaults)
+	ConfigAliases map[string]string // aliases from config files only
 	Style         Style
 	Aliases       map[string]string
 	GlobalPath    string
@@ -59,8 +59,7 @@ var defaults = map[string]string{
 	"header_text":   "alps",
 }
 
-// DefaultAliases are the built-in short aliases that ship with alps.
-// Exported so main.go can use them as the third resolution tier.
+// DefaultAliases are built-in short aliases.
 var DefaultAliases = map[string]string{
 	"ins": "install",
 	"rm":  "remove",
@@ -75,23 +74,21 @@ var DefaultAliases = map[string]string{
 	"ac":  "autoclean",
 	"cl":  "clean",
 	"ed":  "edit-sources",
-	// subsystem short aliases
+	// subsystems
 	"fp": "flatpak",
 	"sk": "snap",
 }
 
-// DefaultSubCmdAliases are built-in short aliases for subcommands only.
-// They apply inside subsystems (aur, repo, flatpak, snap) but NOT at the
-// top level, so they never interfere with top-level command resolution.
+// DefaultSubCmdAliases are built-in short aliases for subcommands.
 var DefaultSubCmdAliases = map[string]string{
-	// aur-specific
 	"bl":  "build-local",
+	"fa":  "fetch-abs",
 	"abs": "fetch-abs",
 }
 
 func globalConfigPath() string { return "/etc/alps/config" }
 
-// isTTY returns true if running in a Linux TTY (no unicode support).
+// isTTY checks if running in a Linux TTY.
 func isTTY() bool {
 	return os.Getenv("TERM") == "linux" || os.Getenv("TERM") == "dumb" || os.Getenv("TERM") == ""
 }
@@ -168,7 +165,7 @@ func Load() *Config {
 func parseFile(path string, kv map[string]string, aliases map[string]string, configAliases map[string]string, headerLines *[]string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return // file not found is normal (e.g. no global config)
+		return // file not found is OK
 	}
 	defer f.Close()
 
@@ -176,7 +173,7 @@ func parseFile(path string, kv map[string]string, aliases map[string]string, con
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+			continue // skip empty/comment lines
 		}
 		idx := strings.Index(line, "=")
 		if idx < 0 {
@@ -191,9 +188,7 @@ func parseFile(path string, kv map[string]string, aliases map[string]string, con
 			val = strings.TrimSpace(val[:ci])
 		}
 		// Strip surrounding quotes
-		if len(val) >= 2 &&
-			((val[0] == '"' && val[len(val)-1] == '"') ||
-				(val[0] == '\'' && val[len(val)-1] == '\'')) {
+		if len(val) >= 2 && (val[0] == val[len(val)-1]) && (val[0] == '"' || val[0] == '\'') {
 			val = val[1 : len(val)-1]
 		}
 
@@ -201,7 +196,7 @@ func parseFile(path string, kv map[string]string, aliases map[string]string, con
 
 		switch {
 		case strings.HasPrefix(lowerKey, "alias_"):
-			// Preserve original case for alias name (e.g. alias_-S stays -S)
+			// Preserve original case for alias name
 			aliasName := rawKey[len("alias_"):]
 			aliases[aliasName] = val
 			configAliases[aliasName] = val
@@ -213,7 +208,7 @@ func parseFile(path string, kv map[string]string, aliases map[string]string, con
 	}
 }
 
-// unescape converts \e and \033 literals into the actual ESC byte.
+// unescape converts escape sequences.
 func unescape(s string) string {
 	s = strings.ReplaceAll(s, `\e`, "\033")
 	s = strings.ReplaceAll(s, `\033`, "\033")

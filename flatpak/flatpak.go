@@ -7,13 +7,13 @@ import (
 	"strings"
 )
 
-// IsAvailable returns true if flatpak binary exists.
+// IsAvailable checks if flatpak exists.
 func IsAvailable() bool {
 	_, err := exec.LookPath("flatpak")
 	return err == nil
 }
 
-// Install installs one or more flatpak packages from flathub.
+// Install installs flatpak packages.
 func Install(pkgNames []string, noConfirm bool) error {
 	args := []string{"install", "flathub"}
 	args = append(args, pkgNames...)
@@ -46,7 +46,7 @@ func Remove(pkgName string, noConfirm bool) error {
 	return nil
 }
 
-// Search searches flathub for packages.
+// Search searches flathub.
 func Search(query string) error {
 	cmd := exec.Command("flatpak", "search", query)
 	cmd.Stdout = os.Stdout
@@ -65,7 +65,7 @@ func List() error {
 	return cmd.Run()
 }
 
-// Update updates all flatpak packages.
+// Update updates flatpak packages.
 func Update(noConfirm bool) error {
 	args := []string{"update"}
 	if noConfirm {

@@ -10,12 +10,18 @@ import (
 
 // InstalledRecord holds metadata for an installed package.
 type InstalledRecord struct {
-	Version     string `json:"version"`
-	InstalledAt string `json:"installed_at"`
+	Version     string   `json:"version"`
+	InstalledAt string   `json:"installed_at"`
+	RemoveLines []string `json:"remove_lines,omitempty"`
+	PurgeLines  []string `json:"purge_lines,omitempty"`
+	Servers     []string `json:"servers,omitempty"`
+	Sudo        bool     `json:"sudo,omitempty"`
+	// Source is set for packages installed outside alps-more.
+	// Format: "github:user/repo" or "gitlab:user/repo"
+	Source string `json:"source,omitempty"`
 }
 
 // ReadInstalled reads the installed.json state file.
-// If the file is corrupt, backs it up and returns an empty map.
 func ReadInstalled() (map[string]InstalledRecord, error) {
 	data, err := os.ReadFile(getInstalledFile())
 	if os.IsNotExist(err) {
@@ -45,25 +51,42 @@ func ReadInstalled() (map[string]InstalledRecord, error) {
 	return records, nil
 }
 
-// MarkInstalled writes/updates the installed record for a package.
+// MarkInstalled updates the installed record (version + timestamp only).
 func MarkInstalled(name, version string) error {
+	return MarkInstalledRecord(name, InstalledRecord{
+		Version:     version,
+		InstalledAt: time.Now().Format(time.RFC3339),
+	})
+}
+
+// MarkInstalledEntry updates the installed record with full entry metadata.
+func MarkInstalledEntry(e *Entry) error {
+	return MarkInstalledRecord(e.Name, InstalledRecord{
+		Version:     e.Version,
+		InstalledAt: time.Now().Format(time.RFC3339),
+		RemoveLines: append([]string(nil), e.RemoveLines...),
+		PurgeLines:  append([]string(nil), e.PurgeLines...),
+		Servers:     append([]string(nil), e.Servers...),
+		Sudo:        e.Sudo,
+		Source:      e.Source,
+	})
+}
+
+func MarkInstalledRecord(name string, rec InstalledRecord) error {
 	records, err := ReadInstalled()
 	if err != nil {
 		return err
 	}
 
-	records[name] = InstalledRecord{
-		Version:     version,
-		InstalledAt: time.Now().Format(time.RFC3339),
-	}
+	records[name] = rec
 
 	data, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal installed state: %w", err)
 	}
 
-	if err := ensureCacheDir(); err != nil {
-		return fmt.Errorf("failed to create cache dir: %w", err)
+	if err := ensureLibDir(); err != nil {
+		return fmt.Errorf("failed to create lib dir: %w", err)
 	}
 	if err := writeCacheFile(getInstalledFile(), data); err != nil {
 		return fmt.Errorf("failed to write installed state: %w", err)
@@ -71,7 +94,7 @@ func MarkInstalled(name, version string) error {
 	return nil
 }
 
-// GetInstalled returns the record for a single package, and whether it exists.
+// GetInstalled returns the record for a package.
 func GetInstalled(name string) (InstalledRecord, bool) {
 	records, err := ReadInstalled()
 	if err != nil {
@@ -81,7 +104,7 @@ func GetInstalled(name string) (InstalledRecord, bool) {
 	return rec, ok
 }
 
-// UnmarkInstalled removes a package from the installed state file.
+// UnmarkInstalled removes a package from state.
 func UnmarkInstalled(name string) error {
 	records, err := ReadInstalled()
 	if err != nil {

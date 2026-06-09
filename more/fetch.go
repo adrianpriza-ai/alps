@@ -16,6 +16,7 @@ import (
 
 const (
 	defaultCacheDir = "/var/cache/alps/more"
+	defaultLibDir   = "/var/lib/alps"
 	expireDays      = 90
 
 	primaryURL  = "https://adrianpriza-ai.github.io/alps-more/main.txt"
@@ -27,14 +28,19 @@ const (
 	retryDelay      = 2 * time.Second
 )
 
-// defaultServers are the two official alps-more mirrors.
-// Used as fallback when a package entry has no servers= field.
+// defaultServers are the official alps-more mirrors.
 var defaultServers = []string{
 	"https://adrianpriza-ai.github.io/alps-more/",
 	"https://moreland.codeberg.page/alps-more/",
 }
 
-// getCacheDir returns the cache directory, respecting Termux PREFIX.
+// githubRawBase is the base URL for raw GitHub content.
+const githubRawBase = "https://raw.githubusercontent.com"
+
+// gitlabRawBase is the base URL for raw GitLab content.
+const gitlabRawBase = "https://gitlab.com"
+
+// getCacheDir returns the cache directory (expendable — main.txt, last_sync).
 func getCacheDir() string {
 	if isTermux() {
 		prefix := os.Getenv("PREFIX")
@@ -46,11 +52,25 @@ func getCacheDir() string {
 	return defaultCacheDir
 }
 
+// getLibDir returns the state directory (persistent — installed.json).
+// /var/lib/ is the FHS standard for application state that must survive cache cleans.
+// On Termux: $PREFIX/var/lib/alps (same rationale, different root).
+func getLibDir() string {
+	if isTermux() {
+		prefix := os.Getenv("PREFIX")
+		if prefix == "" {
+			prefix = "/data/data/com.termux/files/usr"
+		}
+		return filepath.Join(prefix, "var/lib/alps")
+	}
+	return defaultLibDir
+}
+
 func getCacheFile() string     { return filepath.Join(getCacheDir(), "main.txt") }
 func getLastSyncFile() string  { return filepath.Join(getCacheDir(), "last_sync") }
-func getInstalledFile() string { return filepath.Join(getCacheDir(), "installed.json") }
+func getInstalledFile() string { return filepath.Join(getLibDir(), "installed.json") }
 
-// ensureCacheDir creates the cache directory using sudo on Linux, directly on Termux.
+// ensureCacheDir creates the cache directory.
 func ensureCacheDir() error {
 	dir := getCacheDir()
 	if isTermux() {
@@ -62,7 +82,19 @@ func ensureCacheDir() error {
 	return cmd.Run()
 }
 
-// writeCacheFile writes data to a cache path using sudo on Linux, directly on Termux.
+// ensureLibDir creates the state directory.
+func ensureLibDir() error {
+	dir := getLibDir()
+	if isTermux() {
+		return os.MkdirAll(dir, 0755)
+	}
+	cmd := exec.Command("sudo", "mkdir", "-p", dir)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// writeCacheFile writes data to a cache path.
 func writeCacheFile(path string, data []byte) error {
 	if isTermux() {
 		return os.WriteFile(path, data, 0644)
@@ -74,7 +106,7 @@ func writeCacheFile(path string, data []byte) error {
 	return cmd.Run()
 }
 
-// CacheStatus returns whether cache exists and whether it is expired.
+// CacheStatus returns cache existence and expiration.
 func CacheStatus() (exists bool, expired bool) {
 	info, err := os.Stat(getCacheFile())
 	if err != nil || info.Size() == 0 {
@@ -99,7 +131,7 @@ func CacheStatus() (exists bool, expired bool) {
 	return true, expired
 }
 
-// isCacheValid checks that main.txt contains at least one valid [package] entry.
+// isCacheValid checks for valid entries in main.txt.
 func isCacheValid() bool {
 	data, err := os.ReadFile(getCacheFile())
 	if err != nil {
@@ -114,15 +146,14 @@ func isCacheValid() bool {
 	return false
 }
 
-// fetchResult holds the outcome of a single download attempt.
+// fetchResult holds download outcome.
 type fetchResult struct {
 	data []byte
 	src  string
 	err  error
 }
 
-// fetchRace fires both mirrors simultaneously and returns the first
-// response that contains valid content. Whichever mirror is faster wins.
+// fetchRace gets data from fastest mirror.
 func fetchRace() (data []byte, src string, err error) {
 	sources := []struct{ url, name string }{
 		{primaryURL, "GitHub Pages"},
@@ -152,9 +183,7 @@ func fetchRace() (data []byte, src string, err error) {
 	return nil, "", fmt.Errorf("all sources failed: %w", lastErr)
 }
 
-// resolveServer returns the first reachable server from the list.
-// If servers is empty, falls back to defaultServers.
-// Fires all requests simultaneously and returns the fastest responding one.
+// resolveServer returns the first reachable server.
 func resolveServer(servers []string) (string, error) {
 	if len(servers) == 0 {
 		servers = defaultServers
@@ -188,8 +217,7 @@ func resolveServer(servers []string) (string, error) {
 	return "", fmt.Errorf("no reachable server found")
 }
 
-// FetchAndCache downloads main.txt from both mirrors simultaneously,
-// takes the fastest valid response, and writes it to cache.
+// FetchAndCache downloads and caches main.txt.
 func FetchAndCache(cfg *config.Config) error {
 	content, src, err := fetchRace()
 	if err != nil {
@@ -217,7 +245,7 @@ func FetchAndCache(cfg *config.Config) error {
 	return nil
 }
 
-// ReadCache reads and validates the cached main.txt content.
+// ReadCache reads and validates the cache.
 func ReadCache() ([]byte, error) {
 	data, err := os.ReadFile(getCacheFile())
 	if err != nil {
@@ -229,7 +257,7 @@ func ReadCache() ([]byte, error) {
 	return data, nil
 }
 
-// downloadWithRetry tries a URL up to maxRetries times with backoff.
+// downloadWithRetry downloads with retries.
 func downloadWithRetry(url string) ([]byte, error) {
 	var lastErr error
 	for attempt := 1; attempt <= maxRetries; attempt++ {
@@ -267,7 +295,7 @@ func downloadOnce(url string) ([]byte, error) {
 	return body, nil
 }
 
-// hasValidEntries checks that content has at least one [package] header.
+// hasValidEntries checks for package entries.
 func hasValidEntries(data []byte) bool {
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -278,7 +306,98 @@ func hasValidEntries(data []byte) bool {
 	return false
 }
 
-// CachePath returns the cache file path (for display purposes).
+// CachePath returns the cache file path.
 func CachePath() string {
 	return filepath.Clean(getCacheFile())
+}
+
+// FetchALPSMORE fetches and parses an ALPSMORE file from a GitHub repository.
+// repoPath must be in the form "user/repo".
+// Tries HEAD, then main, then master branches in order.
+// If the file has no [name] header, the repo name is used as fallback.
+func FetchALPSMORE(repoPath string) (*Entry, error) {
+	branches := []string{"HEAD", "main", "master"}
+	var lastErr error
+	for _, branch := range branches {
+		url := fmt.Sprintf("%s/%s/%s/ALPSMORE", githubRawBase, repoPath, branch)
+		data, err := downloadOnce(url)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		e, err := parseALPSMORE(data, repoPath)
+		if err != nil {
+			return nil, err
+		}
+		return e, nil
+	}
+	return nil, fmt.Errorf("could not fetch ALPSMORE from github.com/%s: %w", repoPath, lastErr)
+}
+
+// FetchALPSMOREGitLab fetches and parses an ALPSMORE file from a GitLab repository.
+// repoPath must be in the form "user/repo".
+// Tries HEAD, then main, then master branches in order.
+// If the file has no [name] header, the repo name is used as fallback.
+func FetchALPSMOREGitLab(repoPath string) (*Entry, error) {
+	branches := []string{"HEAD", "main", "master"}
+	var lastErr error
+	for _, branch := range branches {
+		url := fmt.Sprintf("%s/%s/-/raw/%s/ALPSMORE", gitlabRawBase, repoPath, branch)
+		data, err := downloadOnce(url)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		e, err := parseALPSMORE(data, repoPath)
+		if err != nil {
+			return nil, err
+		}
+		return e, nil
+	}
+	return nil, fmt.Errorf("could not fetch ALPSMORE from gitlab.com/%s: %w", repoPath, lastErr)
+}
+
+// FetchALPSMOREFromSource fetches an ALPSMORE file using a source string.
+// source must be in the form "github:user/repo" or "gitlab:user/repo".
+func FetchALPSMOREFromSource(source string) (*Entry, error) {
+	switch {
+	case strings.HasPrefix(source, "github:"):
+		return FetchALPSMORE(strings.TrimPrefix(source, "github:"))
+	case strings.HasPrefix(source, "gitlab:"):
+		return FetchALPSMOREGitLab(strings.TrimPrefix(source, "gitlab:"))
+	default:
+		return nil, fmt.Errorf("unknown source provider in %q", source)
+	}
+}
+
+// parseALPSMORE parses raw ALPSMORE content as a single entry.
+// If no [name] header is present, falls back to the repo name.
+func parseALPSMORE(data []byte, repoPath string) (*Entry, error) {
+	entries, err := Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ALPSMORE from %s: %w", repoPath, err)
+	}
+
+	// Entry has a [name] header — return it directly.
+	if len(entries) > 0 {
+		for _, e := range entries {
+			return e, nil
+		}
+	}
+
+	// No [name] header — inject repo name as fallback.
+	repoName := repoPath
+	if idx := strings.LastIndex(repoPath, "/"); idx >= 0 {
+		repoName = repoPath[idx+1:]
+	}
+	injected := append([]byte("["+repoName+"]\n"), data...)
+	entries, err = Parse(injected)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ALPSMORE from %s: %w", repoPath, err)
+	}
+	for _, e := range entries {
+		return e, nil
+	}
+
+	return nil, fmt.Errorf("ALPSMORE file from github.com/%s is empty or has no valid content", repoPath)
 }
