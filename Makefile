@@ -2,7 +2,6 @@ BINARY  = alps
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 GO      := $(shell command -v go 2>/dev/null)
 
-# Shell helper to dynamically enable colors for aligned 6-character logs based on TTY presence
 color_setup = \
   SYM_INFO="[INFO]"; SYM_OK="[ OK ]"; SYM_WARN="[WARN]"; SYM_ERR="[ERRO]"; \
   if [ -t 1 ]; then \
@@ -27,10 +26,8 @@ ifeq ($(PREFIX),)
   endif
 endif
 
-# Normalize prefix paths and check if it's a system folder
 IS_SYSTEM := $(shell echo "$(PREFIX)" | grep -Eq "^(/usr|/etc|/var|/opt)" && echo "yes" || echo "")
 
-# Determine SUDO privilege and handle no-sudo fallback
 UID := $(shell id -u)
 ifeq ($(UID),0)
   SUDO =
@@ -39,7 +36,6 @@ else ifneq ($(IS_SYSTEM),)
   ifneq ($(HAS_SUDO),)
     SUDO = sudo
   else
-    # Fallback to user directory if system prefix is requested but no sudo is available
     override PREFIX = $(HOME)/.local
     IS_SYSTEM =
     SUDO =
@@ -50,7 +46,6 @@ endif
 
 BINDIR = $(PREFIX)/bin
 
-# Setup shell completion paths
 ifneq ($(IS_SYSTEM),)
   FISH_COMP = /usr/share/fish/vendor_completions.d
   ZSH_COMP  = /usr/share/zsh/site-functions
@@ -82,7 +77,6 @@ install: build
 	@$(SUDO) ln -sf $(BINARY)-pm $(BINDIR)/$(BINARY)
 	@$(color_setup); printf "\r  $$GREEN$$SYM_OK$$RESET Installed to $(BINDIR)/$(BINARY)-pm (and symlinked $(BINARY))\n"
 	
-	@# Shell completions: Fish
 	@if command -v fish > /dev/null 2>&1; then \
 		$(SUDO) mkdir -p $(FISH_COMP) && \
 		./$(BINARY) completion fish | $(SUDO) tee $(FISH_COMP)/$(BINARY)-pm.fish > /dev/null && \
@@ -90,7 +84,6 @@ install: build
 		$(color_setup); printf "  $$GREEN$$SYM_OK$$RESET Fish completions installed to $(FISH_COMP)\n"; \
 	fi
 	
-	@# Shell completions: Zsh
 	@if command -v zsh > /dev/null 2>&1; then \
 		$(SUDO) mkdir -p $(ZSH_COMP) && \
 		./$(BINARY) completion zsh | $(SUDO) tee $(ZSH_COMP)/_$(BINARY)-pm > /dev/null && \
@@ -98,7 +91,6 @@ install: build
 		$(color_setup); printf "  $$GREEN$$SYM_OK$$RESET Zsh completions installed to $(ZSH_COMP)\n"; \
 	fi
 	
-	@# Shell completions: Bash
 	@if command -v bash > /dev/null 2>&1; then \
 		$(SUDO) mkdir -p $(BASH_COMP) && \
 		./$(BINARY) completion bash | $(SUDO) tee $(BASH_COMP)/$(BINARY)-pm > /dev/null && \
@@ -106,7 +98,6 @@ install: build
 		$(color_setup); printf "  $$GREEN$$SYM_OK$$RESET Bash completions installed to $(BASH_COMP)\n"; \
 	fi
 	
-	@# Check PATH if local installation
 	@case ":$(PATH):" in \
 		*:"$(BINDIR)":*) ;; \
 		*) \
