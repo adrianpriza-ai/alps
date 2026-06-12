@@ -54,7 +54,7 @@ git clone https://github.com/adrianpriza-ai/alps
 cd alps && make install
 ```
 
-Requires Go 1.22+ and `sudo`.
+Requires Go 1.22+
 
 ### Pre-built binaries
 

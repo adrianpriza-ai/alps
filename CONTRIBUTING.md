@@ -10,7 +10,7 @@ cd alps
 make build
 ```
 
-> **Requirements:** Go 1.22+ and `sudo` access.
+> **Requirements:** Go 1.22+
 > Install Go with your package manager:
 > - Arch: `sudo pacman -S go`
 > - Debian/Ubuntu: `sudo apt install golang-go`
@@ -27,6 +27,7 @@ alps/
 ├── snap/           # snap support
 ├── flatpak/        # flatpak support
 ├── more/           # alps-more script repo
+├── pack/           # package manager commands
 ├── priv/           # privilege escalation (sudo/su/root)
 └── completion/     # shell completion generator
 ```
