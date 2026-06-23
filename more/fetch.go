@@ -34,11 +34,8 @@ var defaultServers = []string{
 	"https://moreland.codeberg.page/alps-more/",
 }
 
-// githubRawBase is the base URL for raw GitHub content.
-const githubRawBase = "https://raw.githubusercontent.com"
-
-// gitlabRawBase is the base URL for raw GitLab content.
-const gitlabRawBase = "https://gitlab.com"
+// defaultBranches are tried when no branch is specified.
+var defaultBranches = []string{"HEAD", "main", "master"}
 
 // getCacheDir returns the cache directory (expendable — main.txt, last_sync).
 func getCacheDir() string {
@@ -245,6 +242,26 @@ func FetchAndCache(cfg *config.Config) error {
 	return nil
 }
 
+// getBuildCacheRoot returns the root of the per-package build cache (~/.cache/alps/more).
+func getBuildCacheRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join("/root", ".cache", "alps", "more")
+	}
+	return filepath.Join(home, ".cache", "alps", "more")
+}
+
+// CleanCache removes the build cache directory (~/.cache/alps/more).
+// The index cache (/var/cache/alps/more) is NOT touched.
+func CleanCache() error {
+	return os.RemoveAll(getBuildCacheRoot())
+}
+
+// CacheDir returns the path of the build cache directory.
+func CacheDir() string {
+	return getBuildCacheRoot()
+}
+
 // ReadCache reads and validates the cache.
 func ReadCache() ([]byte, error) {
 	data, err := os.ReadFile(getCacheFile())
@@ -311,63 +328,90 @@ func CachePath() string {
 	return filepath.Clean(getCacheFile())
 }
 
+func remoteRawURL(ref RemoteRef, branch string) string {
+	switch ref.Provider {
+	case "github":
+		return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/ALPSMORE", ref.RepoPath, branch)
+	case "codeberg":
+		return fmt.Sprintf("https://%s/%s/raw/branch/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
+	default:
+		return fmt.Sprintf("https://%s/%s/-/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
+	}
+}
+
+func branchesForRef(ref RemoteRef) []string {
+	if ref.Branch != "" {
+		return []string{ref.Branch}
+	}
+	return defaultBranches
+}
+
+func fetchRemoteRef(ref RemoteRef) (*Entry, RemoteRef, error) {
+	attempts := []RemoteRef{ref}
+
+	if ref.Branch == "" {
+		segments := strings.Split(ref.RepoPath, "/")
+		if len(segments) >= 3 {
+			branchGuess := RemoteRef{
+				Provider: ref.Provider,
+				Host:     ref.Host,
+				RepoPath: strings.Join(segments[:len(segments)-1], "/"),
+				Branch:   segments[len(segments)-1],
+			}
+			attempts = append(attempts, branchGuess)
+		}
+	}
+
+	resolved := ref
+	var lastErr error
+	for _, attempt := range attempts {
+		for _, branch := range branchesForRef(attempt) {
+			url := remoteRawURL(attempt, branch)
+			data, err := downloadOnce(url)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			e, err := parseALPSMORE(data, attempt.RepoPath)
+			if err != nil {
+				return nil, resolved, err
+			}
+			resolved = attempt
+			return e, resolved, nil
+		}
+	}
+	return nil, resolved, fmt.Errorf("could not fetch ALPSMORE from %s: %w", ref.DisplayURL(), lastErr)
+}
+
 // FetchALPSMORE fetches and parses an ALPSMORE file from a GitHub repository.
 // repoPath must be in the form "user/repo".
-// Tries HEAD, then main, then master branches in order.
-// If the file has no [name] header, the repo name is used as fallback.
 func FetchALPSMORE(repoPath string) (*Entry, error) {
-	branches := []string{"HEAD", "main", "master"}
-	var lastErr error
-	for _, branch := range branches {
-		url := fmt.Sprintf("%s/%s/%s/ALPSMORE", githubRawBase, repoPath, branch)
-		data, err := downloadOnce(url)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		e, err := parseALPSMORE(data, repoPath)
-		if err != nil {
-			return nil, err
-		}
-		return e, nil
-	}
-	return nil, fmt.Errorf("could not fetch ALPSMORE from github.com/%s: %w", repoPath, lastErr)
+	ref := RemoteRef{Provider: "github", Host: "github.com", RepoPath: repoPath}
+	e, _, err := fetchRemoteRef(ref)
+	return e, err
 }
 
-// FetchALPSMOREGitLab fetches and parses an ALPSMORE file from a GitLab repository.
+// FetchALPSMOREGitLab fetches and parses an ALPSMORE file from gitlab.com.
 // repoPath must be in the form "user/repo".
-// Tries HEAD, then main, then master branches in order.
-// If the file has no [name] header, the repo name is used as fallback.
 func FetchALPSMOREGitLab(repoPath string) (*Entry, error) {
-	branches := []string{"HEAD", "main", "master"}
-	var lastErr error
-	for _, branch := range branches {
-		url := fmt.Sprintf("%s/%s/-/raw/%s/ALPSMORE", gitlabRawBase, repoPath, branch)
-		data, err := downloadOnce(url)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		e, err := parseALPSMORE(data, repoPath)
-		if err != nil {
-			return nil, err
-		}
-		return e, nil
-	}
-	return nil, fmt.Errorf("could not fetch ALPSMORE from gitlab.com/%s: %w", repoPath, lastErr)
+	ref := RemoteRef{Provider: "gitlab", Host: "gitlab.com", RepoPath: repoPath}
+	e, _, err := fetchRemoteRef(ref)
+	return e, err
 }
 
-// FetchALPSMOREFromSource fetches an ALPSMORE file using a source string.
-// source must be in the form "github:user/repo" or "gitlab:user/repo".
+// FetchALPSMORERemote fetches and parses an ALPSMORE file from a remote ref.
+func FetchALPSMORERemote(ref RemoteRef) (*Entry, RemoteRef, error) {
+	return fetchRemoteRef(ref)
+}
+
+// FetchALPSMOREFromSource fetches an ALPSMORE file using a stored source string.
 func FetchALPSMOREFromSource(source string) (*Entry, error) {
-	switch {
-	case strings.HasPrefix(source, "github:"):
-		return FetchALPSMORE(strings.TrimPrefix(source, "github:"))
-	case strings.HasPrefix(source, "gitlab:"):
-		return FetchALPSMOREGitLab(strings.TrimPrefix(source, "gitlab:"))
-	default:
-		return nil, fmt.Errorf("unknown source provider in %q", source)
+	ref, err := ParseSource(source)
+	if err != nil {
+		return nil, err
 	}
+	e, _, err := fetchRemoteRef(*ref)
+	return e, err
 }
 
 // parseALPSMORE parses raw ALPSMORE content as a single entry.

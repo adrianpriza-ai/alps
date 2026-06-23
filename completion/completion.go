@@ -163,7 +163,7 @@ func genFish(cmds []string, backend string) {
 
 # repo subcommands
 complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" repo; and test (count $t) -eq 2' \
-    -a 'update list install remove purge search upgrade' -d 'repo subcommand'
+    -a 'update list install remove purge search upgrade clean' -d 'repo subcommand'
 
 # repo list sub-actions
 complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" repo; and contains -- "$t[3]" list ls; and test (count $t) -eq 3' \
@@ -258,7 +258,7 @@ _alps_completions() {
                     COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
                     ;;
                 *)
-                    COMPREPLY=($(compgen -W "update list install remove purge search upgrade" -- "$cur"))
+                    COMPREPLY=($(compgen -W "update list install remove purge search upgrade clean" -- "$cur"))
                     ;;
             esac
             ;;
@@ -352,7 +352,7 @@ _alps() {
                             ;;
                         *)
                             _describe 'repo subcommand' \
-                                '(update list install remove purge search upgrade)'
+                                '(update list install remove purge search upgrade clean)'
                             ;;
                     esac
                     ;;

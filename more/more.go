@@ -4,15 +4,21 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/adrianpriza-ai/alps/config"
 	"github.com/adrianpriza-ai/alps/priv"
 )
+
+const scriptDownloadTimeout = 5 * time.Minute
 
 // Entry represents a package entry.
 type Entry struct {
@@ -25,6 +31,7 @@ type Entry struct {
 	Deps         []string
 	Servers      []string // optional mirror list; falls back to defaultServers if empty
 	Sudo         bool
+	Safety       string // "strict" or "free" (default: "strict")
 	CmdLines     []string
 	RemoveLines  []string
 	UpgradeLines []string
@@ -54,7 +61,7 @@ func Parse(data []byte) (map[string]*Entry, error) {
 				entries[current.Name] = current
 			}
 			name := line[1 : len(line)-1]
-			current = &Entry{Name: name}
+			current = &Entry{Name: name, Safety: "strict"} // default to strict mode
 			inCmd, inRemove, inUpgrade, inPurge = false, false, false, false
 			continue
 		}
@@ -117,6 +124,13 @@ func Parse(data []byte) (map[string]*Entry, error) {
 				current.Deps = splitTrim(val)
 			case "sudo":
 				current.Sudo = strings.ToLower(val) == "true"
+			case "safety":
+				safety := strings.ToLower(val)
+				if safety == "strict" || safety == "free" {
+					current.Safety = safety
+				} else {
+					current.Safety = "strict" // default
+				}
 			}
 		}
 	}
@@ -219,6 +233,7 @@ func List(cfg *config.Config) (map[string]*Entry, error) {
 				PurgeLines:  append([]string(nil), rec.PurgeLines...),
 				Servers:     append([]string(nil), rec.Servers...),
 				Sudo:        rec.Sudo,
+				Safety:      rec.Safety,
 				Source:      rec.Source,
 			}
 		}
@@ -293,11 +308,45 @@ func Validate(e *Entry) error {
 		}
 	}
 
+	// cmd_begin/cmd_end check (required)
+	if len(e.CmdLines) == 0 {
+		return fmt.Errorf(
+			"package %q has no install commands (cmd_begin/cmd_end) defined — cannot install",
+			e.Name,
+		)
+	}
+
+	// Safety mode validation
+	if e.Safety == "" {
+		e.Safety = "strict" // default
+	}
+	if e.Safety == "strict" && e.Sudo {
+		return fmt.Errorf(
+			"package %q has safety=strict but sudo=true — strict mode uses fakeroot instead of sudo",
+			e.Name,
+		)
+	}
+
+	// Remove lines validation based on safety mode
+	if e.Safety == "free" {
+		// Free mode requires remove lines since no automatic tracking
+		if len(e.RemoveLines) == 0 {
+			return fmt.Errorf(
+				"package %q has safety=free but no remove commands (remove_begin/remove_end) — free mode requires manual remove commands",
+				e.Name,
+			)
+		}
+	}
+	// Strict mode: remove lines are optional (auto-generated from macros)
+
 	return nil
 }
 
 // Install installs a package from alps-more.
 func Install(e *Entry, cfg *config.Config) error {
+	// Invalidate sudo credentials before install (security measure)
+	priv.Invalidate()
+
 	if e.Sudo {
 		if err := ensureSudo(); err != nil {
 			return fmt.Errorf("sudo authentication failed: %w", err)
@@ -355,7 +404,24 @@ func InstallFromGitHub(repoPath string, cfg *config.Config) error {
 
 // Remove runs remove commands for a package.
 func Remove(e *Entry, cfg *config.Config) error {
+	// Invalidate sudo credentials before remove (security measure)
+	priv.Invalidate()
+
+	// First, remove tracked owned items from installed.json
+	rec, isInstalled := GetInstalled(e.Name)
+	if isInstalled && len(rec.OwnedItems) > 0 {
+		fmt.Printf("  removing %d tracked item(s)...\n", len(rec.OwnedItems))
+		if err := RemoveOwnedItems(rec.OwnedItems, e.Sudo); err != nil {
+			fmt.Printf("  %s  error removing owned items: %v\n", cfg.Style.SymWarn, err)
+		}
+	}
+
+	// Then run manual remove lines
 	if len(e.RemoveLines) == 0 {
+		// If no manual remove lines but we had owned items, we're done
+		if isInstalled && len(rec.OwnedItems) > 0 {
+			return UnmarkInstalled(e.Name)
+		}
 		return fmt.Errorf("package %q has no remove commands defined", e.Name)
 	}
 	if e.Sudo {
@@ -368,10 +434,152 @@ func Remove(e *Entry, cfg *config.Config) error {
 		var err error
 		server, err = resolveServer(e.Servers)
 		if err != nil {
-			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}/{SERVER}: %w", err)
+			return fmt.Errorf("cannot resolve mirror server for {BASH_RUN}/{SERVER} macros: %w", err)
 		}
 	}
-	return runLines(e.RemoveLines, server)
+	if err := runLines(e.Name, e.RemoveLines, server, e.Version); err != nil {
+		return err
+	}
+	return UnmarkInstalled(e.Name)
+}
+
+// RemoveOwnedItems safely removes items tracked in owned_items list.
+func RemoveOwnedItems(items []OwnedItem, sudo bool) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Process in reverse order for proper cleanup (children before parents)
+	for i := len(items) - 1; i >= 0; i-- {
+		item := items[i]
+
+		switch item.Type {
+		case "file":
+			if err := removeFile(item.Path, sudo); err != nil {
+				fmt.Printf("  %s  failed to remove file %s: %v\n", "⚠", item.Path, err)
+			}
+		case "dir":
+			if err := removeDir(item.Path, sudo); err != nil {
+				fmt.Printf("  %s  failed to remove directory %s: %v\n", "⚠", item.Path, err)
+			}
+		case "symlink":
+			if err := removeSymlink(item.Path, sudo); err != nil {
+				fmt.Printf("  %s  failed to remove symlink %s: %v\n", "⚠", item.Path, err)
+			}
+		case "service":
+			if err := removeService(item.Path, sudo); err != nil {
+				fmt.Printf("  %s  failed to remove service %s: %v\n", "⚠", item.Path, err)
+			}
+		case "user":
+			if err := removeUser(item.Path, sudo); err != nil {
+				fmt.Printf("  %s  failed to remove user %s: %v\n", "⚠", item.Path, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func removeFile(path string, useSudo bool) error {
+	var cmd *exec.Cmd
+	args := []string{"rm", "-f", path}
+	if useSudo && !isTermux() {
+		var err error
+		cmd, err = priv.Command(args...)
+		if err != nil {
+			return err
+		}
+	} else {
+		cmd = exec.Command(args[0], args[1:]...)
+	}
+	return cmd.Run()
+}
+
+func removeDir(path string, useSudo bool) error {
+	var cmd *exec.Cmd
+	args := []string{"rmdir", path}
+	if useSudo && !isTermux() {
+		var err error
+		cmd, err = priv.Command(args...)
+		if err != nil {
+			return err
+		}
+	} else {
+		cmd = exec.Command(args[0], args[1:]...)
+	}
+	// Don't fail if directory is not empty
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	_ = cmd.Run()
+	return nil
+}
+
+func removeSymlink(path string, useSudo bool) error {
+	var cmd *exec.Cmd
+	args := []string{"rm", "-f", path}
+	if useSudo && !isTermux() {
+		var err error
+		cmd, err = priv.Command(args...)
+		if err != nil {
+			return err
+		}
+	} else {
+		cmd = exec.Command(args[0], args[1:]...)
+	}
+	return cmd.Run()
+}
+
+func removeService(service string, useSudo bool) error {
+	// Termux has no systemd — nothing to stop/disable/remove.
+	if isTermux() {
+		return nil
+	}
+
+	// Stop and disable the service
+	stopCmd := []string{"systemctl", "stop", service}
+	disableCmd := []string{"systemctl", "disable", service}
+
+	for _, args := range [][]string{stopCmd, disableCmd} {
+		var cmd *exec.Cmd
+		var err error
+		if useSudo {
+			cmd, err = priv.Command(args...)
+			if err != nil {
+				return err
+			}
+		} else {
+			cmd = exec.Command(args[0], args[1:]...)
+		}
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		_ = cmd.Run() // Don't fail if service doesn't exist
+	}
+
+	// Remove the service file if it exists
+	serviceFile := "/etc/systemd/system/" + service
+	if _, err := os.Stat(serviceFile); err == nil {
+		removeFile(serviceFile, useSudo)
+	}
+
+	return nil
+}
+
+func removeUser(username string, useSudo bool) error {
+	var cmd *exec.Cmd
+	args := []string{"userdel", username}
+	if useSudo && !isTermux() {
+		var err error
+		cmd, err = priv.Command(args...)
+		if err != nil {
+			return err
+		}
+	} else {
+		cmd = exec.Command(args[0], args[1:]...)
+	}
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	_ = cmd.Run() // Don't fail if user doesn't exist
+	return nil
 }
 
 // RemovalEntry returns the repo entry or saved uninstall snapshot.
@@ -397,6 +605,7 @@ func RemovalEntry(name string, cfg *config.Config) (*Entry, bool, error) {
 		Version:     rec.Version,
 		Servers:     append([]string(nil), rec.Servers...),
 		Sudo:        rec.Sudo,
+		Safety:      rec.Safety,
 		RemoveLines: append([]string(nil), rec.RemoveLines...),
 		PurgeLines:  append([]string(nil), rec.PurgeLines...),
 		Source:      rec.Source,
@@ -406,6 +615,9 @@ func RemovalEntry(name string, cfg *config.Config) (*Entry, bool, error) {
 // Upgrade upgrades a single package by name.
 // Handles both alps-more and GitHub-sourced packages.
 func Upgrade(name string, cfg *config.Config) error {
+	// Invalidate sudo credentials before upgrade (security measure)
+	priv.Invalidate()
+
 	rec, isInstalled := GetInstalled(name)
 	if !isInstalled {
 		return fmt.Errorf("package %q is not installed via alps-more", name)
@@ -441,15 +653,18 @@ func Upgrade(name string, cfg *config.Config) error {
 	return runUpgrade(e, cfg)
 }
 
-// isRemoteSource returns true if the source string refers to a known remote
-// provider (currently github and gitlab).
+// isRemoteSource returns true if the source string refers to a remote git forge.
 func isRemoteSource(source string) bool {
-	return strings.HasPrefix(source, "github:") || strings.HasPrefix(source, "gitlab:")
+	_, err := ParseSource(source)
+	return err == nil
 }
 
 // UpgradeFromSource re-fetches an ALPSMORE file from a remote source string
 // ("github:user/repo" or "gitlab:user/repo") and upgrades if newer.
 func UpgradeFromSource(name, source string, cfg *config.Config) error {
+	// Invalidate sudo credentials before upgrade (security measure)
+	priv.Invalidate()
+
 	e, err := FetchALPSMOREFromSource(source)
 	if err != nil {
 		return fmt.Errorf("failed to fetch ALPSMORE from %s: %w", source, err)
@@ -660,17 +875,20 @@ func CheckUpdates(cfg *config.Config) (*UpdateSummary, error) {
 
 // Purge removes a package and its config/data files.
 func Purge(name string, cfg *config.Config) error {
+	// Invalidate sudo credentials before purge (security measure)
+	priv.Invalidate()
+
 	e, _, err := RemovalEntry(name, cfg)
 	if err != nil {
 		return err
 	}
 
-	_, isInstalled := GetInstalled(name)
+	rec, isInstalled := GetInstalled(name)
 	if !isInstalled {
 		return fmt.Errorf("package %q is not installed via alps-more", name)
 	}
 
-	if len(e.RemoveLines) == 0 && len(e.PurgeLines) == 0 {
+	if len(e.RemoveLines) == 0 && len(e.PurgeLines) == 0 && len(rec.OwnedItems) == 0 {
 		return fmt.Errorf("package %q has no remove or purge commands defined", e.Name)
 	}
 
@@ -685,20 +903,28 @@ func Purge(name string, cfg *config.Config) error {
 		var err error
 		server, err = resolveServer(e.Servers)
 		if err != nil {
-			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}/{SERVER}: %w", err)
+			return fmt.Errorf("cannot resolve mirror server for {BASH_RUN}/{SERVER} macros: %w", err)
 		}
 	}
 
-	// Step 1: remove (binary, service)
+	// Step 1: remove tracked owned items (binary, service)
+	if len(rec.OwnedItems) > 0 {
+		fmt.Printf("  removing %d tracked item(s)...\n", len(rec.OwnedItems))
+		if err := RemoveOwnedItems(rec.OwnedItems, e.Sudo); err != nil {
+			fmt.Printf("  %s  error removing owned items: %v\n", cfg.Style.SymWarn, err)
+		}
+	}
+
+	// Step 2: manual remove (binary, service)
 	if len(e.RemoveLines) > 0 {
-		if err := runLines(e.RemoveLines, server); err != nil {
+		if err := runLines(e.Name, e.RemoveLines, server, e.Version); err != nil {
 			return fmt.Errorf("remove step failed: %w", err)
 		}
 	}
 
-	// Step 2: purge (configs, data)
+	// Step 3: purge (configs, data)
 	if len(e.PurgeLines) > 0 {
-		if err := runLines(e.PurgeLines, server); err != nil {
+		if err := runLines(e.Name, e.PurgeLines, server, e.Version); err != nil {
 			return fmt.Errorf("purge step failed: %w", err)
 		}
 	}
@@ -716,14 +942,34 @@ func runInstall(e *Entry, cfg *config.Config) error {
 		var err error
 		server, err = resolveServer(e.Servers)
 		if err != nil {
-			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}/{SERVER}: %w", err)
+			return fmt.Errorf("cannot resolve mirror server for {BASH_RUN}/{SERVER} macros: %w", err)
 		}
 	}
 
-	if err := runLines(e.CmdLines, server); err != nil {
-		if len(e.RemoveLines) > 0 {
+	// Get build directory for macro context
+	pkgDir, err := getBuildDir(e.Name)
+	if err != nil {
+		return err
+	}
+
+	// Create macro context for tracking owned items
+	ctx := NewMacroContext(e, server)
+	ctx.BuildDir = pkgDir
+
+	// Warn if strict mode but fakeroot not available
+	if ctx.Safety == "strict" && !hasFakeroot() {
+		fmt.Printf("  %s  fakeroot not available - build and file operations may require manual setup\n", cfg.Style.SymWarn)
+	}
+
+	// Use context-aware execution for safety mode and macro tracking
+	if err := runLinesWithContextMacro(e.Name, e.CmdLines, server, e.Version, e, ctx); err != nil {
+		// Generate owned items for cleanup
+		ownedItems := GenerateOwnedItems(ctx)
+
+		// Clean up tracked owned items on failure
+		if len(ownedItems) > 0 {
 			fmt.Printf("  %s  install failed — running cleanup to undo partial install...\n", cfg.Style.SymWarn)
-			if rerr := runLines(e.RemoveLines, server); rerr != nil {
+			if rerr := RemoveOwnedItems(ownedItems, e.Sudo); rerr != nil {
 				fmt.Printf("  %s  cleanup also failed: %v\n", cfg.Style.SymErr, rerr)
 				fmt.Printf("  %s  you may need to clean up manually before retrying.\n", cfg.Style.SymWarn)
 			} else {
@@ -734,7 +980,16 @@ func runInstall(e *Entry, cfg *config.Config) error {
 		}
 		return err
 	}
-	return MarkInstalledEntry(e)
+
+	// Execute deferred file operations (install macros)
+	if err := ExecuteDeferredOps(ctx); err != nil {
+		return fmt.Errorf("failed to execute deferred file operations: %w", err)
+	}
+
+	// Generate owned items from macro context and save to installed record
+	ownedItems := GenerateOwnedItems(ctx)
+
+	return MarkInstalledEntryWithOwnedItems(e, ownedItems)
 }
 
 func runUpgrade(e *Entry, cfg *config.Config) error {
@@ -751,14 +1006,34 @@ func runUpgrade(e *Entry, cfg *config.Config) error {
 		var err error
 		server, err = resolveServer(e.Servers)
 		if err != nil {
-			return fmt.Errorf("cannot resolve mirror for {CURL_RUN}/{SERVER}: %w", err)
+			return fmt.Errorf("cannot resolve mirror server for {BASH_RUN}/{SERVER} macros: %w", err)
 		}
 	}
 
-	if err := runLines(lines, server); err != nil {
-		if len(e.RemoveLines) > 0 {
+	// Get build directory for macro context
+	pkgDir, err := getBuildDir(e.Name)
+	if err != nil {
+		return err
+	}
+
+	// Create macro context for tracking owned items
+	ctx := NewMacroContext(e, server)
+	ctx.BuildDir = pkgDir
+
+	// Warn if strict mode but fakeroot not available
+	if ctx.Safety == "strict" && !hasFakeroot() {
+		fmt.Printf("  %s  fakeroot not available - build and file operations may require manual setup\n", cfg.Style.SymWarn)
+	}
+
+	// Use context-aware execution for safety mode and macro tracking
+	if err := runLinesWithContextMacro(e.Name, lines, server, e.Version, e, ctx); err != nil {
+		// Generate owned items for cleanup
+		ownedItems := GenerateOwnedItems(ctx)
+
+		// Clean up tracked owned items on failure
+		if len(ownedItems) > 0 {
 			fmt.Printf("  %s  upgrade failed — running cleanup...\n", cfg.Style.SymWarn)
-			if rerr := runLines(e.RemoveLines, server); rerr != nil {
+			if rerr := RemoveOwnedItems(ownedItems, e.Sudo); rerr != nil {
 				fmt.Printf("  %s  cleanup also failed: %v\n", cfg.Style.SymErr, rerr)
 				fmt.Printf("  %s  you may need to clean up manually before retrying.\n", cfg.Style.SymWarn)
 			} else {
@@ -769,7 +1044,16 @@ func runUpgrade(e *Entry, cfg *config.Config) error {
 		}
 		return err
 	}
-	return MarkInstalledEntry(e)
+
+	// Execute deferred file operations (install macros)
+	if err := ExecuteDeferredOps(ctx); err != nil {
+		return fmt.Errorf("failed to execute deferred file operations: %w", err)
+	}
+
+	// Generate owned items from macro context and save to installed record
+	ownedItems := GenerateOwnedItems(ctx)
+
+	return MarkInstalledEntryWithOwnedItems(e, ownedItems)
 }
 
 func ensureSudo() error {
@@ -779,11 +1063,13 @@ func ensureSudo() error {
 	return priv.EnsureSudoOnly()
 }
 
-// needsMirror checks if commands use {CURL_RUN} or {SERVER}.
+// needsMirror checks if commands use {BASH_RUN}, {CURL_RUN} (deprecated), or {SERVER}.
 func needsMirror(e *Entry) bool {
 	for _, lines := range [][]string{e.CmdLines, e.UpgradeLines, e.RemoveLines, e.PurgeLines} {
 		for _, l := range lines {
-			if strings.Contains(l, "{CURL_RUN}") || strings.Contains(l, "{SERVER}") {
+			if strings.Contains(l, "{BASH_RUN}") ||
+				strings.Contains(l, "{CURL_RUN}") ||
+				strings.Contains(l, "{SERVER}") {
 				return true
 			}
 		}
@@ -791,20 +1077,252 @@ func needsMirror(e *Entry) bool {
 	return false
 }
 
-// runLines executes shell commands.
-func runLines(lines []string, server string) error {
+// getBuildDir returns the per-package build directory.
+// Pattern: ~/.cache/alps/more/<package-name>/
+func getBuildDir(pkgName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	dir := filepath.Join(home, ".cache", "alps", "more", pkgName)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("cannot create build directory %s: %w", dir, err)
+	}
+	return dir, nil
+}
+
+// expandVars replaces variable placeholders in command lines.
+// See ALPSMORE.md for macro documentation.
+func expandVars(line, server, pkgDir, pkgVersion string) string {
+	sysArch := normalizeArch(runtime.GOARCH)
+	distro, _ := detectDistro()
+
+	line = strings.ReplaceAll(line, "{ARCH}", sysArch)
+	line = strings.ReplaceAll(line, "{OS}", runtime.GOOS)
+	line = strings.ReplaceAll(line, "{DISTRO}", distro)
+	line = strings.ReplaceAll(line, "{VERSION}", pkgVersion)
+	line = strings.ReplaceAll(line, "{PKG_DIR}", pkgDir)
+	if server != "" {
+		line = strings.ReplaceAll(line, "{SERVER}", server)
+	}
+	return line
+}
+
+// handleDownloadMacro processes {DOWNLOAD} macro.
+// See ALPSMORE.md for usage and examples.
+func handleDownloadMacro(line, pkgDir string) error {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "{DOWNLOAD}") {
+		return fmt.Errorf("not a download macro: %s", line)
+	}
+
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "{DOWNLOAD}"))
+	parts := strings.Fields(rest)
+	if len(parts) == 0 {
+		return fmt.Errorf("{DOWNLOAD} requires a URL")
+	}
+
+	url := parts[0]
+	output := ""
+	if len(parts) >= 2 {
+		output = parts[1]
+	} else {
+		// Derive filename from URL
+		if idx := strings.LastIndex(url, "/"); idx >= 0 && idx < len(url)-1 {
+			output = url[idx+1:]
+		} else {
+			output = "download"
+		}
+		// Strip query string
+		if idx := strings.Index(output, "?"); idx >= 0 {
+			output = output[:idx]
+		}
+	}
+
+	destPath := filepath.Join(pkgDir, output)
+
+	fmt.Printf("  ↓ downloading %s\n", url)
+
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Get(url)
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed: HTTP %d from %s", resp.StatusCode, url)
+	}
+
+	f, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("cannot create file %s: %w", destPath, err)
+	}
+	defer f.Close()
+
+	_, err = io.Copy(f, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to write %s: %w", destPath, err)
+	}
+
+	fmt.Printf("  ✓ saved %s\n", output)
+	return nil
+}
+
+// handleBashRun processes {BASH_RUN} macro (downloads and executes scripts).
+// Supports full URLs and relative paths. See ALPSMORE.md for details.
+func handleBashRun(line, server, pkgDir string) (string, error) {
+	// Extract the path after {BASH_RUN}
+	idx := strings.Index(line, "{BASH_RUN}")
+	if idx < 0 {
+		return line, nil
+	}
+
+	after := line[idx+len("{BASH_RUN}"):]
+	parts := strings.Fields(strings.TrimSpace(after))
+	if len(parts) == 0 {
+		return "", fmt.Errorf("{BASH_RUN} requires a script path (URL or relative path)")
+	}
+
+	scriptPath := parts[0]
+	scriptArgs := ""
+	if len(parts) > 1 {
+		scriptArgs = " " + strings.Join(parts[1:], " ")
+	}
+
+	// Use full URL as-is, otherwise prepend server for relative paths
+	scriptURL := scriptPath
+	if !strings.HasPrefix(scriptPath, "http://") && !strings.HasPrefix(scriptPath, "https://") {
+		if server == "" {
+			return "", fmt.Errorf("{BASH_RUN} relative path requires a server to be configured")
+		}
+		scriptURL = server + scriptPath
+	}
+
+	client := &http.Client{Timeout: scriptDownloadTimeout}
+	resp, err := client.Get(scriptURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download script from %s: %w", scriptURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download script: HTTP %d from %s", resp.StatusCode, scriptURL)
+	}
+
+	scriptData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read script from %s: %w", scriptURL, err)
+	}
+
+	tmpFile := filepath.Join(pkgDir, ".alps_script.sh")
+	if err := os.WriteFile(tmpFile, scriptData, 0755); err != nil {
+		return "", fmt.Errorf("failed to write temp script to %s: %w", tmpFile, err)
+	}
+
+	prefix := line[:idx]
+	return strings.TrimSpace(prefix + "bash " + tmpFile + scriptArgs), nil
+}
+
+// runLines executes commands in package build directory with macro expansion.
+// See ALPSMORE.md for supported macros and usage.
+func runLines(pkgName string, lines []string, server string, pkgVersion string) error {
+	return runLinesWithContext(pkgName, lines, server, pkgVersion, nil)
+}
+
+// runLinesWithContext executes commands with macro expansion and context for safety mode
+func runLinesWithContext(pkgName string, lines []string, server string, pkgVersion string, entry *Entry) error {
+	ctx := NewMacroContext(entry, server)
+	return runLinesWithContextMacro(pkgName, lines, server, pkgVersion, entry, ctx)
+}
+
+// runLinesWithContextMacro executes commands with a provided macro context for tracking owned items
+func runLinesWithContextMacro(pkgName string, lines []string, server string, pkgVersion string, entry *Entry, ctx *MacroContext) error {
+	pkgDir, err := getBuildDir(pkgName)
+	if err != nil {
+		return err
+	}
+
+	// Create macro context if not provided and entry is available
+	if ctx == nil && entry != nil {
+		ctx = NewMacroContext(entry, server)
+	}
+
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if server != "" {
-			if strings.Contains(line, "{CURL_RUN}") {
-				line = strings.ReplaceAll(line, "{CURL_RUN}", "curl -fsSL "+server)
-				line = strings.TrimRight(line, " \t") + " | sh"
+
+		// Expand variables
+		line = expandVars(line, server, pkgDir, pkgVersion)
+
+		// Handle {DOWNLOAD} macro
+		if strings.HasPrefix(strings.TrimSpace(line), "{DOWNLOAD}") {
+			if err := handleDownloadMacro(line, pkgDir); err != nil {
+				return fmt.Errorf("{DOWNLOAD} failed: %w", err)
 			}
-			line = strings.ReplaceAll(line, "{SERVER}", server)
+			continue
 		}
-		cmd := exec.Command("bash", "-c", line)
+
+		// Handle {BASH_RUN} macro
+		if strings.Contains(line, "{BASH_RUN}") {
+			var bashErr error
+			line, bashErr = handleBashRun(line, server, pkgDir)
+			if bashErr != nil {
+				return fmt.Errorf("{BASH_RUN} failed: %w", bashErr)
+			}
+		}
+
+		// Handle {CURL_RUN} deprecated alias
+		if strings.Contains(line, "{CURL_RUN}") {
+			var bashErr error
+			line = strings.ReplaceAll(line, "{CURL_RUN}", "{BASH_RUN}")
+			line, bashErr = handleBashRun(line, server, pkgDir)
+			if bashErr != nil {
+				return fmt.Errorf("{CURL_RUN} failed (deprecated, use {BASH_RUN}): %w", bashErr)
+			}
+		}
+
+		// Handle new structured macros (INSTALL_BIN, etc.) when context is available
+		if ctx != nil {
+			_, _, isMacro := ParseMacro(line)
+			if isMacro {
+				// This is a structured macro, execute it through the macro system
+				expanded, err := expandLine(line, ctx)
+				if err != nil {
+					return fmt.Errorf("macro expansion failed: %w", err)
+				}
+				if expanded != "" {
+					line = expanded
+				} else {
+					continue // Macro was handled internally
+				}
+			} else {
+				// In strict mode, validate non-macro lines
+				if ctx.Safety == "strict" {
+					if err := ValidateLine(line); err != nil {
+						return fmt.Errorf("security validation failed: %w", err)
+					}
+				}
+			}
+		}
+
+		// Execute command in build directory
+		// Use fakeroot for build commands in strict mode if available
+		var cmd *exec.Cmd
+		useFakeroot := false
+		if ctx != nil && ctx.Safety == "strict" && hasFakeroot() {
+			useFakeroot = true
+		} else if ctx == nil && entry != nil && entry.Safety == "strict" && hasFakeroot() {
+			useFakeroot = true
+		}
+		
+		if useFakeroot {
+			cmd = exec.Command("fakeroot", "bash", "-c", line)
+		} else {
+			cmd = exec.Command("bash", "-c", line)
+		}
+		cmd.Dir = pkgDir
 		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -820,6 +1338,17 @@ func runLines(lines []string, server string) error {
 func isTermux() bool {
 	return os.Getenv("TERMUX_VERSION") != "" ||
 		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
+}
+
+// hasFakeroot checks if fakeroot is available
+func hasFakeroot() bool {
+	_, err := exec.LookPath("fakeroot")
+	return err == nil
+}
+
+// hasFakerootLocal checks if fakeroot is available (alias for hasFakeroot)
+func hasFakerootLocal() bool {
+	return hasFakeroot()
 }
 
 // isWSL checks if running in WSL.
@@ -902,7 +1431,10 @@ func osMatches(osList []string, distro string, idLike []string) bool {
 	for _, o := range osList {
 		o = strings.ToLower(strings.TrimSpace(o))
 		if o == "linux" {
-			return !isTermux() && !isWSL()
+			if !isTermux() && !isWSL() {
+				return true
+			}
+			continue
 		}
 		if strings.ToLower(distro) == o {
 			return true

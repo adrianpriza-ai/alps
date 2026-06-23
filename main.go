@@ -29,7 +29,7 @@ func main() {
 	cfg.Version = Version
 
 	if len(os.Args) < 2 {
-		printDiagnostic(cfg)
+		ui.PrintDiagnostic(cfg)
 		os.Exit(0)
 	}
 
@@ -109,10 +109,11 @@ var validSubCmds = map[string]map[string]bool{
 	"aur": {
 		"install": true, "search": true, "list": true,
 		"remove": true, "clean": true, "build-local": true, "fetch-abs": true,
+		"update": true, "upgrade": true,
 	},
 	"repo": {
 		"update": true, "list": true, "install": true,
-		"remove": true, "purge": true, "search": true, "upgrade": true,
+		"remove": true, "purge": true, "search": true, "upgrade": true, "clean": true,
 	},
 	"flatpak": {
 		"install": true, "remove": true, "search": true, "list": true, "update": true,
@@ -209,6 +210,9 @@ func runPkg(subcmd string, args []string, cfg *config.Config) {
 		os.Exit(1)
 	}
 
+	_, flags := splitFlagsAll(args)
+	dryRun := flags.DryRun
+
 	if backend == "pacman" && (subcmd == "update" || subcmd == "upgrade") {
 		ui.Msg(cfg, ui.LevelWarn, "Running pacman -Sy or -Su alone is not recommended on Arch.")
 		fmt.Print("     This may cause partial upgrades and break your system.")
@@ -228,15 +232,15 @@ func runPkg(subcmd string, args []string, cfg *config.Config) {
 
 	switch {
 	case backend == "pacman" && subcmd == "install":
-		runPacmanWithAURFallback(args, cfg)
+		runPacmanWithAURFallback(args, dryRun, cfg)
 	case backend == "pacman" && subcmd == "search":
 		runPacmanSearch(args, cfg)
 	case backend == "pacman" && subcmd == "autoremove":
 		runPacmanAutoremove(cfg)
 	case backend == "pacman" && (subcmd == "upgrade" || subcmd == "full-upgrade"):
-		runPacmanUpgrade(subcmd, args, cfg)
+		runPacmanUpgrade(subcmd, args, flags, cfg)
 	case backend == "apt" && subcmd == "install":
-		runAptWithSnapFallback(args, cfg)
+		runAptWithSnapFallback(args, dryRun, cfg)
 	case backend == "apt" && subcmd == "search":
 		runAptSearch(args, cfg)
 	default:
@@ -250,19 +254,18 @@ func runPkg(subcmd string, args []string, cfg *config.Config) {
 			mapped = tmp
 			mapped[0] = realBackend
 		}
-		runWithBackend(mapped, args, cfg, backend, subcmd)
+		runWithBackendFlagsExt(mapped, args, cfg, backend, subcmd, flags)
 	}
 }
 
 func splitFlags(args []string) (pkgs []string, noConfirm bool) {
-	for _, a := range args {
-		if a == "--noconfirm" || a == "-y" {
-			noConfirm = true
-		} else {
-			pkgs = append(pkgs, a)
-		}
-	}
+	pkgs, _, noConfirm = pack.ParseFlags(args)
 	return
+}
+
+// splitFlagsAll returns full parsed flags using ParseFlagsExt.
+func splitFlagsAll(args []string) (pkgs []string, f pack.Flags) {
+	return pack.ParseFlagsExt(args)
 }
 
 func fmtCmd(cmdArgs []string, extraArgs []string) string {
@@ -277,13 +280,32 @@ func fmtCmd(cmdArgs []string, extraArgs []string) string {
 }
 
 func runWithBackend(cmdArgs []string, args []string, cfg *config.Config, backend, subcmd string) bool {
+	return runWithBackendFlagsExt(cmdArgs, args, cfg, backend, subcmd, pack.Flags{})
+}
+
+func runWithBackendFlags(cmdArgs []string, args []string, cfg *config.Config, backend, subcmd string, dryRun, noConfirm bool) bool {
+	return runWithBackendFlagsExt(cmdArgs, args, cfg, backend, subcmd, pack.Flags{DryRun: dryRun, NoConfirm: noConfirm})
+}
+
+func runWithBackendFlagsExt(cmdArgs []string, args []string, cfg *config.Config, backend, subcmd string, f pack.Flags) bool {
 	sudo := needsSudo(backend)
+
+	// Strip alps meta-flags from args before forwarding to backend.
+	cleanArgs, _ := pack.ParseFlagsExt(args)
+
+	// Append backend-native flags for all active alps flags.
+	extraFlags := pack.BuildExtraFlagsExt(backend, f)
+	cleanArgs = append(cleanArgs, extraFlags...)
 
 	fullArgs := make([]string, len(cmdArgs[1:]))
 	copy(fullArgs, cmdArgs[1:])
-	fullArgs = append(fullArgs, args...)
+	fullArgs = append(fullArgs, cleanArgs...)
 
-	display := fmtCmd(cmdArgs, args)
+	display := fmtCmd(cmdArgs, cleanArgs)
+	if f.DryRun {
+		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: no changes will be made")
+		fmt.Println()
+	}
 	ui.Msgf(cfg, ui.LevelInfo, "%s (%s%s%s)",
 		subcmd,
 		cfg.Style.ColorDim,
@@ -292,7 +314,7 @@ func runWithBackend(cmdArgs []string, args []string, cfg *config.Config, backend
 	fmt.Print(cfg.Style.ColorReset)
 	fmt.Println()
 
-	if sudo {
+	if sudo && !f.DryRun {
 		if err := ensureSudo(); err != nil {
 			ui.Msg(cfg, ui.LevelError, "privilege escalation failed")
 			return false
@@ -300,7 +322,7 @@ func runWithBackend(cmdArgs []string, args []string, cfg *config.Config, backend
 	}
 
 	var cmd *exec.Cmd
-	if sudo {
+	if sudo && !f.DryRun {
 		var err error
 		cmd, err = priv.Command(append([]string{cmdArgs[0]}, fullArgs...)...)
 		if err != nil {
@@ -328,75 +350,6 @@ func runWithBackend(cmdArgs []string, args []string, cfg *config.Config, backend
 
 func ensureSudo() error {
 	return priv.Ensure()
-}
-
-func isTermux() bool {
-	return os.Getenv("TERMUX_VERSION") != "" ||
-		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
-}
-
-func printDiagnostic(cfg *config.Config) {
-	ui.PrintHeader(cfg)
-
-	var distro string
-	if isTermux() {
-		distro = "Termux"
-		if v := os.Getenv("TERMUX_VERSION"); v != "" {
-			distro = "Termux " + v
-		}
-
-		out, err := exec.Command("/system/bin/getprop", "ro.build.version.release").Output()
-		if err == nil {
-			if v := strings.TrimSpace(string(out)); v != "" {
-				distro += " (Android " + v + ")"
-			}
-		}
-	} else {
-		distro = "unknown"
-		if data, err := os.ReadFile("/etc/os-release"); err == nil {
-			for _, line := range strings.Split(string(data), "\n") {
-				if strings.HasPrefix(line, "PRETTY_NAME=") {
-					distro = strings.Trim(line[12:], `"'`)
-					break
-				}
-			}
-		}
-	}
-
-	backend := detectBackend()
-	if backend == "" {
-		backend = "none detected"
-	}
-
-	installed, _ := more.ReadInstalled()
-	moreCount := len(installed)
-
-	extras := []string{}
-	if !isTermux() {
-		if _, err := exec.LookPath("flatpak"); err == nil {
-			extras = append(extras, "flatpak")
-		}
-		if _, err := exec.LookPath("snap"); err == nil {
-			extras = append(extras, "snap")
-		}
-		if _, err := exec.LookPath("yay"); err == nil {
-			extras = append(extras, "yay")
-		}
-	}
-
-	dim := cfg.Style.ColorDim
-	rst := cfg.Style.ColorReset
-	pri := cfg.Style.ColorPrimary
-
-	fmt.Printf("  %ssystem%s   %s\n", pri, rst, distro)
-	fmt.Printf("  %sbackend%s  %s\n", pri, rst, backend)
-	if len(extras) > 0 {
-		fmt.Printf("  %sextras%s   %s\n", pri, rst, strings.Join(extras, "  "))
-	}
-	fmt.Printf("  %smore%s     %s%d package(s) installed via alps-more%s\n", pri, rst, dim, moreCount, rst)
-	fmt.Println()
-	fmt.Printf("  %srun 'alps help' for commands%s\n", dim, rst)
-	fmt.Println()
 }
 
 func runPacmanAutoremove(cfg *config.Config) {
@@ -429,19 +382,27 @@ func runPacmanAutoremove(cfg *config.Config) {
 	ui.Msg(cfg, ui.LevelOK, "Done.")
 }
 
-func runPacmanUpgrade(subcmd string, args []string, cfg *config.Config) {
+func runPacmanUpgrade(subcmd string, args []string, flags pack.Flags, cfg *config.Config) {
+	// Invalidate sudo credentials before upgrade
+	priv.Invalidate()
+
 	pacmanArgs := []string{"pacman", "-Su"}
 	if subcmd == "full-upgrade" {
 		pacmanArgs = []string{"pacman", "-Syu"}
 	}
-	if !runWithBackend(pacmanArgs, args, cfg, "pacman", subcmd) {
+	if !runWithBackendFlagsExt(pacmanArgs, args, cfg, "pacman", subcmd, flags) {
 		return
 	}
-	_, noConfirm := splitFlags(args)
-	runAURUpgrade(noConfirm, cfg)
+
+	if flags.NoConfirm {
+		ui.Msg(cfg, ui.LevelInfo, "Skipping AUR upgrade because -y/--noconfirm was passed. Run without -y to upgrade AUR packages interactively.")
+		return
+	}
+
+	runAURUpgrade(flags.DryRun, cfg)
 }
 
-func runPacmanWithAURFallback(args []string, cfg *config.Config) {
+func runPacmanWithAURFallback(args []string, dryRun bool, cfg *config.Config) {
 	if len(args) == 0 {
 		ui.Msg(cfg, ui.LevelError, "Package name required")
 		return
@@ -449,6 +410,10 @@ func runPacmanWithAURFallback(args []string, cfg *config.Config) {
 
 	pkgs, noConfirm := splitFlags(args)
 
+	if dryRun {
+		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: no changes will be made")
+		fmt.Println()
+	}
 	ui.Msgf(cfg, ui.LevelInfo, "install %s(pacman -S %s)%s",
 		cfg.Style.ColorDim,
 		strings.Join(pkgs, " "),
@@ -490,15 +455,26 @@ func runPacmanWithAURFallback(args []string, cfg *config.Config) {
 	}
 
 	if len(repoPkgs) > 0 {
-		if err := ensureSudo(); err != nil {
-			ui.Msg(cfg, ui.LevelError, "sudo authentication failed")
-			return
+		if !dryRun {
+			if err := ensureSudo(); err != nil {
+				ui.Msg(cfg, ui.LevelError, "sudo authentication failed")
+				return
+			}
 		}
 		pacmanArgs := append([]string{"-S"}, repoPkgs...)
 		if noConfirm {
 			pacmanArgs = append(pacmanArgs, "--noconfirm")
 		}
-		cmd, err := priv.Command(append([]string{"pacman"}, pacmanArgs...)...)
+		if dryRun {
+			pacmanArgs = append(pacmanArgs, pack.GetDryRunFlag("pacman"))
+		}
+		var cmd *exec.Cmd
+		var err error
+		if dryRun {
+			cmd = exec.Command("pacman", pacmanArgs...)
+		} else {
+			cmd, err = priv.Command(append([]string{"pacman"}, pacmanArgs...)...)
+		}
 		if err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			return
@@ -593,7 +569,7 @@ func runPacmanSearch(args []string, cfg *config.Config) {
 	appendAURNamesCache(res.pkgs)
 }
 
-func runAURUpgrade(noConfirm bool, cfg *config.Config) {
+func runAURUpgrade(dryRun bool, cfg *config.Config) {
 	installed, err := aur.GetInstalledAUR()
 	if err != nil {
 		ui.Msgf(cfg, ui.LevelError, "failed to list AUR packages: %v", err)
@@ -641,21 +617,23 @@ func runAURUpgrade(noConfirm bool, cfg *config.Config) {
 	ui.Msgf(cfg, ui.LevelInfo, "%d AUR package(s) to upgrade.", len(outdated))
 	fmt.Println()
 
-	var failed []string
+	var toUpgrade []string
 	for _, pkg := range outdated {
-		ui.Msgf(cfg, ui.LevelInfo, "Upgrading %s%s%s...",
-			cfg.Style.ColorBold, pkg.Name, cfg.Style.ColorReset+cfg.Style.ColorInfo)
-		if err := aur.Install([]string{pkg.Name}, noConfirm); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "failed to upgrade %s: %v", pkg.Name, err)
-			failed = append(failed, pkg.Name)
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would upgrade AUR package %s", pkg.Name)
 		} else {
-			ui.Msgf(cfg, ui.LevelOK, "%s upgraded.", pkg.Name)
+			toUpgrade = append(toUpgrade, pkg.Name)
 		}
 	}
 
-	if len(failed) > 0 {
-		ui.Msgf(cfg, ui.LevelWarn, "Partial completion: %d of %d package(s) failed to upgrade: %s",
-			len(failed), len(outdated), strings.Join(failed, ", "))
+	if dryRun || len(toUpgrade) == 0 {
+		return
+	}
+
+	if err := aur.Install(toUpgrade, false); err != nil {
+		ui.Msgf(cfg, ui.LevelError, "AUR upgrade failed: %v", err)
+	} else {
+		ui.Msg(cfg, ui.LevelOK, "AUR upgrade complete.")
 	}
 }
 
@@ -684,16 +662,39 @@ func runAUR(args []string, cfg *config.Config) {
 		os.Exit(1)
 	}
 	rest := args[1:]
+	pkgs, restFlags := pack.ParseFlagsExt(rest)
+	dryRun := restFlags.DryRun
+	if restFlags.NoConfirm {
+		ui.Msg(cfg, ui.LevelError, "-y/--noconfirm is not supported for AUR operations. Run without -y so AUR prompts stay interactive.")
+		os.Exit(1)
+	}
 
 	switch subcmd {
-	case "install":
-		if len(rest) == 0 {
-			ui.Msg(cfg, ui.LevelError, "Usage: alps aur install <package>")
-			os.Exit(1)
+	case "install", "update", "upgrade":
+		if len(pkgs) == 0 {
+			if subcmd == "install" {
+				ui.Msg(cfg, ui.LevelError, "Usage: alps aur install <package> [packages...]")
+				os.Exit(1)
+			} else {
+				// No packages provided for update/upgrade: upgrade all outdated AUR packages.
+				runAURUpgrade(dryRun, cfg)
+				return
+			}
 		}
-		_, noConfirm := splitFlags(rest)
-		pkgs, _ := splitFlags(rest)
-		if err := aur.Install(pkgs, noConfirm); err != nil {
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would %s AUR package(s): %s", subcmd, strings.Join(pkgs, " "))
+			fmt.Println()
+			for _, pkg := range pkgs {
+				if info, err2 := aur.Info(pkg); err2 == nil {
+					aur.PrintPackageInfo(info)
+				} else {
+					ui.Msgf(cfg, ui.LevelWarn, "%s: not found in AUR", pkg)
+				}
+			}
+			return
+		}
+		// noConfirm intentionally omitted — user must confirm AUR installs.
+		if err := aur.Install(pkgs, false); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
 		}
@@ -704,7 +705,10 @@ func runAUR(args []string, cfg *config.Config) {
 			ui.Msg(cfg, ui.LevelError, "Usage: alps aur search <query>")
 			os.Exit(1)
 		}
-		query := strings.Join(rest, " ")
+		query := strings.Join(pkgs, " ")
+		if query == "" {
+			query = strings.Join(rest, " ")
+		}
 		ui.Msgf(cfg, ui.LevelInfo, "Searching '%s' in AUR...", query)
 		fmt.Println()
 		results, err := aur.SearchNarrow(query)
@@ -741,48 +745,62 @@ func runAUR(args []string, cfg *config.Config) {
 		fmt.Println()
 
 	case "remove":
-		if len(rest) == 0 {
-			ui.Msg(cfg, ui.LevelError, "Usage: alps aur remove <package>")
+		if len(pkgs) == 0 {
+			ui.Msg(cfg, ui.LevelError, "Usage: alps aur remove <package> [packages...]")
 			os.Exit(1)
 		}
-		_, noConfirm := splitFlags(rest)
-		pkgName := rest[0]
-		ui.Msgf(cfg, ui.LevelWarn, "Remove AUR package %s%s%s?",
-			cfg.Style.ColorBold, pkgName, cfg.Style.ColorReset+cfg.Style.ColorWarning)
+
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would remove AUR package(s): %s", strings.Join(pkgs, " "))
+			return
+		}
+		ui.Msgf(cfg, ui.LevelWarn, "Remove AUR package(s) %s%s%s?",
+			cfg.Style.ColorBold, strings.Join(pkgs, " "), cfg.Style.ColorReset+cfg.Style.ColorWarning)
 		fmt.Print(cfg.Style.ColorReset)
 		fmt.Println()
-		if !noConfirm && !ui.Confirm() {
+		if !ui.Confirm() {
 			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
 			return
 		}
-		if err := aur.Remove(pkgName, noConfirm); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
+
+		var hasErrors bool
+		for _, pkgName := range pkgs {
+			if err := aur.Remove(pkgName, false); err != nil {
+				ui.Msgf(cfg, ui.LevelError, "failed to remove %s: %v", pkgName, err)
+				hasErrors = true
+			} else {
+				ui.Msg(cfg, ui.LevelOK, pkgName+" removed.")
+			}
+		}
+		if hasErrors {
 			os.Exit(1)
 		}
-		ui.Msg(cfg, ui.LevelOK, "Done.")
 
 	case "build-local":
 		dir := "."
-		if len(rest) > 0 {
-			dir = rest[0]
+		if len(pkgs) > 0 {
+			dir = pkgs[0]
 		}
-		_, noConfirm := splitFlags(rest)
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would build PKGBUILD in %s", dir)
+			return
+		}
 		ui.Msgf(cfg, ui.LevelInfo, "Building local PKGBUILD in %s%s%s...",
 			cfg.Style.ColorBold, dir, cfg.Style.ColorReset+cfg.Style.ColorInfo)
 		fmt.Print(cfg.Style.ColorReset)
 		fmt.Println()
-		if err := aur.BuildLocal(dir, noConfirm); err != nil {
+		if err := aur.BuildLocal(dir, false); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
 		}
 		ui.Msg(cfg, ui.LevelOK, "Done.")
 
 	case "fetch-abs":
-		if len(rest) == 0 {
+		if len(pkgs) == 0 {
 			ui.Msg(cfg, ui.LevelError, "Usage: alps aur fetch-abs <package>")
 			os.Exit(1)
 		}
-		pkgName := rest[0]
+		pkgName := pkgs[0]
 		ui.Msgf(cfg, ui.LevelInfo, "Fetching PKGBUILD for %s%s%s from ABS...",
 			cfg.Style.ColorBold, pkgName, cfg.Style.ColorReset+cfg.Style.ColorInfo)
 		fmt.Print(cfg.Style.ColorReset)
@@ -802,6 +820,10 @@ func runAUR(args []string, cfg *config.Config) {
 		}
 		if _, err := os.Stat(cacheRoot); os.IsNotExist(err) {
 			ui.Msg(cfg, ui.LevelInfo, "No AUR cache found.")
+			return
+		}
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would remove AUR build cache at %s", cacheRoot)
 			return
 		}
 		ui.Msgf(cfg, ui.LevelInfo, "Remove AUR build cache? (%s)", cacheRoot)
@@ -884,10 +906,17 @@ func runRepo(args []string, cfg *config.Config) {
 		os.Exit(1)
 	}
 	rest := args[1:]
+	pkgs, restFlags := pack.ParseFlagsExt(rest)
+	dryRun := restFlags.DryRun
+	// -y is intentionally NOT supported for repo operations.
 
 	switch subcmd {
 
 	case "update":
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would fetch and cache repo updates")
+			return
+		}
 		if err := more.FetchAndCache(cfg); err != nil {
 			ui.Msg(cfg, ui.LevelError, err.Error())
 			os.Exit(1)
@@ -975,190 +1004,215 @@ func runRepo(args []string, cfg *config.Config) {
 		fmt.Println()
 
 	case "install":
-		if len(rest) == 0 {
-			ui.Msg(cfg, ui.LevelError, "Usage: alps repo install <package>")
+		if len(pkgs) == 0 {
+			ui.Msg(cfg, ui.LevelError, "Usage: alps repo install <package> [packages...]")
 			os.Exit(1)
 		}
-		pkgName := rest[0]
 
-		// Remote repo install from github.com or gitlab.com
-		var remoteProvider, remoteRepoPath string
-		switch {
-		case strings.HasPrefix(pkgName, "github.com/"):
-			remoteProvider = "github"
-			remoteRepoPath = strings.TrimPrefix(pkgName, "github.com/")
-		case strings.HasPrefix(pkgName, "gitlab.com/"):
-			remoteProvider = "gitlab"
-			remoteRepoPath = strings.TrimPrefix(pkgName, "gitlab.com/")
-		}
+		var hasErrors bool
+		for _, pkgName := range pkgs {
+			var entry *more.Entry
+			var err error
 
-		if remoteProvider != "" {
-			fmt.Println()
-			ui.Msgf(cfg, ui.LevelInfo, "fetching ALPSMORE from %s.com/%s...", remoteProvider, remoteRepoPath)
-			fmt.Println()
-
-			source := remoteProvider + ":" + remoteRepoPath
-			entry, err := more.FetchALPSMOREFromSource(source)
-			if err != nil {
-				ui.Msgf(cfg, ui.LevelError, "%v", err)
-				os.Exit(1)
+			var remoteRef *more.RemoteRef
+			if more.IsRemoteURL(pkgName) {
+				remoteRef, err = more.ParseRemoteURL(pkgName)
 			}
 
-			// Official alps-more takes priority
-			if official, findErr := more.Find(entry.Name, cfg); findErr == nil {
-				ui.Msgf(cfg, ui.LevelInfo, "%q found in official alps-more repo — using that instead.", official.Name)
+			if remoteRef != nil {
 				fmt.Println()
-				entry = official
-				pkgName = official.Name
-				goto alpsMoreInstall
-			}
+				ui.Msgf(cfg, ui.LevelInfo, "fetching ALPSMORE from %s...", remoteRef.DisplayURL())
+				fmt.Println()
 
-			entry.Source = source
+				var resolved more.RemoteRef
+				entry, resolved, err = more.FetchALPSMORERemote(*remoteRef)
+				if err != nil {
+					ui.Msgf(cfg, ui.LevelError, "%v", err)
+					hasErrors = true
+					continue
+				}
+
+				source := resolved.Source()
+				// Official alps-more takes priority
+				if official, findErr := more.Find(entry.Name, cfg); findErr == nil {
+					ui.Msgf(cfg, ui.LevelInfo, "%q found in official alps-more repo — using that instead.", official.Name)
+					fmt.Println()
+					entry = official
+					pkgName = official.Name
+				} else {
+					entry.Source = source
+				}
+				remoteRef = &resolved
+			} else {
+				entry, err = more.Find(pkgName, cfg)
+				if err != nil {
+					ui.Msgf(cfg, ui.LevelError, "%v", err)
+					hasErrors = true
+					continue
+				}
+			}
 
 			if err := more.Validate(entry); err != nil {
 				ui.Msgf(cfg, ui.LevelError, "%v", err)
-				os.Exit(1)
+				hasErrors = true
+				continue
 			}
 
-			printRepoInstallPreview(entry, remoteProvider+".com/"+remoteRepoPath, cfg)
-			if !ui.Confirm() {
-				ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
-				return
+			sourceStr := "alps-more"
+			if remoteRef != nil && entry.Source != "" {
+				sourceStr = remoteRef.DisplayURL()
 			}
+			printRepoInstallPreview(entry, sourceStr, cfg)
+
+			if dryRun {
+				ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would install %s", entry.Name)
+				continue
+			}
+			if !ui.Confirm() {
+				ui.Msg(cfg, ui.LevelWarn, "Cancelled for "+entry.Name)
+				continue
+			}
+
 			fmt.Println()
 			if err := more.Install(entry, cfg); err != nil {
-				ui.Msgf(cfg, ui.LevelError, "%v", err)
-				os.Exit(1)
+				ui.Msgf(cfg, ui.LevelError, "failed to install %s: %v", entry.Name, err)
+				hasErrors = true
+			} else {
+				ui.Msg(cfg, ui.LevelOK, entry.Name+" installed.")
 			}
-			ui.Msg(cfg, ui.LevelOK, "Done.")
-			return
 		}
-
-	alpsMoreInstall:
-		entry, err := more.Find(pkgName, cfg)
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
+		if hasErrors {
 			os.Exit(1)
 		}
-
-		if err := more.Validate(entry); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-
-		printRepoInstallPreview(entry, "alps-more", cfg)
-		if !ui.Confirm() {
-			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
-			return
-		}
-
-		fmt.Println()
-		if err := more.Install(entry, cfg); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-		ui.Msg(cfg, ui.LevelOK, "Done.")
 
 	case "remove":
-		if len(rest) == 0 {
-			ui.Msg(cfg, ui.LevelError, "Usage: alps repo remove <package>")
-			os.Exit(1)
-		}
-		pkgName := rest[0]
-		entry, stale, err := more.RemovalEntry(pkgName, cfg)
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
+		if len(pkgs) == 0 {
+			ui.Msg(cfg, ui.LevelError, "Usage: alps repo remove <package> [packages...]")
 			os.Exit(1)
 		}
 
-		ui.Msgf(cfg, ui.LevelInfo, "Remove %s%s%s from alps-more?",
-			cfg.Style.ColorBold, entry.Name, cfg.Style.ColorReset+cfg.Style.ColorInfo)
-		if stale {
-			ui.Msg(cfg, ui.LevelWarn, "package is no longer in repo; using saved uninstall commands")
-		}
-		fmt.Println()
-		for _, line := range entry.RemoveLines {
-			fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
-		}
-		fmt.Print(cfg.Style.ColorReset)
-		fmt.Println()
-		if !ui.Confirm() {
-			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
-			return
-		}
+		var hasErrors bool
+		for _, pkgName := range pkgs {
+			entry, stale, err := more.RemovalEntry(pkgName, cfg)
+			if err != nil {
+				ui.Msgf(cfg, ui.LevelError, "%v", err)
+				hasErrors = true
+				continue
+			}
 
-		fmt.Println()
-		if err := more.Remove(entry, cfg); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-		if err := more.UnmarkInstalled(pkgName); err != nil {
-			ui.Msgf(cfg, ui.LevelWarn, "removed but failed to update state: %v", err)
-		}
-		ui.Msg(cfg, ui.LevelOK, "Done.")
-
-	case "purge":
-		if len(rest) == 0 {
-			ui.Msg(cfg, ui.LevelError, "Usage: alps repo purge <package>")
-			os.Exit(1)
-		}
-		pkgName := rest[0]
-		entry, stale, err := more.RemovalEntry(pkgName, cfg)
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-
-		_, isInstalled := more.GetInstalled(pkgName)
-		if !isInstalled {
-			ui.Msgf(cfg, ui.LevelError, "package %q is not installed via alps-more", pkgName)
-			os.Exit(1)
-		}
-
-		ui.Msgf(cfg, ui.LevelWarn, "Purge %s%s%s? This removes the package AND its config/data files.",
-			cfg.Style.ColorBold, entry.Name, cfg.Style.ColorReset+cfg.Style.ColorWarning)
-		if stale {
-			ui.Msg(cfg, ui.LevelWarn, "package is no longer in repo; using saved uninstall commands")
-		}
-		fmt.Println()
-
-		if len(entry.RemoveLines) > 0 {
-			fmt.Printf("  %sremove:%s\n", cfg.Style.ColorBold, cfg.Style.ColorReset)
+			ui.Msgf(cfg, ui.LevelInfo, "Remove %s%s%s from alps-more?",
+				cfg.Style.ColorBold, entry.Name, cfg.Style.ColorReset+cfg.Style.ColorInfo)
+			if stale {
+				ui.Msg(cfg, ui.LevelWarn, "package is no longer in repo; using saved uninstall commands")
+			}
+			fmt.Println()
 			for _, line := range entry.RemoveLines {
 				fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
 			}
+			fmt.Print(cfg.Style.ColorReset)
 			fmt.Println()
-		}
-		if len(entry.PurgeLines) > 0 {
-			fmt.Printf("  %spurge:%s\n", cfg.Style.ColorBold, cfg.Style.ColorReset)
-			for _, line := range entry.PurgeLines {
-				fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
+			if dryRun {
+				ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would remove %s", entry.Name)
+				continue
 			}
-		} else {
-			fmt.Printf("  %s%s  no purge_cmd defined — only remove will run%s\n",
-				cfg.Style.ColorDim, cfg.Style.SymWarn, cfg.Style.ColorReset)
-		}
+			if !ui.Confirm() {
+				ui.Msg(cfg, ui.LevelWarn, "Cancelled for "+entry.Name)
+				continue
+			}
 
-		fmt.Print(cfg.Style.ColorReset)
-		fmt.Println()
-		if !ui.Confirm() {
-			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
-			return
+			fmt.Println()
+			if err := more.Remove(entry, cfg); err != nil {
+				ui.Msgf(cfg, ui.LevelError, "failed to remove %s: %v", entry.Name, err)
+				hasErrors = true
+			} else {
+				if err := more.UnmarkInstalled(pkgName); err != nil {
+					ui.Msgf(cfg, ui.LevelWarn, "removed %s but failed to update state: %v", pkgName, err)
+				}
+				ui.Msg(cfg, ui.LevelOK, entry.Name+" removed.")
+			}
 		}
-
-		fmt.Println()
-		if err := more.Purge(pkgName, cfg); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
+		if hasErrors {
 			os.Exit(1)
 		}
-		ui.Msg(cfg, ui.LevelOK, "Done.")
+
+	case "purge":
+		if len(pkgs) == 0 {
+			ui.Msg(cfg, ui.LevelError, "Usage: alps repo purge <package> [packages...]")
+			os.Exit(1)
+		}
+
+		var hasErrors bool
+		for _, pkgName := range pkgs {
+			entry, stale, err := more.RemovalEntry(pkgName, cfg)
+			if err != nil {
+				ui.Msgf(cfg, ui.LevelError, "%v", err)
+				hasErrors = true
+				continue
+			}
+
+			_, isInstalled := more.GetInstalled(pkgName)
+			if !isInstalled {
+				ui.Msgf(cfg, ui.LevelError, "package %q is not installed via alps-more", pkgName)
+				hasErrors = true
+				continue
+			}
+
+			ui.Msgf(cfg, ui.LevelWarn, "Purge %s%s%s? This removes the package AND its config/data files.",
+				cfg.Style.ColorBold, entry.Name, cfg.Style.ColorReset+cfg.Style.ColorWarning)
+			if stale {
+				ui.Msg(cfg, ui.LevelWarn, "package is no longer in repo; using saved uninstall commands")
+			}
+			fmt.Println()
+
+			if len(entry.RemoveLines) > 0 {
+				fmt.Printf("  %sremove:%s\n", cfg.Style.ColorBold, cfg.Style.ColorReset)
+				for _, line := range entry.RemoveLines {
+					fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
+				}
+				fmt.Println()
+			}
+			if len(entry.PurgeLines) > 0 {
+				fmt.Printf("  %spurge:%s\n", cfg.Style.ColorBold, cfg.Style.ColorReset)
+				for _, line := range entry.PurgeLines {
+					fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
+				}
+			} else {
+				fmt.Printf("  %s%s  no purge_cmd defined — only remove will run%s\n",
+					cfg.Style.ColorDim, cfg.Style.SymWarn, cfg.Style.ColorReset)
+			}
+
+			fmt.Print(cfg.Style.ColorReset)
+			fmt.Println()
+			if dryRun {
+				ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would purge %s", entry.Name)
+				continue
+			}
+			if !ui.Confirm() {
+				ui.Msg(cfg, ui.LevelWarn, "Cancelled for "+entry.Name)
+				continue
+			}
+
+			fmt.Println()
+			if err := more.Purge(pkgName, cfg); err != nil {
+				ui.Msgf(cfg, ui.LevelError, "failed to purge %s: %v", entry.Name, err)
+				hasErrors = true
+			} else {
+				ui.Msg(cfg, ui.LevelOK, entry.Name+" purged.")
+			}
+		}
+		if hasErrors {
+			os.Exit(1)
+		}
 
 	case "search":
-		if len(rest) == 0 {
+		if len(pkgs) == 0 {
 			ui.Msg(cfg, ui.LevelError, "Usage: alps repo search <query>")
 			os.Exit(1)
 		}
-		query := strings.Join(rest, " ")
+		query := strings.Join(pkgs, " ")
+		if query == "" {
+			query = strings.Join(rest, " ")
+		}
 		results, err := more.Search(query, cfg)
 		if err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
@@ -1183,13 +1237,40 @@ func runRepo(args []string, cfg *config.Config) {
 				os.Exit(1)
 			}
 		} else {
-			pkgName := rest[0]
-			if err := more.Upgrade(pkgName, cfg); err != nil {
-				ui.Msgf(cfg, ui.LevelError, "%v", err)
+			var hasErrors bool
+			for _, pkgName := range rest {
+				if err := more.Upgrade(pkgName, cfg); err != nil {
+					ui.Msgf(cfg, ui.LevelError, "failed to upgrade %s: %v", pkgName, err)
+					hasErrors = true
+				} else {
+					ui.Msg(cfg, ui.LevelOK, pkgName+" upgraded.")
+				}
+			}
+			if hasErrors {
 				os.Exit(1)
 			}
-			ui.Msg(cfg, ui.LevelOK, "Done.")
 		}
+
+	case "clean":
+		cacheDir := more.CacheDir()
+		if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
+			ui.Msg(cfg, ui.LevelInfo, "No repo cache found.")
+			return
+		}
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would remove repo cache at %s", cacheDir)
+			return
+		}
+		ui.Msgf(cfg, ui.LevelInfo, "Remove repo cache? (%s)", cacheDir)
+		if !ui.Confirm() {
+			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
+			return
+		}
+		if err := more.CleanCache(); err != nil {
+			ui.Msgf(cfg, ui.LevelError, "%v", err)
+			os.Exit(1)
+		}
+		ui.Msg(cfg, ui.LevelOK, "Cache removed.")
 
 	default:
 		ui.Msgf(cfg, ui.LevelError, "Unknown repo subcommand: %s", subcmd)
@@ -1217,8 +1298,9 @@ func runFlatpak(args []string, cfg *config.Config) {
 		os.Exit(1)
 	}
 	rest := args[1:]
-	_, noConfirm := splitFlags(rest)
-	pkgs, _ := splitFlags(rest)
+	pkgs, restFlags := pack.ParseFlagsExt(rest)
+	dryRun := restFlags.DryRun
+	// -y / noConfirm intentionally NOT supported for flatpak.
 
 	switch subcmd {
 	case "install":
@@ -1226,7 +1308,11 @@ func runFlatpak(args []string, cfg *config.Config) {
 			ui.Msg(cfg, ui.LevelError, "Usage: alps flatpak install <package>")
 			os.Exit(1)
 		}
-		if err := flatpak.Install(pkgs, noConfirm); err != nil {
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would install flatpak package(s): %s", strings.Join(pkgs, " "))
+			return
+		}
+		if err := flatpak.Install(pkgs, false); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
 		}
@@ -1236,7 +1322,11 @@ func runFlatpak(args []string, cfg *config.Config) {
 			ui.Msg(cfg, ui.LevelError, "Usage: alps flatpak remove <package>")
 			os.Exit(1)
 		}
-		if err := flatpak.Remove(pkgs[0], noConfirm); err != nil {
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would remove flatpak package: %s", pkgs[0])
+			return
+		}
+		if err := flatpak.Remove(pkgs[0], false); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
 		}
@@ -1246,7 +1336,7 @@ func runFlatpak(args []string, cfg *config.Config) {
 			ui.Msg(cfg, ui.LevelError, "Usage: alps flatpak search <query>")
 			os.Exit(1)
 		}
-		if err := flatpak.Search(strings.Join(rest, " ")); err != nil {
+		if err := flatpak.Search(strings.Join(pkgs, " ")); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
 		}
@@ -1256,7 +1346,11 @@ func runFlatpak(args []string, cfg *config.Config) {
 			os.Exit(1)
 		}
 	case "update":
-		if err := flatpak.Update(noConfirm); err != nil {
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would update all flatpak packages")
+			return
+		}
+		if err := flatpak.Update(false); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
 		}
@@ -1287,13 +1381,19 @@ func runSnap(args []string, cfg *config.Config) {
 		os.Exit(1)
 	}
 	rest := args[1:]
-	pkgs, _ := splitFlags(rest)
+	pkgs, restFlags := pack.ParseFlagsExt(rest)
+	dryRun := restFlags.DryRun
+	// -y / noConfirm intentionally NOT supported for snap operations.
 
 	switch subcmd {
 	case "install":
 		if len(pkgs) == 0 {
 			ui.Msg(cfg, ui.LevelError, "Usage: alps snap install <package>")
 			os.Exit(1)
+		}
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would install snap package(s): %s", strings.Join(pkgs, " "))
+			return
 		}
 		if err := snap.Install(pkgs, false); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
@@ -1305,6 +1405,10 @@ func runSnap(args []string, cfg *config.Config) {
 			ui.Msg(cfg, ui.LevelError, "Usage: alps snap remove <package>")
 			os.Exit(1)
 		}
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would remove snap package: %s", pkgs[0])
+			return
+		}
 		if err := snap.Remove(pkgs[0]); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
@@ -1315,7 +1419,7 @@ func runSnap(args []string, cfg *config.Config) {
 			ui.Msg(cfg, ui.LevelError, "Usage: alps snap search <query>")
 			os.Exit(1)
 		}
-		if err := snap.Search(strings.Join(rest, " ")); err != nil {
+		if err := snap.Search(strings.Join(pkgs, " ")); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
 		}
@@ -1325,6 +1429,10 @@ func runSnap(args []string, cfg *config.Config) {
 			os.Exit(1)
 		}
 	case "update":
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would refresh all snap packages")
+			return
+		}
 		if err := snap.Update(); err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
@@ -1336,7 +1444,7 @@ func runSnap(args []string, cfg *config.Config) {
 	}
 }
 
-func runAptWithSnapFallback(args []string, cfg *config.Config) {
+func runAptWithSnapFallback(args []string, dryRun bool, cfg *config.Config) {
 	if len(args) == 0 {
 		ui.Msg(cfg, ui.LevelError, "Package name required")
 		return
@@ -1345,6 +1453,10 @@ func runAptWithSnapFallback(args []string, cfg *config.Config) {
 	pkgs, noConfirm := splitFlags(args)
 	realBackend := pack.DetectRealApt()
 
+	if dryRun {
+		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: no changes will be made")
+		fmt.Println()
+	}
 	ui.Msgf(cfg, ui.LevelInfo, "install (%s install %s)", realBackend, strings.Join(pkgs, " "))
 	fmt.Println()
 
@@ -1371,9 +1483,11 @@ func runAptWithSnapFallback(args []string, cfg *config.Config) {
 		repoPkgs = append(repoPkgs, pkg)
 	}
 
-	if err := ensureSudo(); err != nil {
-		ui.Msg(cfg, ui.LevelError, "privilege escalation failed")
-		return
+	if !dryRun {
+		if err := ensureSudo(); err != nil {
+			ui.Msg(cfg, ui.LevelError, "privilege escalation failed")
+			return
+		}
 	}
 
 	if len(repoPkgs) > 0 {
@@ -1381,7 +1495,16 @@ func runAptWithSnapFallback(args []string, cfg *config.Config) {
 		if noConfirm {
 			aptArgs = append(aptArgs, "-y")
 		}
-		cmd, err := priv.Command(aptArgs...)
+		if dryRun {
+			aptArgs = append(aptArgs, pack.GetDryRunFlag("apt"))
+		}
+		var cmd *exec.Cmd
+		var err error
+		if dryRun {
+			cmd = exec.Command(aptArgs[0], aptArgs[1:]...)
+		} else {
+			cmd, err = priv.Command(aptArgs...)
+		}
 		if err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			return
@@ -1406,7 +1529,9 @@ func runAptWithSnapFallback(args []string, cfg *config.Config) {
 		ui.Msgf(cfg, ui.LevelInfo, "Try snap for %s%s%s?",
 			cfg.Style.ColorBold, strings.Join(notFound, " "), cfg.Style.ColorReset+cfg.Style.ColorInfo)
 		fmt.Print(cfg.Style.ColorReset)
-		if ui.Confirm() {
+		if dryRun {
+			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would prompt to install snap package(s): %s", strings.Join(notFound, " "))
+		} else if ui.Confirm() {
 			if err := snap.Install(notFound, false); err != nil {
 				ui.Msgf(cfg, ui.LevelError, "%v", err)
 			} else {

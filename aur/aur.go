@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/adrianpriza-ai/alps/config"
 	"github.com/adrianpriza-ai/alps/priv"
 )
 
@@ -55,13 +56,23 @@ type installPlan struct {
 	MakeDepsAdded []string   // makedeps not pre-installed; offered for removal after
 }
 
-// symSet returns TTY-safe symbols.
-func symSet() (ok, warn, arrow string) {
-	t := os.Getenv("TERM")
-	if t == "linux" || t == "dumb" || t == "" {
-		return " OK ", "WARN", "->"
-	}
-	return "✓", "⚠", "→"
+type builtPackage struct {
+	Path    string
+	Name    string
+	Version string
+	ModTime time.Time
+}
+
+func configSymbols() (ok, warn, arrow string) {
+	s := config.Load().Style
+	return s.SymOK, s.SymWarn, s.SymArrow
+}
+
+func warnStderr(format string, a ...any) {
+	cfg := config.Load()
+	s := cfg.Style
+	text := fmt.Sprintf(format, a...)
+	fmt.Fprintf(os.Stderr, "  %s%s%s  %s%s\n", s.ColorWarning, s.SymWarn, s.ColorReset, text, s.ColorReset)
 }
 
 // DetectHelper returns "yay" if available.
@@ -251,6 +262,7 @@ func Install(pkgNames []string, noConfirm bool) error {
 	if len(pkgNames) == 0 {
 		return nil
 	}
+
 	if DetectHelper() == "yay" {
 		return installWithYay(pkgNames, noConfirm)
 	}
@@ -266,12 +278,15 @@ func Install(pkgNames []string, noConfirm bool) error {
 }
 
 func installWithYay(pkgNames []string, noConfirm bool) error {
-	_, _, arrow := symSet()
+	_, _, arrow := configSymbols()
 	args := append([]string{"-S"}, pkgNames...)
 	if noConfirm {
 		args = append(args, "--noconfirm")
 	}
 	fmt.Printf("  %s using yay: %s\n\n", arrow, strings.Join(pkgNames, " "))
+	if err := priv.Invalidate(); err != nil {
+		warnStderr("failed to invalidate sudo credentials before yay: %v", err)
+	}
 	cmd := exec.Command("yay", args...)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	cmd.Stdout = os.Stdout
@@ -343,7 +358,7 @@ func (c *pkgCache) HasProvider(name string) bool {
 
 // buildInstallPlan resolves the dep tree.
 func buildInstallPlan(names []string) (*installPlan, error) {
-	_, warn, _ := symSet()
+	_, warn, _ := configSymbols()
 	visited := make(map[string]bool)
 	var ordered []*Package
 	var repoDeps []string
@@ -454,7 +469,7 @@ func findAURPackage(name string) (*Package, error) {
 
 // collectUserInputs gathers confirmations before building.
 func collectUserInputs(plan *installPlan, noConfirm bool) error {
-	_, warn, arrow := symSet()
+	_, warn, arrow := configSymbols()
 
 	// Concise AUR trust notice — same trust model as yay.
 	fmt.Println()
@@ -526,7 +541,7 @@ func collectUserInputs(plan *installPlan, noConfirm bool) error {
 
 // executeInstallPlan installs repo deps and builds AUR packages.
 func executeInstallPlan(plan *installPlan, noConfirm bool) error {
-	ok, _, arrow := symSet()
+	ok, _, arrow := configSymbols()
 
 	// Install repo deps first
 	if len(plan.RepoDeps) > 0 {
@@ -544,11 +559,14 @@ func executeInstallPlan(plan *installPlan, noConfirm bool) error {
 		}
 	}
 
+	var builtDirs []string
 	// Build each AUR package in dep order
 	for _, pkg := range plan.AURPackages {
-		if err := buildAndInstall(pkg, noConfirm); err != nil {
+		pkgDir, err := buildAndInstall(pkg, noConfirm)
+		if err != nil {
 			return fmt.Errorf("failed to build %s: %w", pkg.Name, err)
 		}
+		builtDirs = append(builtDirs, pkgDir)
 	}
 
 	// Offer makedep removal once, at the very end
@@ -584,27 +602,64 @@ func executeInstallPlan(plan *installPlan, noConfirm bool) error {
 			fmt.Printf("  %s  build dependencies removed\n", ok)
 		}
 	}
+
+	// Cache cleanup at the end
+	if !noConfirm && len(builtDirs) > 0 {
+		fmt.Printf("\n  :: Build caches:\n")
+		for _, dir := range builtDirs {
+			fmt.Printf("     %s\n", dir)
+		}
+		keep, err := readYesNo("  Keep build caches?", false)
+		if err == nil && !keep {
+			for _, dir := range builtDirs {
+				os.RemoveAll(dir)
+			}
+			fmt.Printf("  %s  caches removed\n", ok)
+		}
+	}
 	return nil
 }
 
 // buildAndInstall clones and builds pkg.
-func buildAndInstall(pkg *Package, noConfirm bool) error {
-	ok, _, arrow := symSet()
+func buildAndInstall(pkg *Package, noConfirm bool) (string, error) {
+	ok, _, arrow := configSymbols()
 
 	pkgDir, err := aurCacheDir(pkg.Name)
 	if err != nil {
-		return fmt.Errorf("failed to resolve cache dir: %w", err)
+		return "", fmt.Errorf("failed to resolve cache dir: %w", err)
 	}
 
-	// Reuse clone from PKGBUILD review if already there
-	if _, err := os.Stat(filepath.Join(pkgDir, "PKGBUILD")); os.IsNotExist(err) {
-		if err := cloneAUR(pkg, pkgDir); err != nil {
-			return err
+	if cached, err := findReusableBuiltPackage(pkg, pkgDir); err != nil {
+		return "", err
+	} else if cached != nil {
+		useCached := true
+		if !noConfirm {
+			fmt.Printf("\n  :: Found built package for aur/%s %s\n", pkg.Name, pkg.Version)
+			fmt.Printf("     %s\n", cached.Path)
+			var promptErr error
+			useCached, promptErr = readYesNo(fmt.Sprintf("  %s Install this existing build instead of rebuilding?", arrow), true)
+			if promptErr != nil {
+				return "", promptErr
+			}
 		}
+		if useCached {
+			if err := installBuiltPackage(cached.Path, noConfirm); err != nil {
+				return "", err
+			}
+			fmt.Printf("  %s  %s installed from existing build\n", ok, pkg.Name)
+			return pkgDir, nil
+		}
+	}
+
+	if err := cloneAUR(pkg, pkgDir); err != nil {
+		return "", err
 	}
 
 	fmt.Printf("\n  %s building %s %s...\n\n", arrow, pkg.Name, pkg.Version)
 	args := []string{"-si", "--noconfirm"} // noconfirm here: user already confirmed above
+	if err := priv.Invalidate(); err != nil {
+		warnStderr("failed to invalidate sudo credentials before makepkg: %v", err)
+	}
 	makepkg := exec.Command("makepkg", args...)
 	makepkg.Env = append(os.Environ(), "TERM=xterm-256color")
 	makepkg.Dir = pkgDir
@@ -612,35 +667,116 @@ func buildAndInstall(pkg *Package, noConfirm bool) error {
 	makepkg.Stderr = os.Stderr
 	makepkg.Stdin = os.Stdin
 	if err := makepkg.Run(); err != nil {
-		return fmt.Errorf("makepkg failed: %w", err)
+		return "", fmt.Errorf("makepkg failed: %w", err)
 	}
 	fmt.Printf("  %s  %s installed\n", ok, pkg.Name)
 
-	// Cache cleanup
-	if !noConfirm {
-		fmt.Printf("\n  :: Build cache: %s\n", pkgDir)
-		keep, err := readYesNo("  Keep build cache?", false)
+	return pkgDir, nil
+}
+
+func findReusableBuiltPackage(pkg *Package, pkgDir string) (*builtPackage, error) {
+	entries, err := os.ReadDir(pkgDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to read build cache %s: %w", pkgDir, err)
+	}
+
+	var matches []builtPackage
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.Contains(name, ".pkg.tar.") || strings.HasSuffix(name, ".sig") {
+			continue
+		}
+		path := filepath.Join(pkgDir, name)
+		built, err := inspectBuiltPackage(path)
 		if err != nil {
-			return err
+			continue
 		}
-		if !keep {
-			os.RemoveAll(pkgDir)
-			fmt.Printf("  %s  cache removed\n", ok)
+		if built.Name != pkg.Name || built.Version != pkg.Version {
+			continue
 		}
+		if info, err := entry.Info(); err == nil {
+			built.ModTime = info.ModTime()
+		}
+		matches = append(matches, *built)
+	}
+	if len(matches) == 0 {
+		return nil, nil
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].ModTime.After(matches[j].ModTime)
+	})
+	return &matches[0], nil
+}
+
+func inspectBuiltPackage(path string) (*builtPackage, error) {
+	out, err := exec.Command("pacman", "-Qp", path).Output()
+	if err != nil {
+		return nil, err
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 2 {
+		return nil, fmt.Errorf("unexpected pacman -Qp output for %s", path)
+	}
+	return &builtPackage{
+		Path:    path,
+		Name:    fields[0],
+		Version: fields[1],
+	}, nil
+}
+
+func installBuiltPackage(path string, _ bool) error {
+	args := []string{"pacman", "-U", "--noconfirm", path}
+	cmd, err := priv.Command(args...)
+	if err != nil {
+		return fmt.Errorf("privilege escalation failed: %w", err)
+	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("pacman -U failed for %s: %w", path, err)
 	}
 	return nil
 }
 
 // cloneAUR clones the AUR git repo.
 func cloneAUR(pkg *Package, pkgDir string) error {
-	_, _, arrow := symSet()
+	_, _, arrow := configSymbols()
+
+	gitURL := fmt.Sprintf("https://aur.archlinux.org/%s.git", pkg.Name)
+	if _, err := os.Stat(filepath.Join(pkgDir, ".git")); err == nil {
+		fmt.Printf("  %s updating %s...\n", arrow, pkg.Name)
+		fetch := exec.Command("git", "-C", pkgDir, "fetch", "--depth=1", "origin", "master")
+		fetch.Env = append(os.Environ(), "TERM=xterm-256color")
+		fetch.Stdout = nil
+		fetch.Stderr = os.Stderr
+		if err := fetch.Run(); err != nil {
+			return fmt.Errorf("git fetch failed for %s: %w", pkg.Name, err)
+		}
+
+		reset := exec.Command("git", "-C", pkgDir, "reset", "--hard", "FETCH_HEAD")
+		reset.Env = append(os.Environ(), "TERM=xterm-256color")
+		reset.Stdout = nil
+		reset.Stderr = os.Stderr
+		if err := reset.Run(); err != nil {
+			return fmt.Errorf("git reset failed for %s: %w", pkg.Name, err)
+		}
+		return nil
+	}
+
 	if _, err := os.Stat(pkgDir); err == nil {
 		os.RemoveAll(pkgDir)
 	}
 	if err := os.MkdirAll(filepath.Dir(pkgDir), 0755); err != nil {
 		return fmt.Errorf("failed to create cache dir: %w", err)
 	}
-	gitURL := fmt.Sprintf("https://aur.archlinux.org/%s.git", pkg.Name)
+
 	fmt.Printf("  %s cloning %s...\n", arrow, gitURL)
 	cmd := exec.Command("git", "clone", "--depth=1", gitURL, pkgDir)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
@@ -654,7 +790,7 @@ func cloneAUR(pkg *Package, pkgDir string) error {
 
 // BuildLocal builds from a local PKGBUILD.
 func BuildLocal(dir string, noConfirm bool) error {
-	ok, warn, arrow := symSet()
+	ok, warn, arrow := configSymbols()
 
 	pkgbuildPath := filepath.Join(dir, "PKGBUILD")
 	if _, err := os.Stat(pkgbuildPath); os.IsNotExist(err) {
@@ -713,11 +849,14 @@ func BuildLocal(dir string, noConfirm bool) error {
 		}
 	}
 
+	var builtDirs []string
 	for _, aurPkg := range aurOrdered {
 		fmt.Printf("\n  %s building AUR dep: %s\n", arrow, aurPkg.Name)
-		if err := buildAndInstall(aurPkg, noConfirm); err != nil {
+		pkgDir, err := buildAndInstall(aurPkg, noConfirm)
+		if err != nil {
 			return fmt.Errorf("failed to build dep %s: %w", aurPkg.Name, err)
 		}
+		builtDirs = append(builtDirs, pkgDir)
 	}
 
 	if !noConfirm {
@@ -738,6 +877,9 @@ func BuildLocal(dir string, noConfirm bool) error {
 	if noConfirm {
 		args = append(args, "--noconfirm")
 	}
+	if err := priv.Invalidate(); err != nil {
+		warnStderr("failed to invalidate sudo credentials before makepkg: %v", err)
+	}
 	makepkg := exec.Command("makepkg", args...)
 	makepkg.Env = append(os.Environ(), "TERM=xterm-256color")
 	makepkg.Dir = dir
@@ -748,12 +890,27 @@ func BuildLocal(dir string, noConfirm bool) error {
 		return fmt.Errorf("makepkg failed: %w", err)
 	}
 	fmt.Printf("  %s  %s built and installed\n", ok, pkgname)
+
+	if !noConfirm && len(builtDirs) > 0 {
+		fmt.Printf("\n  :: Build caches for AUR dependencies:\n")
+		for _, dir := range builtDirs {
+			fmt.Printf("     %s\n", dir)
+		}
+		keep, err := readYesNo("  Keep AUR dependencies build caches?", false)
+		if err == nil && !keep {
+			for _, dir := range builtDirs {
+				os.RemoveAll(dir)
+			}
+			fmt.Printf("  %s  caches removed\n", ok)
+		}
+	}
+
 	return nil
 }
 
 // FetchABS downloads a PKGBUILD from the Arch Build System.
 func FetchABS(pkgName string) (string, error) {
-	_, _, arrow := symSet()
+	_, _, arrow := configSymbols()
 
 	outDir, err := aurCacheDir("abs-" + pkgName)
 	if err != nil {
@@ -1002,7 +1159,7 @@ func ListInstalledAUR() (map[string]string, error) {
 
 // CleanCache removes the build cache.
 func CleanCache(pkgName string) error {
-	ok, _, _ := symSet()
+	ok, _, _ := configSymbols()
 	var target string
 	var err error
 	if pkgName == "" {

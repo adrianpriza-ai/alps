@@ -137,3 +137,13 @@ func EnsureSudoOnly() error {
 
 	return fmt.Errorf("sudo is required for this operation — install sudo or run as root")
 }
+
+// Invalidate invalidates the sudo credentials cache by running sudo -k.
+// Only runs when not in Termux and sudo is available.
+func Invalidate() error {
+	// Only invalidate sudo credentials if not in Termux and sudo is available
+	if !isTermux() && HasSudo() {
+		return exec.Command("sudo", "-k").Run()
+	}
+	return nil
+}

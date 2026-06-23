@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/adrianpriza-ai/alps/config"
+	"github.com/adrianpriza-ai/alps/more"
+	"github.com/adrianpriza-ai/alps/pack"
 )
 
 type Level int
@@ -72,9 +74,9 @@ func PrintHeader(cfg *config.Config) {
 		fmt.Printf("\n  \033[1;97mALPS\033[0m \033[2m%s\033[0m\n\n", cfg.Version)
 		return
 	}
-	fmt.Print("\n\033[97m                   /^\\ \n")
-	fmt.Print("\033[97m   ALPS\033[37m        /^\\/   \\/\\ \n")
-	fmt.Print("\033[37m     v0.9     \033[1;32m/___\\____\\_\\\033[0m\n\n")
+	fmt.Print("\n\033[97m                   /^\\\n")
+	fmt.Print("\033[97m   ALPS\033[37m        /^\\/   \\/\\\n")
+	fmt.Print("\033[37m     v1.0     \033[1;32m/___\\____\\_\\\033[0m\n\n")
 }
 
 func PrintHelp(cfg *config.Config) {
@@ -91,10 +93,26 @@ func PrintHelp(cfg *config.Config) {
 		{"version", "binary version"},
 	}
 	for _, b := range builtins {
-		fmt.Printf("  %s%s%s  %-24s %s%s%s\n",
+		fmt.Printf("  %s%s%s  %s%-30s%s %s%s%s\n",
 			s.ColorDim, s.SymBullet, s.ColorReset,
-			s.ColorPrimary+b[0]+s.ColorReset,
+			s.ColorPrimary, b[0], s.ColorReset,
 			s.ColorDim, b[1], s.ColorReset)
+	}
+	fmt.Println()
+
+	fmt.Printf("  %sFlags:%s\n", s.ColorBold, s.ColorReset)
+	flags := [][2]string{
+		{"-n, --dry-run", "simulate, no changes written"},
+		{"-y, --noconfirm", "skip confirmation prompts (main backends)"},
+		{"-v, --verbose", "enable verbose output"},
+		{"-q, --quiet", "suppress non-error output"},
+		{"-f, --force", "force operation (skip safety checks)"},
+	}
+	for _, f := range flags {
+		fmt.Printf("  %s%s%s  %s%-30s%s %s%s%s\n",
+			s.ColorDim, s.SymBullet, s.ColorReset,
+			s.ColorPrimary, f[0], s.ColorReset,
+			s.ColorDim, f[1], s.ColorReset)
 	}
 	fmt.Println()
 
@@ -109,11 +127,12 @@ func PrintHelp(cfg *config.Config) {
 		{"repo purge <pkg>", "remove package including configs/data"},
 		{"repo search <query>", "search alps-more packages"},
 		{"repo upgrade [pkg]", "upgrade installed package(s)"},
+		{"repo clean", "remove build cache (~/.cache/alps/more)"},
 	}
 	for _, r := range repoSubs {
-		fmt.Printf("  %s%s%s  %-24s %s%s%s\n",
+		fmt.Printf("  %s%s%s  %s%-30s%s %s%s%s\n",
 			s.ColorDim, s.SymBullet, s.ColorReset,
-			s.ColorPrimary+r[0]+s.ColorReset,
+			s.ColorPrimary, r[0], s.ColorReset,
 			s.ColorDim, r[1], s.ColorReset)
 	}
 	fmt.Println()
@@ -128,21 +147,21 @@ func PrintHelp(cfg *config.Config) {
 			{"aur list", "list installed AUR packages"},
 			{"aur remove <pkg>", "remove via pacman -R"},
 			{"aur clean", "remove build cache"},
-			{"aur build-local [dir]", "build a local PKGBUILD"},
-			{"aur fetch-abs <pkg>", "fetch official PKGBUILD"},
+			{"aur build-local (bl) [dir]", "build a local PKGBUILD"},
+			{"aur fetch-abs (fa, abs) <pkg>", "fetch official PKGBUILD"},
 		}
 		for _, a := range aurSubs {
-			fmt.Printf("  %s%s%s  %-24s %s%s%s\n",
+			fmt.Printf("  %s%s%s  %s%-30s%s %s%s%s\n",
 				s.ColorDim, s.SymBullet, s.ColorReset,
-				s.ColorPrimary+a[0]+s.ColorReset,
+				s.ColorPrimary, a[0], s.ColorReset,
 				s.ColorDim, a[1], s.ColorReset)
 		}
 		fmt.Println()
-		fmt.Printf("  %s%s  Arch tip:%s %sup%s and %sug%s alone cause partial upgrades.\n",
+		fmt.Printf("  %s%s  Arch tip:%s %supdate%s and %supgrade%s alone cause partial upgrades.\n",
 			s.ColorWarning, s.SymWarn, s.ColorReset,
 			s.ColorPrimary, s.ColorReset,
 			s.ColorPrimary, s.ColorReset)
-		fmt.Printf("     Always use %sfug%s (full-upgrade / pacman -Syu) instead.\n\n",
+		fmt.Printf("     Always use %sfull-upgrade%s (pacman -Syu) instead.\n\n",
 			s.ColorPrimary, s.ColorReset)
 	}
 
@@ -156,9 +175,9 @@ func PrintHelp(cfg *config.Config) {
 			{"snap remove <pkg>", "remove snap package"},
 		}
 		for _, sn := range snapSubs {
-			fmt.Printf("  %s%s%s  %-24s %s%s%s\n",
+			fmt.Printf("  %s%s%s  %s%-30s%s %s%s%s\n",
 				s.ColorDim, s.SymBullet, s.ColorReset,
-				s.ColorPrimary+sn[0]+s.ColorReset,
+				s.ColorPrimary, sn[0], s.ColorReset,
 				s.ColorDim, sn[1], s.ColorReset)
 		}
 		fmt.Println()
@@ -174,33 +193,15 @@ func PrintHelp(cfg *config.Config) {
 			{"flatpak remove <pkg>", "remove flatpak"},
 		}
 		for _, fp := range fpSubs {
-			fmt.Printf("  %s%s%s  %-24s %s%s%s\n",
+			fmt.Printf("  %s%s%s  %s%-30s%s %s%s%s\n",
 				s.ColorDim, s.SymBullet, s.ColorReset,
-				s.ColorPrimary+fp[0]+s.ColorReset,
+				s.ColorPrimary, fp[0], s.ColorReset,
 				s.ColorDim, fp[1], s.ColorReset)
 		}
 		fmt.Println()
 	}
 
-	fmt.Printf("  %sAliases:%s\n", s.ColorBold, s.ColorReset)
-	keys := sortedKeys(cfg.Aliases)
-	for _, k := range keys {
-		fmt.Printf("  %s%s%s  %s%-15s%s %s %s\n",
-			s.ColorDim, s.SymBullet, s.ColorReset,
-			s.ColorPrimary, k, s.ColorReset,
-			s.SymArrow, cfg.Aliases[k])
-	}
-	fmt.Println()
-
-	fmt.Printf("  %sSubcommand Aliases:%s\n", s.ColorBold, s.ColorReset)
-	subKeys := sortedKeys(config.DefaultSubCmdAliases)
-	for _, k := range subKeys {
-		fmt.Printf("  %s%s%s  %s%-15s%s %s %s\n",
-			s.ColorDim, s.SymBullet, s.ColorReset,
-			s.ColorPrimary, k, s.ColorReset,
-			s.SymArrow, config.DefaultSubCmdAliases[k])
-	}
-	fmt.Println()
+	fmt.Printf("  %srun 'alps aliases' for active aliases%s\n", s.ColorDim, s.ColorReset)
 	fmt.Printf("  %sOther commands are passed directly to the backend.%s\n\n", s.ColorDim, s.ColorReset)
 }
 
@@ -262,6 +263,18 @@ func PrintAliases(cfg *config.Config) {
 			s.SymArrow, cfg.Aliases[k])
 	}
 	fmt.Println()
+
+	distro := detectDistroID()
+	if isArchBased(distro) {
+		fmt.Printf("  %sAUR subcommand aliases:%s\n\n", s.ColorBold, s.ColorReset)
+		subKeys := sortedKeys(config.DefaultSubCmdAliases)
+		for _, k := range subKeys {
+			fmt.Printf("  %s%-14s%s %s  %s\n",
+				s.ColorPrimary, k, s.ColorReset,
+				s.SymArrow, config.DefaultSubCmdAliases[k])
+		}
+		fmt.Println()
+	}
 }
 
 func PrintConfigShow(cfg *config.Config) {
@@ -316,10 +329,81 @@ func symReinstall() string {
 	return "⟳"
 }
 
+// isTermux checks if running in Termux environment.
+func isTermux() bool {
+	return os.Getenv("TERMUX_VERSION") != "" ||
+		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
+}
+
 // isTTY checks for basic TTY.
 func isTTY() bool {
 	term := os.Getenv("TERM")
 	return term == "linux" || term == "dumb" || term == ""
+}
+
+// PrintDiagnostic displays system diagnostic information.
+func PrintDiagnostic(cfg *config.Config) {
+	PrintHeader(cfg)
+
+	var distro string
+	if isTermux() {
+		distro = "Termux"
+		if v := os.Getenv("TERMUX_VERSION"); v != "" {
+			distro = "Termux " + v
+		}
+
+		out, err := exec.Command("/system/bin/getprop", "ro.build.version.release").Output()
+		if err == nil {
+			if v := strings.TrimSpace(string(out)); v != "" {
+				distro += " (Android " + v + ")"
+			}
+		}
+	} else {
+		distro = "unknown"
+		if data, err := os.ReadFile("/etc/os-release"); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(line, "PRETTY_NAME=") {
+					distro = strings.Trim(line[12:], `"'`)
+					break
+				}
+			}
+		}
+	}
+
+	backend := pack.DetectName()
+	if backend == "" {
+		backend = "none detected"
+	}
+
+	installed, _ := more.ReadInstalled()
+	moreCount := len(installed)
+
+	extras := []string{}
+	if !isTermux() {
+		if _, err := exec.LookPath("flatpak"); err == nil {
+			extras = append(extras, "flatpak")
+		}
+		if _, err := exec.LookPath("snap"); err == nil {
+			extras = append(extras, "snap")
+		}
+		if _, err := exec.LookPath("yay"); err == nil {
+			extras = append(extras, "yay")
+		}
+	}
+
+	dim := cfg.Style.ColorDim
+	rst := cfg.Style.ColorReset
+	pri := cfg.Style.ColorPrimary
+
+	fmt.Printf("  %ssystem%s   %s\n", pri, rst, distro)
+	fmt.Printf("  %sbackend%s  %s\n", pri, rst, backend)
+	if len(extras) > 0 {
+		fmt.Printf("  %sextras%s   %s\n", pri, rst, strings.Join(extras, "  "))
+	}
+	fmt.Printf("  %smore%s     %s%d package(s) installed via alps-more%s\n", pri, rst, dim, moreCount, rst)
+	fmt.Println()
+	fmt.Printf("  %srun 'alps help' for commands%s\n", dim, rst)
+	fmt.Println()
 }
 
 // PrintRepoEntry prints a repo list entry.

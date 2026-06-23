@@ -8,16 +8,24 @@ import (
 	"time"
 )
 
+// OwnedItem represents a file/directory/service/user owned by a package
+type OwnedItem struct {
+	Path string `json:"path"`
+	Type string `json:"type"` // "file", "dir", "symlink", "service", "user"
+}
+
 // InstalledRecord holds metadata for an installed package.
 type InstalledRecord struct {
-	Version     string   `json:"version"`
-	InstalledAt string   `json:"installed_at"`
-	RemoveLines []string `json:"remove_lines,omitempty"`
-	PurgeLines  []string `json:"purge_lines,omitempty"`
-	Servers     []string `json:"servers,omitempty"`
-	Sudo        bool     `json:"sudo,omitempty"`
+	Version     string      `json:"version"`
+	InstalledAt string      `json:"installed_at"`
+	RemoveLines []string    `json:"remove_lines,omitempty"`
+	PurgeLines  []string    `json:"purge_lines,omitempty"`
+	Servers     []string    `json:"servers,omitempty"`
+	Sudo        bool        `json:"sudo,omitempty"`
+	Safety      string      `json:"safety,omitempty"`
+	OwnedItems  []OwnedItem `json:"owned_items,omitempty"` // Tracked items for auto-uninstall
 	// Source is set for packages installed outside alps-more.
-	// Format: "github:user/repo" or "gitlab:user/repo"
+	// Format: "github:user/repo", "gitlab@host:group/project@branch", etc.
 	Source string `json:"source,omitempty"`
 }
 
@@ -61,6 +69,11 @@ func MarkInstalled(name, version string) error {
 
 // MarkInstalledEntry updates the installed record with full entry metadata.
 func MarkInstalledEntry(e *Entry) error {
+	return MarkInstalledEntryWithOwnedItems(e, nil)
+}
+
+// MarkInstalledEntryWithOwnedItems updates the installed record with owned items.
+func MarkInstalledEntryWithOwnedItems(e *Entry, ownedItems []OwnedItem) error {
 	return MarkInstalledRecord(e.Name, InstalledRecord{
 		Version:     e.Version,
 		InstalledAt: time.Now().Format(time.RFC3339),
@@ -68,6 +81,8 @@ func MarkInstalledEntry(e *Entry) error {
 		PurgeLines:  append([]string(nil), e.PurgeLines...),
 		Servers:     append([]string(nil), e.Servers...),
 		Sudo:        e.Sudo,
+		Safety:      e.Safety,
+		OwnedItems:  ownedItems,
 		Source:      e.Source,
 	})
 }
