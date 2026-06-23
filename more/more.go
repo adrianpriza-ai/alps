@@ -1316,7 +1316,7 @@ func runLinesWithContextMacro(pkgName string, lines []string, server string, pkg
 		} else if ctx == nil && entry != nil && entry.Safety == "strict" && hasFakeroot() {
 			useFakeroot = true
 		}
-		
+
 		if useFakeroot {
 			cmd = exec.Command("fakeroot", "bash", "-c", line)
 		} else {
