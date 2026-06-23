@@ -281,7 +281,7 @@ alps repo clean                           # remove build cache (~/.cache/alps/mo
   - Default: `/var/lib/alps/installed.json`
   - Termux: `$PREFIX/var/lib/alps/installed.json`
 - **Repo cache**: Upstream index cached at `/var/cache/alps/more/main.txt` (Termux path differs)
-- **Official mirrors**: [GitHub Pages](github.com/adrianpiza-ai/alps-more) and [Codeberg](codeberg.org/moreland/alps-more)
+- **Official mirrors**: [GitHub Pages](https://github.com/adrianpiza-ai/alps-more) and [Codeberg](https://codeberg.org/moreland/alps-more)
 
 ### Key Features
 
