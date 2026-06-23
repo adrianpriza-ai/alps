@@ -33,12 +33,9 @@ ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and
 | **Built-in AUR** | Full recursive dep resolution, PKGBUILD review, yay fallback |
 | **Snap & Flatpak** | First-class subcommands; snap auto-offered on Ubuntu/Debian |
 | **alps-more** | Cross-distro script repo with version tracking, mirror failover, purge support, and remote installs from GitHub/GitLab |
-| **3-tier aliases** | Hard commands → config aliases → default shorts. Unknown commands error cleanly |
-| **Fully customizable** | Colors, symbols, header, aliases — all via config file |
+| **Customizable** | Colors, symbols, header, aliases — all via config file |
 | **Smart completion** | fish, bash, zsh — distro-aware, AUR name cache, live package completion |
 | **Build isolation** | Per-package build directories (`~/.cache/alps/more/<pkg>/`) |
-| **Variable expansion** | `{ARCH}`, `{OS}`, `{DISTRO}`, `{VERSION}`, `{PKG_DIR}`, `{SERVER}` placeholders |
-| **Native macros** | `{DOWNLOAD}`, `{BASH_RUN}` — no `curl` dependency required |
 
 ## Installation
 
@@ -103,10 +100,10 @@ alps <command> [args]
 
 | Command | Description |
 |---|---|
-| `install <pkg>` | Install from repo, AUR, or alps-more (auto-detected) |
+| `install <pkg>` | Install from repo or fallback (auto-detected) |
 | `remove <pkg>` | Remove package |
 | `purge <pkg>` | Remove package and config/data |
-| `search <query>` | Search repo + AUR simultaneously (multi-word narrowing) |
+| `search <query>` | Search repo + AUR simultaneously (AUR only for Arch Linux) |
 | `show <pkg>` | Show package information |
 | `list` | List installed packages |
 | `update` | Update package database |
@@ -197,9 +194,9 @@ sym_arrow = "→"   sym_bullet = "•"
 # Header
 show_header  = true
 title_style  = "default"   # or "custom"
-title_line1  = "\e[1;97m  ╔══════════════╗"
-title_line2  = "\e[1;97m  ║  ALPS  /\/\/ ║"
-title_line3  = "\e[1;97m  ╚══════════════╝"
+title_line1  = "\e[1;97m  ╔═════════════╗"
+title_line2  = "\e[1;97m  ║ ALPS  /\/\/ ║"
+title_line3  = "\e[1;97m  ╚═════════════╝"
 
 # Aliases
 alias_i   = "install"
@@ -250,11 +247,11 @@ alps snap remove <pkg>
 alps snap list
 ```
 
-Snap is only available on Debian/Ubuntu and auto-offered as a fallback when apt can't find a package. `sudo` is required for both — `su` fallback is not supported.
+Snap is available on Debian/Ubuntu and auto-offered as a fallback when apt can't find a package. `sudo` is required for both — `su` fallback is not supported.
 
 ## alps-more
 
-Cross-distro script repo for tools not in standard package managers. Both mirrors (GitHub Pages + Codeberg) are raced simultaneously — fastest valid response wins.
+Cross-distro script repo for tools not in standard package managers. 
 
 ### Quick User Guide
 
@@ -284,7 +281,7 @@ alps repo clean                           # remove build cache (~/.cache/alps/mo
   - Default: `/var/lib/alps/installed.json`
   - Termux: `$PREFIX/var/lib/alps/installed.json`
 - **Repo cache**: Upstream index cached at `/var/cache/alps/more/main.txt` (Termux path differs)
-- **Official mirrors**: GitHub Pages + Codeberg, raced and cached
+- **Official mirrors**: [GitHub Pages](github.com/adrianpiza-ai/alps-more) and [Codeberg](codeberg.org/moreland/alps-more)
 
 ### Key Features
 

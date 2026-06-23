@@ -58,6 +58,16 @@ type MacroContext struct {
 
 // NewMacroContext creates a new macro execution context
 func NewMacroContext(e *Entry, server string) *MacroContext {
+	if e == nil {
+		return &MacroContext{
+			PackageName:    "",
+			Version:        "",
+			Server:         server,
+			Arch:           normalizeArch(runtime.GOARCH),
+			Safety:         "",
+			InstalledPaths: []InstalledPath{},
+		}
+	}
 	return &MacroContext{
 		PackageName:    e.Name,
 		Version:        e.Version,
