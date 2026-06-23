@@ -44,11 +44,15 @@ ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and
 
 ### One-line install
 
+#### Curl
+
 ```bash
 curl -fsSL https://alps-project.pages.dev/install.sh | sh
+```
 
-# or
+#### Wget
 
+```bash
 wget -qO- --show-progress=0 https://alps-project.pages.dev/install.sh | sh
 ```
 
