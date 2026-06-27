@@ -17,7 +17,7 @@ jobs:
           go-version: '1.21'
 
       - name: Build
-        run: go build -o mdview .
+        run: go build -o alps .
 
       - name: Vet
         run: go vet ./...
