@@ -1,3 +1,3 @@
 module github.com/adrianpriza-ai/alps
 
-go 1.21
+go 1.22

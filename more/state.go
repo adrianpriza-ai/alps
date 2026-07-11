@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
-// OwnedItem represents a file/directory/service/user owned by a package
+// OwnedItem represents a file/directory/service owned by a package
 type OwnedItem struct {
 	Path string `json:"path"`
-	Type string `json:"type"` // "file", "dir", "symlink", "service", "user"
+	Type string `json:"type"` // "file", "dir", "symlink", "service"
 }
 
 // InstalledRecord holds metadata for an installed package.
@@ -21,12 +22,9 @@ type InstalledRecord struct {
 	RemoveLines []string    `json:"remove_lines,omitempty"`
 	PurgeLines  []string    `json:"purge_lines,omitempty"`
 	Servers     []string    `json:"servers,omitempty"`
-	Sudo        bool        `json:"sudo,omitempty"`
 	Safety      string      `json:"safety,omitempty"`
-	OwnedItems  []OwnedItem `json:"owned_items,omitempty"` // Tracked items for auto-uninstall
-	// Source is set for packages installed outside alps-more.
-	// Format: "github:user/repo", "gitlab@host:group/project@branch", etc.
-	Source string `json:"source,omitempty"`
+	OwnedItems  []OwnedItem `json:"owned_items,omitempty"`
+	Source      string      `json:"source,omitempty"`
 }
 
 // ReadInstalled reads the installed.json state file.
@@ -47,8 +45,8 @@ func ReadInstalled() (map[string]InstalledRecord, error) {
 	var records map[string]InstalledRecord
 	if err := json.Unmarshal(data, &records); err != nil {
 		// Corrupt JSON — back up and reset so alps keeps working
-		backup := getInstalledFile() + ".bak"
-		_ = os.WriteFile(backup, data, 0644)
+		backup := filepath.Clean(getInstalledFile() + ".bak")
+		_ = os.WriteFile(backup, data, 0644) // #nosec G703
 		warn := "⚠"
 		if t := os.Getenv("TERM"); t == "linux" || t == "dumb" || t == "" {
 			warn = "!!"
@@ -80,7 +78,6 @@ func MarkInstalledEntryWithOwnedItems(e *Entry, ownedItems []OwnedItem) error {
 		RemoveLines: append([]string(nil), e.RemoveLines...),
 		PurgeLines:  append([]string(nil), e.PurgeLines...),
 		Servers:     append([]string(nil), e.Servers...),
-		Sudo:        e.Sudo,
 		Safety:      e.Safety,
 		OwnedItems:  ownedItems,
 		Source:      e.Source,

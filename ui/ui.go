@@ -71,137 +71,153 @@ func PrintHeader(cfg *config.Config) {
 
 	term := os.Getenv("TERM")
 	if term == "linux" || term == "" {
-		fmt.Printf("\n  \033[1;97mALPS\033[0m \033[2m%s\033[0m\n\n", cfg.Version)
+		fmt.Printf("\n  \033[1;97mALPS\033[0m  \033[2mAdvanced Linux Package System · %s\033[0m\n\n", cfg.Version)
 		return
 	}
+
+	version := cfg.Version
+	if len(version) > 6 {
+		version = version[:6]
+	}
+
 	fmt.Print("\n\033[97m                   /^\\\n")
 	fmt.Print("\033[97m   ALPS\033[37m        /^\\/   \\/\\\n")
-	fmt.Print("\033[37m     v1.0     \033[1;32m/___\\____\\_\\\033[0m\n\n")
+	fmt.Printf("\033[37m     %-6s%3s\033[1;32m/___\\____\\_\\\033[0m\n\n", version, "")
+}
+
+// printSectionTitle prints a bold, compact section heading (no rule line,
+// to keep `alps help` short).
+func printSectionTitle(cfg *config.Config, title string) {
+	s := cfg.Style
+	fmt.Printf("  %s%s%s\n", s.ColorBold, title, s.ColorReset)
+}
+
+// padRight pads str with spaces up to width w (minimum one space), used to
+// line up columns without relying on fmt's own field-width verbs.
+func padRight(str string, w int) string {
+	pad := w - len(str)
+	if pad < 1 {
+		pad = 1
+	}
+	return str + strings.Repeat(" ", pad)
+}
+
+// printRow prints one "bullet  command   description" line, padding the
+// command column to cmdW. Built with string concatenation (not a single
+// large Printf) so the number of %s verbs can never drift out of sync
+// with the argument list.
+func printRow(cfg *config.Config, cmdW int, cmd, desc string) {
+	s := cfg.Style
+	line := "  " + s.ColorDim + s.SymBullet + s.ColorReset + " " +
+		s.ColorPrimary + padRight(cmd, cmdW) + s.ColorReset +
+		s.ColorDim + desc + s.ColorReset
+	fmt.Println(line)
+}
+
+func printRows(cfg *config.Config, cmdW int, rows [][2]string) {
+	for _, r := range rows {
+		printRow(cfg, cmdW, r[0], r[1])
+	}
 }
 
 func PrintHelp(cfg *config.Config) {
 	s := cfg.Style
 	PrintHeader(cfg)
-	fmt.Printf("  %sUsage:%s  alps %s<command>%s [args]\n\n",
-		s.ColorBold, s.ColorReset, s.ColorPrimary, s.ColorReset)
+	fmt.Printf("  %sUsage%s   alps %s<command>%s [args]  ·  %salps aliases%s for shortcuts\n\n",
+		s.ColorBold, s.ColorReset, s.ColorPrimary, s.ColorReset, s.ColorDim, s.ColorReset)
 
-	fmt.Printf("  %sBuilt-in:%s\n", s.ColorBold, s.ColorReset)
-	builtins := [][2]string{
+	printSectionTitle(cfg, "Core")
+	printRows(cfg, 19, [][2]string{
+		{"install <pkg>", "install repo/AUR/more pkg"},
+		{"remove <pkg>", "remove a package"},
+		{"purge <pkg>", "remove + config/data"},
+		{"search <query>", "search repo + AUR"},
+		{"show <pkg>", "show package info"},
+		{"list", "list installed packages"},
+		{"update", "refresh package indexes"},
+		{"upgrade", "upgrade system + AUR"},
+		{"full-upgrade", "safe pacman -Syu"},
+		{"autoremove", "remove orphaned pkgs"},
+		{"autoclean", "clean package cache"},
+		{"clean", "remove cached packages"},
+		{"edit-sources", "edit repo source list"},
+		{"completion <shell>", "generate shell completion"},
 		{"help", "show this help"},
 		{"aliases", "show active aliases"},
-		{"config-show", "show active config & paths"},
+		{"config-show", "show config & paths"},
 		{"version", "binary version"},
-	}
-	for _, b := range builtins {
-		fmt.Printf("  %s%s%s  %s%-30s%s %s%s%s\n",
-			s.ColorDim, s.SymBullet, s.ColorReset,
-			s.ColorPrimary, b[0], s.ColorReset,
-			s.ColorDim, b[1], s.ColorReset)
-	}
+	})
 	fmt.Println()
 
-	fmt.Printf("  %sFlags:%s\n", s.ColorBold, s.ColorReset)
-	flags := [][2]string{
+	printSectionTitle(cfg, "Flags")
+	printRows(cfg, 20, [][2]string{
 		{"-n, --dry-run", "simulate, no changes written"},
 		{"-y, --noconfirm", "skip confirmation prompts (main backends)"},
 		{"-v, --verbose", "enable verbose output"},
 		{"-q, --quiet", "suppress non-error output"},
 		{"-f, --force", "force operation (skip safety checks)"},
-	}
-	for _, f := range flags {
-		fmt.Printf("  %s%s%s  %s%-30s%s %s%s%s\n",
-			s.ColorDim, s.SymBullet, s.ColorReset,
-			s.ColorPrimary, f[0], s.ColorReset,
-			s.ColorDim, f[1], s.ColorReset)
-	}
+	})
 	fmt.Println()
 
-	fmt.Printf("  %sRepo:%s\n", s.ColorBold, s.ColorReset)
-	repoSubs := [][2]string{
+	printSectionTitle(cfg, "Repo")
+	printRows(cfg, 22, [][2]string{
 		{"repo update", "refresh alps-more cache"},
 		{"repo list", "list available packages"},
 		{"repo list install", "list installed packages"},
 		{"repo list remove", "list stale packages"},
-		{"repo install <pkg|url>", "install package or remote ALPSMORE file"},
+		{"repo install <pkg|url>", "install pkg or remote ALPSMORE"},
 		{"repo remove <pkg>", "remove alps-more package"},
-		{"repo purge <pkg>", "remove package including configs/data"},
+		{"repo purge <pkg>", "remove pkg + config/data"},
 		{"repo search <query>", "search alps-more packages"},
 		{"repo upgrade [pkg]", "upgrade installed package(s)"},
-		{"repo clean", "remove build cache (~/.cache/alps/more)"},
-	}
-	for _, r := range repoSubs {
-		fmt.Printf("  %s%s%s  %s%-30s%s %s%s%s\n",
-			s.ColorDim, s.SymBullet, s.ColorReset,
-			s.ColorPrimary, r[0], s.ColorReset,
-			s.ColorDim, r[1], s.ColorReset)
-	}
+		{"repo clean", "remove build cache"},
+	})
 	fmt.Println()
 
 	// Distro-specific subcommands
 	distro := detectDistroID()
 	if isArchBased(distro) {
-		fmt.Printf("  %sAUR:%s\n", s.ColorBold, s.ColorReset)
-		aurSubs := [][2]string{
+		printSectionTitle(cfg, "AUR")
+		printRows(cfg, 21, [][2]string{
 			{"aur install <pkg>", "install directly from AUR"},
 			{"aur search <query>", "search AUR only"},
 			{"aur list", "list installed AUR packages"},
 			{"aur remove <pkg>", "remove via pacman -R"},
 			{"aur clean", "remove build cache"},
-			{"aur build-local (bl) [dir]", "build a local PKGBUILD"},
-			{"aur fetch-abs (fa, abs) <pkg>", "fetch official PKGBUILD"},
-		}
-		for _, a := range aurSubs {
-			fmt.Printf("  %s%s%s  %s%-30s%s %s%s%s\n",
-				s.ColorDim, s.SymBullet, s.ColorReset,
-				s.ColorPrimary, a[0], s.ColorReset,
-				s.ColorDim, a[1], s.ColorReset)
-		}
+			{"aur build-local [dir]", "build a local PKGBUILD"},
+			{"aur fetch-abs <pkg>", "fetch official PKGBUILD"},
+		})
 		fmt.Println()
-		fmt.Printf("  %s%s  Arch tip:%s %supdate%s and %supgrade%s alone cause partial upgrades.\n",
+		fmt.Printf("  %s%s%s %sArch tip:%s use %sfull-upgrade%s, not update/upgrade — avoids partial upgrades\n\n",
 			s.ColorWarning, s.SymWarn, s.ColorReset,
-			s.ColorPrimary, s.ColorReset,
-			s.ColorPrimary, s.ColorReset)
-		fmt.Printf("     Always use %sfull-upgrade%s (pacman -Syu) instead.\n\n",
+			s.ColorBold, s.ColorReset,
 			s.ColorPrimary, s.ColorReset)
 	}
 
 	if isDebianBased(distro) && isSnapAvailable() {
-		fmt.Printf("  %sSnap:%s\n", s.ColorBold, s.ColorReset)
-		snapSubs := [][2]string{
+		printSectionTitle(cfg, "Snap")
+		printRows(cfg, 19, [][2]string{
 			{"snap install <pkg>", "install via snap"},
 			{"snap search <query>", "search snap store"},
 			{"snap list", "list installed snaps"},
 			{"snap update", "refresh all snaps"},
 			{"snap remove <pkg>", "remove snap package"},
-		}
-		for _, sn := range snapSubs {
-			fmt.Printf("  %s%s%s  %s%-30s%s %s%s%s\n",
-				s.ColorDim, s.SymBullet, s.ColorReset,
-				s.ColorPrimary, sn[0], s.ColorReset,
-				s.ColorDim, sn[1], s.ColorReset)
-		}
+		})
 		fmt.Println()
 	}
 
 	if isFlatpakAvailable() {
-		fmt.Printf("  %sFlatpak:%s\n", s.ColorBold, s.ColorReset)
-		fpSubs := [][2]string{
+		printSectionTitle(cfg, "Flatpak")
+		printRows(cfg, 23, [][2]string{
 			{"flatpak install <pkg>", "install from flathub"},
 			{"flatpak search <query>", "search flathub"},
 			{"flatpak list", "list installed flatpaks"},
 			{"flatpak update", "update all flatpaks"},
 			{"flatpak remove <pkg>", "remove flatpak"},
-		}
-		for _, fp := range fpSubs {
-			fmt.Printf("  %s%s%s  %s%-30s%s %s%s%s\n",
-				s.ColorDim, s.SymBullet, s.ColorReset,
-				s.ColorPrimary, fp[0], s.ColorReset,
-				s.ColorDim, fp[1], s.ColorReset)
-		}
+		})
 		fmt.Println()
 	}
 
-	fmt.Printf("  %srun 'alps aliases' for active aliases%s\n", s.ColorDim, s.ColorReset)
 	fmt.Printf("  %sOther commands are passed directly to the backend.%s\n\n", s.ColorDim, s.ColorReset)
 }
 
@@ -252,29 +268,44 @@ func isFlatpakAvailable() bool {
 	return err == nil
 }
 
+// aliasColWidth is the padding width for the short-alias column so the
+// arrow and target command line up across every row.
+const aliasColWidth = 8
+
+// printAliasRow prints one "short -> target" line with aligned columns.
+// Built with string concatenation (not one large Printf) to avoid the
+// %s-verb / argument-count mismatch that caused stray "%!(EXTRA ...)"
+// output before.
+func printAliasRow(cfg *config.Config, short, target string) {
+	s := cfg.Style
+	line := "  " + s.ColorPrimary + padRight(short, aliasColWidth) + s.ColorReset +
+		s.ColorDim + s.SymArrow + s.ColorReset + "  " + target
+	fmt.Println(line)
+}
+
 func PrintAliases(cfg *config.Config) {
 	s := cfg.Style
 	PrintHeader(cfg)
-	fmt.Printf("  %sActive aliases:%s\n\n", s.ColorBold, s.ColorReset)
+
+	printSectionTitle(cfg, "Active Aliases")
 	keys := sortedKeys(cfg.Aliases)
 	for _, k := range keys {
-		fmt.Printf("  %s%-14s%s %s  %s\n",
-			s.ColorPrimary, k, s.ColorReset,
-			s.SymArrow, cfg.Aliases[k])
+		printAliasRow(cfg, k, cfg.Aliases[k])
 	}
 	fmt.Println()
 
 	distro := detectDistroID()
 	if isArchBased(distro) {
-		fmt.Printf("  %sAUR subcommand aliases:%s\n\n", s.ColorBold, s.ColorReset)
+		printSectionTitle(cfg, "AUR Subcommand Aliases")
 		subKeys := sortedKeys(config.DefaultSubCmdAliases)
 		for _, k := range subKeys {
-			fmt.Printf("  %s%-14s%s %s  %s\n",
-				s.ColorPrimary, k, s.ColorReset,
-				s.SymArrow, config.DefaultSubCmdAliases[k])
+			printAliasRow(cfg, k, config.DefaultSubCmdAliases[k])
 		}
 		fmt.Println()
 	}
+
+	fmt.Printf("  %sDefine your own in /etc/alps/config or ~/.config/alps/config (alias_<name> = <command>)%s\n\n",
+		s.ColorDim, s.ColorReset)
 }
 
 func PrintConfigShow(cfg *config.Config) {

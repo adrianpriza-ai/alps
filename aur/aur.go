@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +20,51 @@ import (
 	"github.com/adrianpriza-ai/alps/config"
 	"github.com/adrianpriza-ai/alps/priv"
 )
+
+// validPkgName matches allowed Arch package name characters.
+// See: https://wiki.archlinux.org/title/Package_naming_guidelines
+var validPkgName = regexp.MustCompile(`^[a-zA-Z0-9@._+\-]+$`)
+
+// validatePkgName checks that a package name contains only safe characters.
+func validatePkgName(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty package name")
+	}
+	if !validPkgName.MatchString(name) {
+		return fmt.Errorf("invalid package name: %q", name)
+	}
+	return nil
+}
+
+// validatePkgNames validates a slice of package names.
+func validatePkgNames(names []string) error {
+	for _, n := range names {
+		if err := validatePkgName(n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// editorIsSafe checks that the EDITOR value is a safe single binary path —
+// rejects values containing shell metacharacters or flags.
+func editorIsSafe(editor string) bool {
+	// Reject empty or values with shell-dangerous characters.
+	if editor == "" || strings.ContainsAny(editor, "|;&$`\\'\"()<>!") {
+		return false
+	}
+	// Reject if it looks like it has flags (starts with -).
+	parts := strings.Fields(editor)
+	if len(parts) == 0 || strings.HasPrefix(parts[0], "-") {
+		return false
+	}
+	// Must be a single command or an absolute/relative path with no arguments.
+	// We allow at most the binary name — any flags are rejected.
+	if len(parts) > 1 {
+		return false
+	}
+	return true
+}
 
 const (
 	aurRPCBase = "https://aur.archlinux.org/rpc/v5/"
@@ -83,6 +129,46 @@ func DetectHelper() string {
 	return ""
 }
 
+// checkRequirements verifies that required tools are available.
+// It uses pacman -Qq (package DB) as the primary check, with exec.LookPath
+// as a fallback — OR logic means either one confirming presence is sufficient.
+// For base-devel: it has been a real package since late 2022; we also fall
+// back to checking "fakeroot" in PATH as a secondary sentinel.
+func checkRequirements(needGit, needBaseDevel bool) error {
+	var missing []string
+	if needGit {
+		if !pkgInstalled("git") && !hasInPath("git") {
+			missing = append(missing, "git")
+		}
+	}
+	if needBaseDevel {
+		// base-devel is a proper package since Arch 2022; fakeroot is the fallback sentinel.
+		if !pkgInstalled("base-devel") && !hasInPath("fakeroot") {
+			missing = append(missing, "base-devel")
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	installHint := "sudo pacman -S " + strings.Join(missing, " ")
+	return fmt.Errorf(
+		"missing required tools: %s\n  Run: %s",
+		strings.Join(missing, ", "),
+		installHint,
+	)
+}
+
+// pkgInstalled reports whether a package is registered in the pacman DB.
+func pkgInstalled(name string) bool {
+	return exec.Command("pacman", "-Qq", name).Run() == nil
+}
+
+// hasInPath reports whether a binary is reachable via PATH.
+func hasInPath(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
 func fetchRPC(rawURL string) (*rpcResponse, error) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -112,8 +198,8 @@ func fetchRPC(rawURL string) (*rpcResponse, error) {
 
 // Search searches AUR sorted by votes.
 func Search(query string) ([]Package, error) {
-	if strings.TrimSpace(query) == "" {
-		return nil, fmt.Errorf("empty search query")
+	if err := validatePkgName(strings.TrimSpace(query)); err != nil {
+		return nil, fmt.Errorf("invalid search query: %w", err)
 	}
 	u, err := url.JoinPath(aurRPCBase, "search", query)
 	if err != nil {
@@ -155,8 +241,8 @@ func SearchNarrow(query string) ([]Package, error) {
 
 // Info fetches package info by name.
 func Info(name string) (*Package, error) {
-	if strings.TrimSpace(name) == "" {
-		return nil, fmt.Errorf("empty package name")
+	if err := validatePkgName(name); err != nil {
+		return nil, err
 	}
 	u, err := url.JoinPath(aurRPCBase, "info", name)
 	if err != nil {
@@ -174,6 +260,9 @@ func Info(name string) (*Package, error) {
 
 // InfoBatch fetches info for multiple packages in parallel.
 func InfoBatch(names []string) (map[string]*Package, error) {
+	if err := validatePkgNames(names); err != nil {
+		return nil, err
+	}
 	var mu sync.Mutex
 	results := make(map[string]*Package)
 	var wg sync.WaitGroup
@@ -262,9 +351,17 @@ func Install(pkgNames []string, noConfirm bool) error {
 	if len(pkgNames) == 0 {
 		return nil
 	}
+	if err := validatePkgNames(pkgNames); err != nil {
+		return err
+	}
 
 	if DetectHelper() == "yay" {
 		return installWithYay(pkgNames, noConfirm)
+	}
+
+	// Installing from AUR requires git (to clone) and base-devel (to build).
+	if err := checkRequirements(true, true); err != nil {
+		return err
 	}
 
 	plan, err := buildInstallPlan(pkgNames)
@@ -467,16 +564,7 @@ func findAURPackage(name string) (*Package, error) {
 	return &selected, nil
 }
 
-// collectUserInputs gathers confirmations before building.
-func collectUserInputs(plan *installPlan, noConfirm bool) error {
-	_, warn, arrow := configSymbols()
-
-	// Concise AUR trust notice — same trust model as yay.
-	fmt.Println()
-	fmt.Printf("  %s  AUR packages are user-produced content. Use at your own risk.\n", warn)
-	fmt.Println()
-
-	// Summary of everything about to happen
+func printInstallSummary(plan *installPlan, warn string) {
 	if len(plan.RepoDeps) > 0 {
 		fmt.Printf("  :: Repo dependencies: %s\n", strings.Join(plan.RepoDeps, "  "))
 	}
@@ -493,20 +581,14 @@ func collectUserInputs(plan *installPlan, noConfirm bool) error {
 		}
 	}
 
-	// Warn about out-of-date packages
 	for _, p := range plan.AURPackages {
 		if p.OutOfDate != 0 {
 			fmt.Printf("\n  %s  %s is flagged out-of-date\n", warn, p.Name)
 		}
 	}
+}
 
-	// --noconfirm: show the plan (above) but skip interactive prompts.
-	if noConfirm {
-		return nil
-	}
-
-	// PKGBUILD review — clone all packages up-front so the user can read them
-	// before committing. buildAndInstall reuses the clone if it already exists.
+func reviewAURPKGBUILDs(plan *installPlan, arrow string) error {
 	if ok, err := readYesNo(fmt.Sprintf("  %s Review PKGBUILDs before building?", arrow), false); err != nil {
 		return err
 	} else if ok {
@@ -522,6 +604,28 @@ func collectUserInputs(plan *installPlan, noConfirm bool) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// collectUserInputs gathers confirmations before building.
+func collectUserInputs(plan *installPlan, noConfirm bool) error {
+	_, warn, arrow := configSymbols()
+
+	// Concise AUR trust notice — same trust model as yay.
+	fmt.Println()
+	fmt.Printf("  %s  AUR packages are user-produced content. Use at your own risk.\n", warn)
+	fmt.Println()
+
+	printInstallSummary(plan, warn)
+
+	// --noconfirm: show the plan (above) but skip interactive prompts.
+	if noConfirm {
+		return nil
+	}
+
+	if err := reviewAURPKGBUILDs(plan, arrow); err != nil {
+		return err
 	}
 
 	// Single proceed prompt for everything
@@ -539,24 +643,86 @@ func collectUserInputs(plan *installPlan, noConfirm bool) error {
 	return nil
 }
 
+func installRepoDeps(deps []string, arrow string) error {
+	if len(deps) == 0 {
+		return nil
+	}
+	fmt.Printf("\n  %s installing repo deps: %s\n\n", arrow, strings.Join(deps, " "))
+	args := append([]string{"pacman", "-S", "--noconfirm", "--needed"}, deps...)
+	cmd, err := priv.Command(args...)
+	if err != nil {
+		return fmt.Errorf("privilege escalation failed: %w", err)
+	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to install repo deps: %w", err)
+	}
+	return nil
+}
+
+func removeMakeDeps(makeDeps []string, noConfirm bool, okStr string) error {
+	if len(makeDeps) == 0 {
+		return nil
+	}
+	var toRemove []string
+	for _, dep := range makeDeps {
+		if isInstalled(dep) {
+			toRemove = append(toRemove, dep)
+		}
+	}
+	if len(toRemove) == 0 {
+		return nil
+	}
+	fmt.Printf("\n  :: Build dependencies installed during build: %s\n", strings.Join(toRemove, "  "))
+	if !noConfirm {
+		rmOK, err := readYesNo("  Remove build dependencies?", false)
+		if err != nil {
+			return err
+		}
+		if !rmOK {
+			return nil
+		}
+	}
+	rmArgs := append([]string{"pacman", "-Rns", "--noconfirm"}, toRemove...)
+	rmCmd, err := priv.Command(rmArgs...)
+	if err != nil {
+		return fmt.Errorf("privilege escalation failed for makedep removal: %w", err)
+	}
+	rmCmd.Stdout = os.Stdout
+	rmCmd.Stderr = os.Stderr
+	rmCmd.Stdin = os.Stdin
+	if err := rmCmd.Run(); err != nil {
+		return fmt.Errorf("failed to remove build deps: %w", err)
+	}
+	fmt.Printf("  %s  build dependencies removed\n", okStr)
+	return nil
+}
+
+func cleanupBuildCaches(builtDirs []string, noConfirm bool, okStr string) {
+	if noConfirm || len(builtDirs) == 0 {
+		return
+	}
+	fmt.Printf("\n  :: Build caches:\n")
+	for _, dir := range builtDirs {
+		fmt.Printf("     %s\n", dir)
+	}
+	keep, err := readYesNo("  Keep build caches?", false)
+	if err == nil && !keep {
+		for _, dir := range builtDirs {
+			os.RemoveAll(dir)
+		}
+		fmt.Printf("  %s  caches removed\n", okStr)
+	}
+}
+
 // executeInstallPlan installs repo deps and builds AUR packages.
 func executeInstallPlan(plan *installPlan, noConfirm bool) error {
 	ok, _, arrow := configSymbols()
 
-	// Install repo deps first
-	if len(plan.RepoDeps) > 0 {
-		fmt.Printf("\n  %s installing repo deps: %s\n\n", arrow, strings.Join(plan.RepoDeps, " "))
-		args := append([]string{"pacman", "-S", "--noconfirm", "--needed"}, plan.RepoDeps...)
-		cmd, err := priv.Command(args...)
-		if err != nil {
-			return fmt.Errorf("privilege escalation failed: %w", err)
-		}
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Stdin = os.Stdin
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to install repo deps: %w", err)
-		}
+	if err := installRepoDeps(plan.RepoDeps, arrow); err != nil {
+		return err
 	}
 
 	var builtDirs []string
@@ -570,59 +736,22 @@ func executeInstallPlan(plan *installPlan, noConfirm bool) error {
 	}
 
 	// Offer makedep removal once, at the very end
-	if len(plan.MakeDepsAdded) > 0 {
-		var toRemove []string
-		for _, dep := range plan.MakeDepsAdded {
-			if isInstalled(dep) {
-				toRemove = append(toRemove, dep)
-			}
-		}
-		if len(toRemove) > 0 {
-			fmt.Printf("\n  :: Build dependencies installed during build: %s\n", strings.Join(toRemove, "  "))
-			if !noConfirm {
-				rmOK, err := readYesNo("  Remove build dependencies?", false)
-				if err != nil {
-					return err
-				}
-				if !rmOK {
-					return nil
-				}
-			}
-			rmArgs := append([]string{"pacman", "-Rns", "--noconfirm"}, toRemove...)
-			rmCmd, err := priv.Command(rmArgs...)
-			if err != nil {
-				return fmt.Errorf("privilege escalation failed for makedep removal: %w", err)
-			}
-			rmCmd.Stdout = os.Stdout
-			rmCmd.Stderr = os.Stderr
-			rmCmd.Stdin = os.Stdin
-			if err := rmCmd.Run(); err != nil {
-				return fmt.Errorf("failed to remove build deps: %w", err)
-			}
-			fmt.Printf("  %s  build dependencies removed\n", ok)
-		}
+	if err := removeMakeDeps(plan.MakeDepsAdded, noConfirm, ok); err != nil {
+		return err
 	}
 
 	// Cache cleanup at the end
-	if !noConfirm && len(builtDirs) > 0 {
-		fmt.Printf("\n  :: Build caches:\n")
-		for _, dir := range builtDirs {
-			fmt.Printf("     %s\n", dir)
-		}
-		keep, err := readYesNo("  Keep build caches?", false)
-		if err == nil && !keep {
-			for _, dir := range builtDirs {
-				os.RemoveAll(dir)
-			}
-			fmt.Printf("  %s  caches removed\n", ok)
-		}
-	}
+	cleanupBuildCaches(builtDirs, noConfirm, ok)
 	return nil
 }
 
 // buildAndInstall clones and builds pkg.
 func buildAndInstall(pkg *Package, noConfirm bool) (string, error) {
 	ok, _, arrow := configSymbols()
+
+	if err := validatePkgName(pkg.Name); err != nil {
+		return "", fmt.Errorf("refusing to build package with invalid name %q: %w", pkg.Name, err)
+	}
 
 	pkgDir, err := aurCacheDir(pkg.Name)
 	if err != nil {
@@ -788,31 +917,10 @@ func cloneAUR(pkg *Package, pkgDir string) error {
 	return nil
 }
 
-// BuildLocal builds from a local PKGBUILD.
-func BuildLocal(dir string, noConfirm bool) error {
-	ok, warn, arrow := configSymbols()
-
-	pkgbuildPath := filepath.Join(dir, "PKGBUILD")
-	if _, err := os.Stat(pkgbuildPath); os.IsNotExist(err) {
-		return fmt.Errorf("no PKGBUILD found in %s", dir)
-	}
-
-	deps, makedeps, pkgname, err := parsePKGBUILD(pkgbuildPath)
-	if err != nil {
-		return fmt.Errorf("failed to parse PKGBUILD: %w", err)
-	}
-
-	// Trust notice for local builds
-	fmt.Println()
-	fmt.Printf("  %s  Building from a local PKGBUILD — review before proceeding.\n", warn)
-	fmt.Println()
-	fmt.Printf("  :: Building local package: %s\n", pkgname)
-
-	allDeps := append(deps, makedeps...)
+func resolveLocalDeps(allDeps []string, cache *pkgCache, warn string) ([]string, []*Package, error) {
 	var repoDeps []string
 	var aurOrdered []*Package
 	visited := make(map[string]bool)
-	cache := newPkgCache()
 
 	for _, dep := range unsatisfiedDeps(allDeps) {
 		name := stripVerConstraint(dep)
@@ -825,53 +933,33 @@ func BuildLocal(dir string, noConfirm bool) error {
 		}
 		aurPkg, err := findAURPackage(name)
 		if err != nil {
-			return fmt.Errorf("dep %q: %w", name, err)
+			return nil, nil, fmt.Errorf("dep %q: %w", name, err)
 		}
 		if err := resolveDepTree(aurPkg, visited, &aurOrdered, &repoDeps, warn, cache); err != nil {
-			return err
+			return nil, nil, err
 		}
 	}
+	return dedup(repoDeps), aurOrdered, nil
+}
 
-	repoDeps = dedup(repoDeps)
-
-	if len(repoDeps) > 0 {
-		fmt.Printf("  %s installing repo deps: %s\n", arrow, strings.Join(repoDeps, "  "))
-		args := append([]string{"pacman", "-S", "--noconfirm", "--needed"}, repoDeps...)
-		cmd, err := priv.Command(args...)
-		if err != nil {
-			return err
-		}
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Stdin = os.Stdin
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to install repo deps: %w", err)
-		}
+func reviewAndConfirmLocalBuild(pkgbuildPath string, noConfirm bool, arrow string) error {
+	if noConfirm {
+		return nil
 	}
-
-	var builtDirs []string
-	for _, aurPkg := range aurOrdered {
-		fmt.Printf("\n  %s building AUR dep: %s\n", arrow, aurPkg.Name)
-		pkgDir, err := buildAndInstall(aurPkg, noConfirm)
-		if err != nil {
-			return fmt.Errorf("failed to build dep %s: %w", aurPkg.Name, err)
-		}
-		builtDirs = append(builtDirs, pkgDir)
+	if err := reviewPKGBUILD(pkgbuildPath); err != nil {
+		return err
 	}
-
-	if !noConfirm {
-		if err := reviewPKGBUILD(pkgbuildPath); err != nil {
-			return err
-		}
-		proceed, err := readYesNo(fmt.Sprintf("  %s Proceed with build?", arrow), true)
-		if err != nil {
-			return err
-		}
-		if !proceed {
-			return fmt.Errorf("build cancelled by user")
-		}
+	proceed, err := readYesNo(fmt.Sprintf("  %s Proceed with build?", arrow), true)
+	if err != nil {
+		return err
 	}
+	if !proceed {
+		return fmt.Errorf("build cancelled by user")
+	}
+	return nil
+}
 
+func runMakepkg(dir string, pkgname string, noConfirm bool, arrow, ok string) error {
 	fmt.Printf("\n  %s building %s from local PKGBUILD...\n\n", arrow, pkgname)
 	args := []string{"-si"}
 	if noConfirm {
@@ -890,26 +978,72 @@ func BuildLocal(dir string, noConfirm bool) error {
 		return fmt.Errorf("makepkg failed: %w", err)
 	}
 	fmt.Printf("  %s  %s built and installed\n", ok, pkgname)
+	return nil
+}
 
-	if !noConfirm && len(builtDirs) > 0 {
-		fmt.Printf("\n  :: Build caches for AUR dependencies:\n")
-		for _, dir := range builtDirs {
-			fmt.Printf("     %s\n", dir)
-		}
-		keep, err := readYesNo("  Keep AUR dependencies build caches?", false)
-		if err == nil && !keep {
-			for _, dir := range builtDirs {
-				os.RemoveAll(dir)
-			}
-			fmt.Printf("  %s  caches removed\n", ok)
-		}
+// BuildLocal builds from a local PKGBUILD.
+func BuildLocal(dir string, noConfirm bool) error {
+	ok, warn, arrow := configSymbols()
+
+	// Building requires base-devel; git is needed if any AUR deps must be cloned.
+	if err := checkRequirements(true, true); err != nil {
+		return err
 	}
+
+	pkgbuildPath := filepath.Join(dir, "PKGBUILD")
+	if _, err := os.Stat(pkgbuildPath); os.IsNotExist(err) {
+		return fmt.Errorf("no PKGBUILD found in %s", dir)
+	}
+
+	deps, makedeps, pkgname, err := parsePKGBUILD(pkgbuildPath)
+	if err != nil {
+		return fmt.Errorf("failed to parse PKGBUILD: %w", err)
+	}
+
+	// Trust notice for local builds
+	fmt.Println()
+	fmt.Printf("  %s  Building from a local PKGBUILD — review before proceeding.\n", warn)
+	fmt.Println()
+	fmt.Printf("  :: Building local package: %s\n", pkgname)
+
+	allDeps := append(deps, makedeps...)
+	repoDeps, aurOrdered, err := resolveLocalDeps(allDeps, newPkgCache(), warn)
+	if err != nil {
+		return err
+	}
+
+	if err := installRepoDeps(repoDeps, arrow); err != nil {
+		return err
+	}
+
+	var builtDirs []string
+	for _, aurPkg := range aurOrdered {
+		fmt.Printf("\n  %s building AUR dep: %s\n", arrow, aurPkg.Name)
+		pkgDir, err := buildAndInstall(aurPkg, noConfirm)
+		if err != nil {
+			return fmt.Errorf("failed to build dep %s: %w", aurPkg.Name, err)
+		}
+		builtDirs = append(builtDirs, pkgDir)
+	}
+
+	if err := reviewAndConfirmLocalBuild(pkgbuildPath, noConfirm, arrow); err != nil {
+		return err
+	}
+
+	if err := runMakepkg(dir, pkgname, noConfirm, arrow, ok); err != nil {
+		return err
+	}
+
+	cleanupBuildCaches(builtDirs, noConfirm, ok)
 
 	return nil
 }
 
 // FetchABS downloads a PKGBUILD from the Arch Build System.
 func FetchABS(pkgName string) (string, error) {
+	if err := validatePkgName(pkgName); err != nil {
+		return "", err
+	}
 	_, _, arrow := configSymbols()
 
 	outDir, err := aurCacheDir("abs-" + pkgName)
@@ -923,7 +1057,7 @@ func FetchABS(pkgName string) (string, error) {
 		return "", fmt.Errorf("failed to create dir: %w", err)
 	}
 
-	// asp is cleaner when available
+	// asp is cleaner when available; no git required for this path
 	if _, err := exec.LookPath("asp"); err == nil {
 		fmt.Printf("  %s fetching %s from ABS via asp...\n", arrow, pkgName)
 		cmd := exec.Command("asp", "export", pkgName)
@@ -941,7 +1075,10 @@ func FetchABS(pkgName string) (string, error) {
 		return outDir, nil
 	}
 
-	// Fallback: Arch GitLab
+	// Fallback: Arch GitLab — git is required for this path
+	if err := checkRequirements(true, false); err != nil {
+		return "", fmt.Errorf("asp not found and git unavailable for fallback: %w", err)
+	}
 	gitURL := fmt.Sprintf("%s%s.git", absGitLab, pkgName)
 	fmt.Printf("  %s fetching %s from Arch GitLab...\n", arrow, pkgName)
 	cmd := exec.Command("git", "clone", "--depth=1", gitURL, outDir)
@@ -1088,7 +1225,7 @@ func reviewPKGBUILD(path string) error {
 	fmt.Println("  " + strings.Repeat("-", 44))
 
 	editor := os.Getenv("EDITOR")
-	if editor == "" {
+	if editor == "" || !editorIsSafe(editor) {
 		editor = "nano"
 	}
 	openEd, err := readYesNo(fmt.Sprintf("  Open PKGBUILD in editor (%s)?", editor), false)
@@ -1119,6 +1256,9 @@ func reviewPKGBUILD(path string) error {
 
 // Remove removes a package.
 func Remove(pkgName string, noConfirm bool) error {
+	if err := validatePkgName(pkgName); err != nil {
+		return err
+	}
 	args := []string{"pacman", "-R", pkgName}
 	if noConfirm {
 		args = append(args, "--noconfirm")
@@ -1159,6 +1299,11 @@ func ListInstalledAUR() (map[string]string, error) {
 
 // CleanCache removes the build cache.
 func CleanCache(pkgName string) error {
+	if pkgName != "" {
+		if err := validatePkgName(pkgName); err != nil {
+			return err
+		}
+	}
 	ok, _, _ := configSymbols()
 	var target string
 	var err error
@@ -1243,11 +1388,17 @@ func dedup(in []string) []string {
 }
 
 func aurCacheDir(pkgName string) (string, error) {
-	home, err := os.UserHomeDir()
+	root, err := AURCacheRoot()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".cache", "alps", "aur", pkgName), nil
+	dir := filepath.Join(root, pkgName)
+	// Ensure the resolved path stays inside the cache root.
+	clean := filepath.Clean(dir)
+	if !strings.HasPrefix(clean, root+string(filepath.Separator)) && clean != root {
+		return "", fmt.Errorf("path traversal detected: %q escapes cache root", pkgName)
+	}
+	return clean, nil
 }
 
 func AURCacheRoot() (string, error) {
@@ -1256,4 +1407,46 @@ func AURCacheRoot() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".cache", "alps", "aur"), nil
+}
+
+// PacmanConfig holds pacman settings parsed from pacman-conf
+type PacmanConfig struct {
+	IgnorePkg   []string
+	IgnoreGroup []string
+}
+
+// ReadPacmanConf reads pacman configuration using pacman-conf.
+func ReadPacmanConf() (*PacmanConfig, error) {
+	out, err := exec.Command("pacman-conf").Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to run pacman-conf: %w", err)
+	}
+
+	conf := &PacmanConfig{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "[") {
+			continue
+		}
+
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+
+		if val == "" {
+			continue
+		}
+
+		switch key {
+		case "IgnorePkg":
+			conf.IgnorePkg = append(conf.IgnorePkg, strings.Fields(val)...)
+		case "IgnoreGroup":
+			conf.IgnoreGroup = append(conf.IgnoreGroup, strings.Fields(val)...)
+		}
+	}
+	return conf, nil
 }

@@ -3,12 +3,19 @@ package more
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 )
+
+// isTermux checks if running in Termux.
+func isTermux() bool {
+	return os.Getenv("TERMUX_VERSION") != "" ||
+		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
+}
 
 // termuxPrefix returns the Termux $PREFIX when running inside Termux,
 // or an empty string on regular Linux/WSL systems.
@@ -23,19 +30,32 @@ func termuxPrefix() string {
 	return prefix
 }
 
+// wrapWithFakeroot wraps a command with fakeroot if the current operation is
+// install/upgrade, safety mode is strict, not in Termux, and fakeroot is available.
+// Remove/purge are never wrapped — they need real privileges to delete files.
+func wrapWithFakeroot(cmd string, ctx *MacroContext) string {
+	isInstallOp := ctx.Op == OperationInstall || ctx.Op == OperationUpgrade || ctx.Op == ""
+	if isInstallOp && (ctx.Safety == "strict" || ctx.Safety == "") && !isTermux() && !isRoot() && hasFakeroot() {
+		cmd = stripSudo(cmd)
+		return fmt.Sprintf("fakeroot -- %s", cmd)
+	}
+	return cmd
+}
+
 // InstalledPath tracks a file/directory installed via macros for automatic uninstall
 type InstalledPath struct {
 	Path      string
-	Type      string // "file", "dir", "symlink", "service", "user"
+	Type      string // "file", "dir", "symlink", "service"
 	Generated bool   // true if this was auto-generated for uninstall
 }
 
 // DeferredOperation represents a file operation to be executed after commands complete
 type DeferredOperation struct {
-	Type string // "install", "chmod", "chown", etc.
-	Src  string
-	Dst  string
-	Mode string
+	Type    string // "install", "install_dir", "symlink", "enable_service", "start_service", "create_user", etc.
+	Src     string
+	Dst     string
+	Mode    string
+	CmdArgs []string // for command-based deferred ops (service control, user management)
 }
 
 // Macro represents an installation macro
@@ -50,22 +70,34 @@ type MacroContext struct {
 	Version        string
 	Server         string
 	Arch           string
+	OS             string              // Operating system (linux, darwin, etc.)
+	Distro         string              // Linux distribution ID (ubuntu, debian, etc.)
 	Safety         string              // "strict" or "free"
+	Op             OperationType       // current operation (install/upgrade/remove/purge)
 	InstalledPaths []InstalledPath     // Track installed files for auto-uninstall (internal)
 	DeferredOps    []DeferredOperation // Deferred file operations
 	BuildDir       string              // Build directory for source files
+	DistroVersion  string
 }
 
 // NewMacroContext creates a new macro execution context
 func NewMacroContext(e *Entry, server string) *MacroContext {
+	distroVer := detectDistroVersion()
+	distro, _ := detectDistro()
+	os := runtime.GOOS
+
 	if e == nil {
 		return &MacroContext{
 			PackageName:    "",
 			Version:        "",
 			Server:         server,
 			Arch:           normalizeArch(runtime.GOARCH),
+			OS:             os,
+			Distro:         distro,
 			Safety:         "",
 			InstalledPaths: []InstalledPath{},
+			BuildDir:       "",
+			DistroVersion:  distroVer,
 		}
 	}
 	return &MacroContext{
@@ -73,13 +105,18 @@ func NewMacroContext(e *Entry, server string) *MacroContext {
 		Version:        e.Version,
 		Server:         server,
 		Arch:           normalizeArch(runtime.GOARCH),
+		OS:             os,
+		Distro:         distro,
 		Safety:         e.Safety,
 		InstalledPaths: []InstalledPath{},
+		BuildDir:       "",
+		DistroVersion:  distroVer,
 	}
 }
 
-// ParseMacro parses a macro from a command line
-// Returns (macro, remainingLine, isMacro)
+// ParseMacro parses a macro from a command line.
+// Supports both {MACRO arg1 arg2} (args inside braces) and {MACRO} arg1 arg2 (args outside braces).
+// Returns (macro, remainingLine, isMacro).
 func ParseMacro(line string) (Macro, string, bool) {
 	if !strings.HasPrefix(line, "{") {
 		return Macro{}, line, false
@@ -102,6 +139,15 @@ func ParseMacro(line string) (Macro, string, bool) {
 	}
 
 	remaining := strings.TrimSpace(line[end+1:])
+
+	// Support {MACRO} arg1 arg2 format (args outside braces)
+	if remaining != "" {
+		extraArgs := strings.Fields(remaining)
+		macro.Args = append(macro.Args, extraArgs...)
+		// Return empty remaining since we've consumed the args
+		return macro, "", true
+	}
+
 	return macro, remaining, true
 }
 
@@ -129,311 +175,274 @@ func expandLine(line string, ctx *MacroContext) (string, error) {
 		return "", nil
 	}
 
-	// In strict mode, process structured macros
-	if ctx.Safety == "strict" {
-		macro, remaining, isMacro := ParseMacro(line)
-		if !isMacro {
-			// In strict mode, non-macro lines are passed through but may be validated
-			// Replace standard macros first
-			line = strings.ReplaceAll(line, "{ARCH}", ctx.Arch)
-			line = strings.ReplaceAll(line, "{VERSION}", ctx.Version)
-			line = strings.ReplaceAll(line, "{SERVER}", ctx.Server)
-			line = strings.ReplaceAll(line, "{PKGNAME}", ctx.PackageName)
-			return line, nil
-		}
-
-		// Expand macro args with variables before executing
-		for i, arg := range macro.Args {
-			arg = strings.ReplaceAll(arg, "{ARCH}", ctx.Arch)
-			arg = strings.ReplaceAll(arg, "{VERSION}", ctx.Version)
-			arg = strings.ReplaceAll(arg, "{SERVER}", ctx.Server)
-			arg = strings.ReplaceAll(arg, "{PKGNAME}", ctx.PackageName)
-			macro.Args[i] = arg
-		}
-
-		result, err := executeMacro(macro, ctx)
-		if err != nil {
-			return "", fmt.Errorf("failed to execute macro %s: %w", macro.Name, err)
-		}
-
-		// If result is empty, this is a legacy macro - pass through unchanged
-		if result == "" {
-			// If there's remaining text, process it
-			if remaining != "" {
-				remainingResult, err := expandLine(remaining, ctx)
-				if err != nil {
-					return "", err
-				}
-				if remainingResult != "" {
-					return "{" + macro.Name + " " + strings.Join(macro.Args, " ") + "} " + remainingResult, nil
-				}
-			}
-			return line, nil
-		}
-
-		// If there's remaining text after the macro, process it too
-		if remaining != "" {
-			remainingResult, err := expandLine(remaining, ctx)
-			if err != nil {
-				return "", err
-			}
-			if remainingResult != "" {
-				result = result + " && " + remainingResult
-			}
-		}
-
-		return result, nil
+	// Replace plain variable tokens in a line that has no structured macro prefix.
+	replaceVars := func(s string) string {
+		s = strings.ReplaceAll(s, "{ARCH}", ctx.Arch)
+		s = strings.ReplaceAll(s, "{OS}", ctx.OS)
+		s = strings.ReplaceAll(s, "{DISTRO}", ctx.Distro)
+		s = strings.ReplaceAll(s, "{VERSION}", ctx.Version)
+		s = strings.ReplaceAll(s, "{PKG_DIR}", ctx.BuildDir)
+		s = strings.ReplaceAll(s, "{SERVER}", ctx.Server)
+		s = strings.ReplaceAll(s, "{PKGNAME}", ctx.PackageName)
+		s = strings.ReplaceAll(s, "{DISVER}", ctx.DistroVersion)
+		return s
 	}
 
-	// In free mode, macros are expanded but lines are otherwise left as-is
 	macro, remaining, isMacro := ParseMacro(line)
-	if isMacro {
-		// Expand macro args with variables before executing
-		for i, arg := range macro.Args {
-			arg = strings.ReplaceAll(arg, "{ARCH}", ctx.Arch)
-			arg = strings.ReplaceAll(arg, "{VERSION}", ctx.Version)
-			arg = strings.ReplaceAll(arg, "{SERVER}", ctx.Server)
-			arg = strings.ReplaceAll(arg, "{PKGNAME}", ctx.PackageName)
-			macro.Args[i] = arg
-		}
-
-		result, err := executeMacro(macro, ctx)
-		if err != nil {
-			return "", fmt.Errorf("failed to execute macro %s: %w", macro.Name, err)
-		}
-		// If result is empty, this is a legacy macro - pass through unchanged
-		if result == "" {
-			// If there's remaining text, process it
-			if remaining != "" {
-				remainingResult, err := expandLine(remaining, ctx)
-				if err != nil {
-					return "", err
-				}
-				if remainingResult != "" {
-					return "{" + macro.Name + " " + strings.Join(macro.Args, " ") + "} " + remainingResult, nil
-				}
-			}
-			return line, nil
-		}
-		if remaining != "" {
-			remainingResult, err := expandLine(remaining, ctx)
-			if err != nil {
-				return "", err
-			}
-			if remainingResult != "" {
-				result = result + " && " + remainingResult
-			}
-		}
-		return result, nil
+	if !isMacro {
+		return replaceVars(line), nil
 	}
 
-	// Replace standard macros for non-macro lines in free mode
-	line = strings.ReplaceAll(line, "{ARCH}", ctx.Arch)
-	line = strings.ReplaceAll(line, "{VERSION}", ctx.Version)
-	line = strings.ReplaceAll(line, "{SERVER}", ctx.Server)
-	line = strings.ReplaceAll(line, "{PKGNAME}", ctx.PackageName)
+	// Expand variable tokens inside macro arguments.
+	expandMacroArgs(&macro, ctx)
 
-	return line, nil
+	result, err := executeMacro(macro, ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to execute macro %s: %w", macro.Name, err)
+	}
+
+	return combineMacroResult(line, result, remaining, macro, ctx)
 }
 
-// executeMacro executes a single macro and returns the shell command
+// expandMacroArgs replaces variable tokens inside macro argument strings in-place.
+func expandMacroArgs(macro *Macro, ctx *MacroContext) {
+	for i, arg := range macro.Args {
+		arg = strings.ReplaceAll(arg, "{ARCH}", ctx.Arch)
+		arg = strings.ReplaceAll(arg, "{OS}", ctx.OS)
+		arg = strings.ReplaceAll(arg, "{DISTRO}", ctx.Distro)
+		arg = strings.ReplaceAll(arg, "{VERSION}", ctx.Version)
+		arg = strings.ReplaceAll(arg, "{PKG_DIR}", ctx.BuildDir)
+		arg = strings.ReplaceAll(arg, "{SERVER}", ctx.Server)
+		arg = strings.ReplaceAll(arg, "{PKGNAME}", ctx.PackageName)
+		arg = strings.ReplaceAll(arg, "{DISVER}", ctx.DistroVersion)
+		macro.Args[i] = arg
+	}
+}
+
+// combineMacroResult combines the result of a macro execution with any remaining
+// text that follows the macro on the same line.
+// If result is empty the macro was handled internally; the raw line is returned
+// unchanged so legacy macros are preserved.
+func combineMacroResult(rawLine, result, remaining string, macro Macro, ctx *MacroContext) (string, error) {
+	if result == "" {
+		// Legacy / deferred macro — pass the raw line through, but still
+		// process any trailing text.
+		if remaining == "" {
+			return rawLine, nil
+		}
+		remainingResult, err := expandLine(remaining, ctx)
+		if err != nil {
+			return "", err
+		}
+		if remainingResult != "" {
+			return "{" + macro.Name + " " + strings.Join(macro.Args, " ") + "} " + remainingResult, nil
+		}
+		return rawLine, nil
+	}
+
+	if remaining == "" {
+		return result, nil
+	}
+	remainingResult, err := expandLine(remaining, ctx)
+	if err != nil {
+		return "", err
+	}
+	if remainingResult != "" {
+		result = result + " && " + remainingResult
+	}
+	return result, nil
+}
+
+// macroHandler is a function that executes a named macro.
+type macroHandler func(Macro, *MacroContext) (string, error)
+
+// macroRegistry maps macro names to their handler functions.
+// All macros now return shell commands for direct execution.
+var macroRegistry = map[string]macroHandler{
+	"DOWNLOAD":        executeDownload,
+	"BASH_RUN":        executeBashRun,
+	"EXTRACT":         executeExtract,
+	"SH":              executeSH,
+	"INSTALL_BIN":     executeInstallBin,
+	"INSTALL_LIB":     executeInstallLib,
+	"INSTALL_CONF":    executeInstallConf,
+	"INSTALL_MAN":     executeInstallMan,
+	"INSTALL_SERVICE": executeInstallService,
+	"INSTALL_DIR":     executeInstallDir,
+	"SYMLINK":         executeSymlink,
+	"ENABLE_SERVICE":  executeEnableService,
+	"DISABLE_SERVICE": executeDisableService,
+	"START_SERVICE":   executeStartService,
+	"STOP_SERVICE":    executeStopService,
+	"RESTART_SERVICE": executeRestartService,
+	"CREATE_USER":     executeCreateUser,
+	"REMOVE_USER":     executeRemoveUser,
+}
+
+// executeMacro executes a single macro and returns the shell command.
 func executeMacro(macro Macro, ctx *MacroContext) (string, error) {
-	switch macro.Name {
-	case "INSTALL_BIN":
-		return executeInstallBin(macro, ctx)
-	case "INSTALL_LIB":
-		return executeInstallLib(macro, ctx)
-	case "INSTALL_CONF":
-		return executeInstallConf(macro, ctx)
-	case "INSTALL_MAN":
-		return executeInstallMan(macro, ctx)
-	case "INSTALL_SERVICE":
-		return executeInstallService(macro, ctx)
-	case "ENABLE_SERVICE":
-		return executeEnableService(macro, ctx)
-	case "DISABLE_SERVICE":
-		return executeDisableService(macro, ctx)
-	case "START_SERVICE":
-		return executeStartService(macro, ctx)
-	case "STOP_SERVICE":
-		return executeStopService(macro, ctx)
-	case "RESTART_SERVICE":
-		return executeRestartService(macro, ctx)
-	case "EXTRACT":
-		return executeExtract(macro, ctx)
-	case "INSTALL_DIR":
-		return executeInstallDir(macro, ctx)
-	case "SYMLINK":
-		return executeSymlink(macro, ctx)
-	case "CREATE_USER":
-		return executeCreateUser(macro, ctx)
-	case "REMOVE_USER":
-		return executeRemoveUser(macro, ctx)
-	// Legacy macros - return empty string to let the existing system handle them
-	case "DOWNLOAD", "BASH_RUN", "CURL_RUN":
-		return "", nil
-	default:
+	handler, ok := macroRegistry[macro.Name]
+	if !ok {
 		return "", fmt.Errorf("unknown macro: %s", macro.Name)
 	}
+	return handler(macro, ctx)
 }
 
-// executeInstallBin installs a binary to /usr/bin (or Termux equivalent) or specified directory (deferred)
+// executeInstallBin installs a binary to /usr/bin (or Termux equivalent) or specified directory
 func executeInstallBin(macro Macro, ctx *MacroContext) (string, error) {
 	if len(macro.Args) < 1 {
 		return "", fmt.Errorf("INSTALL_BIN requires at least 1 argument: source [dest]")
 	}
 
-	src := macro.Args[0]
-	dest := filepath.Join(termuxPrefix(), "/usr/bin") + "/"
-	if len(macro.Args) > 1 {
-		dest = macro.Args[1]
+	// Track for uninstall (use the last arg as dest if provided)
+	if len(macro.Args) >= 2 {
+		dest := macro.Args[len(macro.Args)-1]
+		// If dest is a directory (ends with /), append the filename
+		if strings.HasSuffix(dest, "/") {
+			dest = dest + filepath.Base(macro.Args[0])
+		}
+		ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
+			Path:      dest,
+			Type:      "file",
+			Generated: true,
+		})
+	} else {
+		// Default to /usr/bin directory
+		dest := filepath.Join(termuxPrefix(), "/usr/bin", filepath.Base(macro.Args[0]))
+		ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
+			Path:      dest,
+			Type:      "file",
+			Generated: true,
+		})
 	}
 
-	// Ensure destination ends with /
-	if !strings.HasSuffix(dest, "/") {
-		dest = dest + "/"
+	// Return install command using mkdir, cp, and chmod
+	if len(macro.Args) >= 2 {
+		dest := macro.Args[len(macro.Args)-1]
+		if strings.HasSuffix(dest, "/") {
+			dest = dest + filepath.Base(macro.Args[0])
+		}
+		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 755 %s", dest, macro.Args[0], dest, dest), nil
 	}
-
-	// Resolve source path relative to build directory if not absolute
-	if !filepath.IsAbs(src) {
-		src = filepath.Join(ctx.BuildDir, src)
-	}
-
-	finalDst := dest + filepath.Base(src)
-
-	// Track for uninstall
-	ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
-		Path:      finalDst,
-		Type:      "file",
-		Generated: true,
-	})
-
-	// Defer the actual installation
-	ctx.DeferredOps = append(ctx.DeferredOps, DeferredOperation{
-		Type: "install",
-		Src:  src,
-		Dst:  finalDst,
-		Mode: "755",
-	})
-
-	return "", nil // Return empty to indicate deferred operation
+	// Default to /usr/bin directory
+	dest := filepath.Join(termuxPrefix(), "/usr/bin", filepath.Base(macro.Args[0]))
+	binDir := filepath.Join(termuxPrefix(), "/usr/bin")
+	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 755 %s", binDir, macro.Args[0], dest, dest), nil
 }
 
-// executeInstallLib installs a library to /usr/lib (or Termux equivalent) or specified directory (deferred)
+// executeInstallLib installs a library to /usr/lib (or Termux equivalent) or specified directory
 func executeInstallLib(macro Macro, ctx *MacroContext) (string, error) {
 	if len(macro.Args) < 1 {
 		return "", fmt.Errorf("INSTALL_LIB requires at least 1 argument: source [dest]")
 	}
 
-	src := macro.Args[0]
-	dest := filepath.Join(termuxPrefix(), "/usr/lib") + "/"
-	if len(macro.Args) > 1 {
-		dest = macro.Args[1]
+	// Track for uninstall (use the last arg as dest if provided)
+	if len(macro.Args) >= 2 {
+		dest := macro.Args[len(macro.Args)-1]
+		// If dest is a directory (ends with /), append the filename
+		if strings.HasSuffix(dest, "/") {
+			dest = dest + filepath.Base(macro.Args[0])
+		}
+		ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
+			Path:      dest,
+			Type:      "file",
+			Generated: true,
+		})
+		// Return install command using mkdir, cp, and chmod
+		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s", dest, macro.Args[0], dest, dest), nil
 	}
-
-	if !strings.HasSuffix(dest, "/") {
-		dest = dest + "/"
-	}
-
-	if !filepath.IsAbs(src) {
-		src = filepath.Join(ctx.BuildDir, src)
-	}
-
-	finalDst := dest + filepath.Base(src)
-
+	// Default to /usr/lib directory
+	dest := filepath.Join(termuxPrefix(), "/usr/lib", filepath.Base(macro.Args[0]))
 	ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
-		Path:      finalDst,
+		Path:      dest,
 		Type:      "file",
 		Generated: true,
 	})
-
-	ctx.DeferredOps = append(ctx.DeferredOps, DeferredOperation{
-		Type: "install",
-		Src:  src,
-		Dst:  finalDst,
-		Mode: "644",
-	})
-
-	return "", nil
+	// Return install command using mkdir, cp, and chmod
+	libDir := filepath.Join(termuxPrefix(), "/usr/lib")
+	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 644 %s", libDir, macro.Args[0], dest, dest), nil
 }
 
-// executeInstallConf installs a config file to /etc (or Termux equivalent) or specified directory (deferred)
+// executeInstallConf installs a config file to /etc (or Termux equivalent) or specified directory
 func executeInstallConf(macro Macro, ctx *MacroContext) (string, error) {
 	if len(macro.Args) < 1 {
 		return "", fmt.Errorf("INSTALL_CONF requires at least 1 argument: source [dest]")
 	}
 
-	src := macro.Args[0]
-	dest := filepath.Join(termuxPrefix(), "/etc") + "/"
-	if len(macro.Args) > 1 {
-		dest = macro.Args[1]
+	// Track for uninstall (use the last arg as dest if provided)
+	if len(macro.Args) >= 2 {
+		dest := macro.Args[len(macro.Args)-1]
+		// If dest is a directory (ends with /), append the filename
+		if strings.HasSuffix(dest, "/") {
+			dest = dest + filepath.Base(macro.Args[0])
+		}
+		ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
+			Path:      dest,
+			Type:      "file",
+			Generated: true,
+		})
+		// Return install command using mkdir, cp, and chmod
+		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s", dest, macro.Args[0], dest, dest), nil
 	}
-
-	if !strings.HasSuffix(dest, "/") {
-		dest = dest + "/"
-	}
-
-	if !filepath.IsAbs(src) {
-		src = filepath.Join(ctx.BuildDir, src)
-	}
-
-	finalDst := dest + filepath.Base(src)
-
+	// Default to /etc directory
+	dest := filepath.Join(termuxPrefix(), "/etc", filepath.Base(macro.Args[0]))
 	ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
-		Path:      finalDst,
+		Path:      dest,
 		Type:      "file",
 		Generated: true,
 	})
-
-	ctx.DeferredOps = append(ctx.DeferredOps, DeferredOperation{
-		Type: "install",
-		Src:  src,
-		Dst:  finalDst,
-		Mode: "644",
-	})
-
-	return "", nil
+	// Return install command using mkdir, cp, and chmod
+	etcDir := filepath.Join(termuxPrefix(), "/etc")
+	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 644 %s", etcDir, macro.Args[0], dest, dest), nil
 }
 
-// executeInstallMan installs a man page to /usr/share/man (or Termux equivalent) or specified directory (deferred)
+// executeInstallMan installs a man page to /usr/share/man (or Termux equivalent) or specified directory
 func executeInstallMan(macro Macro, ctx *MacroContext) (string, error) {
 	if len(macro.Args) < 1 {
 		return "", fmt.Errorf("INSTALL_MAN requires at least 1 argument: source [dest]")
 	}
 
-	src := macro.Args[0]
-	dest := filepath.Join(termuxPrefix(), "/usr/share/man/man1") + "/"
-	if len(macro.Args) > 1 {
-		dest = macro.Args[1]
+	// Track for uninstall (use the last arg as dest if provided)
+	if len(macro.Args) >= 2 {
+		dest := macro.Args[len(macro.Args)-1]
+		// If dest is a directory (ends with /), append the filename
+		if strings.HasSuffix(dest, "/") {
+			dest = dest + filepath.Base(macro.Args[0])
+		}
+		// Add .gz extension since we gzip the man page
+		if !strings.HasSuffix(dest, ".gz") {
+			dest = dest + ".gz"
+		}
+		ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
+			Path:      dest,
+			Type:      "file",
+			Generated: true,
+		})
+		// Return install command using mkdir, cp, chmod, and gzip
+		// We need to copy to the destination without .gz first, then gzip it
+		uncompressedDest := strings.TrimSuffix(dest, ".gz")
+		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s && gzip -f %s", uncompressedDest, macro.Args[0], uncompressedDest, uncompressedDest, uncompressedDest), nil
 	}
-
-	if !strings.HasSuffix(dest, "/") {
-		dest = dest + "/"
+	// Default to /usr/share/man/man1 directory
+	sourceFile := filepath.Base(macro.Args[0])
+	dest := filepath.Join(termuxPrefix(), "/usr/share/man/man1", sourceFile)
+	// Add .gz extension since we gzip the man page
+	if !strings.HasSuffix(dest, ".gz") {
+		dest = dest + ".gz"
 	}
-
-	if !filepath.IsAbs(src) {
-		src = filepath.Join(ctx.BuildDir, src)
-	}
-
-	finalDst := dest + filepath.Base(src)
-
 	ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
-		Path:      finalDst + ".gz",
+		Path:      dest,
 		Type:      "file",
 		Generated: true,
 	})
-
-	ctx.DeferredOps = append(ctx.DeferredOps, DeferredOperation{
-		Type: "install_man",
-		Src:  src,
-		Dst:  finalDst,
-		Mode: "644",
-	})
-
-	return "", nil
+	// Return install command using mkdir, cp, chmod, and gzip
+	// We need to copy to the destination without .gz first, then gzip it
+	manDir := filepath.Join(termuxPrefix(), "/usr/share/man/man1")
+	uncompressedDest := strings.TrimSuffix(dest, ".gz")
+	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 644 %s && gzip -f %s", manDir, macro.Args[0], uncompressedDest, uncompressedDest, uncompressedDest), nil
 }
 
-// executeInstallService installs a systemd service file (deferred).
+// executeInstallService installs a systemd service file.
 // On Termux, systemd is not available, so this is a no-op.
 func executeInstallService(macro Macro, ctx *MacroContext) (string, error) {
 	if isTermux() {
@@ -443,37 +452,32 @@ func executeInstallService(macro Macro, ctx *MacroContext) (string, error) {
 		return "", fmt.Errorf("INSTALL_SERVICE requires at least 1 argument: source [dest]")
 	}
 
-	src := macro.Args[0]
-	dest := "/etc/systemd/system/"
-	if len(macro.Args) > 1 {
-		dest = macro.Args[1]
+	// Track for uninstall (use the service name, not the full path)
+	if len(macro.Args) >= 2 {
+		dest := macro.Args[len(macro.Args)-1]
+		// If dest is a directory (ends with /), append the filename
+		if strings.HasSuffix(dest, "/") {
+			dest = dest + filepath.Base(macro.Args[0])
+		}
+		// Store just the service name (basename)
+		ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
+			Path:      filepath.Base(dest),
+			Type:      "service",
+			Generated: true,
+		})
+		// Return install command using mkdir, cp, and chmod
+		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s", dest, macro.Args[0], dest, dest), nil
 	}
-
-	if !strings.HasSuffix(dest, "/") {
-		dest = dest + "/"
-	}
-
-	if !filepath.IsAbs(src) {
-		src = filepath.Join(ctx.BuildDir, src)
-	}
-
-	serviceName := filepath.Base(src)
-	finalDst := dest + serviceName
-
+	// Default to /etc/systemd/system directory, store just the service name
+	serviceName := filepath.Base(macro.Args[0])
+	dest := filepath.Join("/etc/systemd/system", serviceName)
 	ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
 		Path:      serviceName,
 		Type:      "service",
 		Generated: true,
 	})
-
-	ctx.DeferredOps = append(ctx.DeferredOps, DeferredOperation{
-		Type: "install",
-		Src:  src,
-		Dst:  finalDst,
-		Mode: "644",
-	})
-
-	return "", nil
+	// Return install command using mkdir, cp, and chmod
+	return fmt.Sprintf("mkdir -p /etc/systemd/system && cp %s %s && chmod 644 %s", macro.Args[0], dest, dest), nil
 }
 
 // executeEnableService enables a systemd service.
@@ -487,8 +491,10 @@ func executeEnableService(macro Macro, ctx *MacroContext) (string, error) {
 	}
 
 	service := macro.Args[0]
+	// Track the service for removal (will be disabled and removed)
+	// Store just the service name (basename if it's a path)
 	ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
-		Path:      service,
+		Path:      filepath.Base(service),
 		Type:      "service",
 		Generated: true,
 	})
@@ -506,7 +512,8 @@ func executeDisableService(macro Macro, ctx *MacroContext) (string, error) {
 		return "", fmt.Errorf("DISABLE_SERVICE requires 1 argument: service_name")
 	}
 
-	return fmt.Sprintf("systemctl disable %s", macro.Args[0]), nil
+	service := macro.Args[0]
+	return fmt.Sprintf("systemctl disable %s", service), nil
 }
 
 // executeStartService starts a systemd service.
@@ -519,7 +526,8 @@ func executeStartService(macro Macro, ctx *MacroContext) (string, error) {
 		return "", fmt.Errorf("START_SERVICE requires 1 argument: service_name")
 	}
 
-	return fmt.Sprintf("systemctl start %s", macro.Args[0]), nil
+	service := macro.Args[0]
+	return fmt.Sprintf("systemctl start %s", service), nil
 }
 
 // executeStopService stops a systemd service.
@@ -532,7 +540,8 @@ func executeStopService(macro Macro, ctx *MacroContext) (string, error) {
 		return "", fmt.Errorf("STOP_SERVICE requires 1 argument: service_name")
 	}
 
-	return fmt.Sprintf("systemctl stop %s", macro.Args[0]), nil
+	service := macro.Args[0]
+	return fmt.Sprintf("systemctl stop %s", service), nil
 }
 
 // executeRestartService restarts a systemd service.
@@ -545,7 +554,8 @@ func executeRestartService(macro Macro, ctx *MacroContext) (string, error) {
 		return "", fmt.Errorf("RESTART_SERVICE requires 1 argument: service_name")
 	}
 
-	return fmt.Sprintf("systemctl restart %s", macro.Args[0]), nil
+	service := macro.Args[0]
+	return fmt.Sprintf("systemctl restart %s", service), nil
 }
 
 // executeExtract extracts an archive
@@ -557,20 +567,23 @@ func executeExtract(macro Macro, ctx *MacroContext) (string, error) {
 	archive := macro.Args[0]
 
 	// Detect archive type and extract accordingly
+	var cmd string
 	if strings.HasSuffix(archive, ".tar.gz") || strings.HasSuffix(archive, ".tgz") {
-		return fmt.Sprintf("tar -xzf %s", archive), nil
+		cmd = fmt.Sprintf("tar -xzf %s", archive)
 	} else if strings.HasSuffix(archive, ".tar.xz") || strings.HasSuffix(archive, ".txz") {
-		return fmt.Sprintf("tar -xJf %s", archive), nil
+		cmd = fmt.Sprintf("tar -xJf %s", archive)
 	} else if strings.HasSuffix(archive, ".tar.bz2") || strings.HasSuffix(archive, ".tbz") {
-		return fmt.Sprintf("tar -xjf %s", archive), nil
+		cmd = fmt.Sprintf("tar -xjf %s", archive)
 	} else if strings.HasSuffix(archive, ".zip") {
-		return fmt.Sprintf("unzip %s", archive), nil
+		cmd = fmt.Sprintf("unzip %s", archive)
 	} else {
-		return fmt.Sprintf("tar -xf %s", archive), nil
+		cmd = fmt.Sprintf("tar -xf %s", archive)
 	}
+
+	return wrapWithFakeroot(cmd, ctx), nil
 }
 
-// executeInstallDir creates a directory with standard permissions (deferred)
+// executeInstallDir creates a directory with standard permissions
 func executeInstallDir(macro Macro, ctx *MacroContext) (string, error) {
 	if len(macro.Args) < 1 {
 		return "", fmt.Errorf("INSTALL_DIR requires 1 argument: directory")
@@ -584,16 +597,10 @@ func executeInstallDir(macro Macro, ctx *MacroContext) (string, error) {
 		Generated: true,
 	})
 
-	ctx.DeferredOps = append(ctx.DeferredOps, DeferredOperation{
-		Type: "install_dir",
-		Dst:  dir,
-		Mode: "755",
-	})
-
-	return "", nil
+	return fmt.Sprintf("mkdir -p %s", dir), nil
 }
 
-// executeSymlink creates a symbolic link (deferred)
+// executeSymlink creates a symbolic link
 func executeSymlink(macro Macro, ctx *MacroContext) (string, error) {
 	if len(macro.Args) < 2 {
 		return "", fmt.Errorf("SYMLINK requires 2 arguments: target link_name")
@@ -608,17 +615,12 @@ func executeSymlink(macro Macro, ctx *MacroContext) (string, error) {
 		Generated: true,
 	})
 
-	ctx.DeferredOps = append(ctx.DeferredOps, DeferredOperation{
-		Type: "symlink",
-		Src:  target,
-		Dst:  link,
-	})
-
-	return "", nil
+	return fmt.Sprintf("ln -sf %s %s", target, link), nil
 }
 
 // executeCreateUser creates a system user.
 // On Termux, useradd is not available, so this is a no-op.
+// Note: Users are NOT tracked for automatic removal as they may be shared between packages.
 func executeCreateUser(macro Macro, ctx *MacroContext) (string, error) {
 	if isTermux() {
 		return "", nil // Termux has no useradd
@@ -629,11 +631,8 @@ func executeCreateUser(macro Macro, ctx *MacroContext) (string, error) {
 
 	username := macro.Args[0]
 
-	ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
-		Path:      username,
-		Type:      "user",
-		Generated: true,
-	})
+	// Don't track users for automatic removal - they may be shared between packages
+	// Users should be removed manually if needed
 
 	return fmt.Sprintf("useradd -r -s /bin/false %s", username), nil
 }
@@ -648,7 +647,148 @@ func executeRemoveUser(macro Macro, ctx *MacroContext) (string, error) {
 		return "", fmt.Errorf("REMOVE_USER requires 1 argument: username")
 	}
 
-	return fmt.Sprintf("userdel %s", macro.Args[0]), nil
+	username := macro.Args[0]
+	return fmt.Sprintf("userdel %s", username), nil
+}
+
+// executeDownload downloads a file using Go's HTTP client
+func executeDownload(macro Macro, ctx *MacroContext) (string, error) {
+	if len(macro.Args) < 1 {
+		return "", fmt.Errorf("DOWNLOAD requires at least 1 argument: URL [file]")
+	}
+
+	url := macro.Args[0]
+	file := ""
+	if len(macro.Args) > 1 {
+		file = macro.Args[1]
+	} else {
+		file = filepath.Base(url)
+	}
+
+	// Resolve relative to build directory
+	if !filepath.IsAbs(file) {
+		file = filepath.Join(ctx.BuildDir, file)
+	}
+
+	// Create directory if it doesn't exist
+	if err := os.MkdirAll(filepath.Dir(file), 0755); err != nil {
+		return "", fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Download the file
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("failed to download %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download %s: HTTP %d", url, resp.StatusCode)
+	}
+
+	// Create the file
+	out, err := os.Create(file)
+	if err != nil {
+		return "", fmt.Errorf("failed to create file %s: %w", file, err)
+	}
+	defer out.Close()
+
+	// Copy the response body to the file
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return "", fmt.Errorf("failed to write file %s: %w", file, err)
+	}
+
+	// Return empty string since download is done in Go
+	return "", nil
+}
+
+// executeBashRun downloads and executes a bash script
+func executeBashRun(macro Macro, ctx *MacroContext) (string, error) {
+	if len(macro.Args) < 1 {
+		return "", fmt.Errorf("BASH_RUN requires at least 1 argument: script [args]")
+	}
+
+	script := macro.Args[0]
+	args := ""
+	if len(macro.Args) > 1 {
+		args = strings.Join(macro.Args[1:], " ")
+	}
+
+	// If URL, download first using Go's HTTP client
+	if strings.HasPrefix(script, "http://") || strings.HasPrefix(script, "https://") {
+		localScript := filepath.Join(ctx.BuildDir, filepath.Base(script))
+
+		// Create directory if it doesn't exist
+		if err := os.MkdirAll(filepath.Dir(localScript), 0755); err != nil {
+			return "", fmt.Errorf("failed to create directory: %w", err)
+		}
+
+		// Download the script
+		resp, err := http.Get(script)
+		if err != nil {
+			return "", fmt.Errorf("failed to download %s: %w", script, err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("failed to download %s: HTTP %d", script, resp.StatusCode)
+		}
+
+		// Create the file
+		out, err := os.Create(localScript)
+		if err != nil {
+			return "", fmt.Errorf("failed to create file %s: %w", localScript, err)
+		}
+		defer out.Close()
+
+		// Copy the response body to the file
+		if _, err := io.Copy(out, resp.Body); err != nil {
+			return "", fmt.Errorf("failed to write file %s: %w", localScript, err)
+		}
+
+		// Make the script executable
+		if err := os.Chmod(localScript, 0755); err != nil {
+			return "", fmt.Errorf("failed to make script executable: %w", err)
+		}
+
+		// Return command to execute the script
+		if args != "" {
+			cmd := fmt.Sprintf("bash %s %s", localScript, args)
+			return wrapWithFakeroot(cmd, ctx), nil
+		}
+		cmd := fmt.Sprintf("bash %s", localScript)
+		return wrapWithFakeroot(cmd, ctx), nil
+	}
+
+	// Local script
+	if !filepath.IsAbs(script) {
+		script = filepath.Join(ctx.BuildDir, script)
+	}
+
+	if args != "" {
+		cmd := fmt.Sprintf("bash %s %s", script, args)
+		return wrapWithFakeroot(cmd, ctx), nil
+	}
+	cmd := fmt.Sprintf("bash %s", script)
+	return wrapWithFakeroot(cmd, ctx), nil
+}
+
+// executeSH executes a shell script with bash or sh
+func executeSH(macro Macro, ctx *MacroContext) (string, error) {
+	if len(macro.Args) < 1 {
+		return "", fmt.Errorf("SH requires 1 argument: script_path")
+	}
+
+	scriptPath := macro.Args[0]
+
+	// Use bash if available, otherwise fall back to sh
+	shell := "sh"
+	if _, err := exec.LookPath("bash"); err == nil {
+		shell = "bash"
+	}
+
+	cmd := fmt.Sprintf("%s %s", shell, scriptPath)
+	return wrapWithFakeroot(cmd, ctx), nil
 }
 
 // GenerateUninstallCommands generates uninstall commands based on tracked installed paths
@@ -697,168 +837,7 @@ func GenerateOwnedItems(ctx *MacroContext) []OwnedItem {
 	return items
 }
 
-// ExecuteDeferredOps executes all deferred file operations
+// ExecuteDeferredOps is no longer needed - macros now return shell commands directly
 func ExecuteDeferredOps(ctx *MacroContext) error {
-	if len(ctx.DeferredOps) == 0 {
-		return nil
-	}
-
-	// Note: fakeroot is used during the build phase, not during deferred operations
-	// Files created during build already have correct ownership/permissions from fakeroot
-
-	for _, op := range ctx.DeferredOps {
-		var err error
-		switch op.Type {
-		case "install":
-			err = executeInstallOp(op, false)
-		case "install_man":
-			err = executeInstallManOp(op, false)
-		case "install_dir":
-			err = executeInstallDirOp(op, false)
-		case "symlink":
-			err = executeSymlinkOp(op, false)
-		default:
-			err = fmt.Errorf("unknown operation type: %s", op.Type)
-		}
-
-		if err != nil {
-			return fmt.Errorf("failed to execute deferred operation %s: %w", op.Type, err)
-		}
-	}
-
 	return nil
-}
-
-func executeInstallOp(op DeferredOperation, useFakeroot bool) error {
-	// Create destination directory if needed
-	destDir := filepath.Dir(op.Dst)
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return fmt.Errorf("failed to create destination directory: %w", err)
-	}
-
-	// Copy the file
-	srcFile, err := os.Open(op.Src)
-	if err != nil {
-		return fmt.Errorf("failed to open source file: %w", err)
-	}
-	defer srcFile.Close()
-
-	// Handle permissions
-	var perm os.FileMode = 0644
-	if op.Mode == "755" {
-		perm = 0755
-	}
-
-	// Direct copy (fakeroot is used during build phase, not here)
-	destFile, err := os.OpenFile(op.Dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
-	if err != nil {
-		return fmt.Errorf("failed to create destination file: %w", err)
-	}
-	defer destFile.Close()
-
-	if _, err := io.Copy(destFile, srcFile); err != nil {
-		return fmt.Errorf("failed to copy file: %w", err)
-	}
-
-	// Set permissions explicitly
-	if err := os.Chmod(op.Dst, perm); err != nil {
-		return fmt.Errorf("failed to set permissions: %w", err)
-	}
-
-	return nil
-}
-
-func executeInstallManOp(op DeferredOperation, useFakeroot bool) error {
-	// First install the file
-	if err := executeInstallOp(DeferredOperation{
-		Type: "install",
-		Src:  op.Src,
-		Dst:  op.Dst,
-		Mode: op.Mode,
-	}, false); err != nil {
-		return err
-	}
-
-	// Then compress it (fakeroot is used during build phase, not here)
-	cmd := exec.Command("gzip", "-f", op.Dst)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func executeInstallDirOp(op DeferredOperation, useFakeroot bool) error {
-	// Direct directory creation (fakeroot is used during build phase, not here)
-	return os.MkdirAll(op.Dst, 0755)
-}
-
-func executeSymlinkOp(op DeferredOperation, useFakeroot bool) error {
-	// Remove existing link if it exists
-	os.Remove(op.Dst)
-
-	// Direct symlink creation (fakeroot is used during build phase, not here)
-	return os.Symlink(op.Src, op.Dst)
-}
-
-// ValidateLine checks if a command line is safe to execute in strict mode
-func ValidateLine(line string) error {
-	dangerousPatterns := []string{
-		"rm -rf /",
-		"rm -rf /*",
-		":(){:|:&};:",
-		"mkfs",
-		"dd if=/dev/zero",
-		"dd if=/dev/random",
-		"> /dev/sda",
-		"> /dev/sdb",
-		":(){:|:&};:",
-	}
-
-	line = strings.TrimSpace(line)
-	for _, pattern := range dangerousPatterns {
-		if strings.Contains(line, pattern) {
-			return fmt.Errorf("potentially dangerous command detected: %s", pattern)
-		}
-	}
-
-	return nil
-}
-
-// IsProtectedPath checks if a path is protected and should require explicit intent
-func IsProtectedPath(path string) bool {
-	path = strings.TrimSpace(path)
-	protectedPaths := []string{
-		"/",
-		"/usr",
-		"/bin",
-		"/sbin",
-		"/lib",
-		"/lib64",
-		"/etc",
-		"/var",
-		"/home",
-		"/root",
-		"/opt",
-	}
-
-	// Also protect the Termux prefix tree when running under Termux.
-	if prefix := termuxPrefix(); prefix != "" {
-		protectedPaths = append(protectedPaths,
-			prefix,
-			filepath.Join(prefix, "usr"),
-			filepath.Join(prefix, "etc"),
-			filepath.Join(prefix, "var"),
-		)
-	}
-
-	for _, protected := range protectedPaths {
-		if path == protected {
-			return true
-		}
-		// Check if path is a direct child of protected path
-		if strings.HasPrefix(path, protected+"/") && !strings.Contains(strings.TrimPrefix(path, protected+"/"), "/") {
-			return true
-		}
-	}
-
-	return false
 }

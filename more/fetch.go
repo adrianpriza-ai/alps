@@ -257,6 +257,17 @@ func CleanCache() error {
 	return os.RemoveAll(getBuildCacheRoot())
 }
 
+// CleanPackageCache removes a specific package's build cache directory.
+// Pattern: ~/.cache/alps/more/<package-name>/
+func CleanPackageCache(pkgName string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	dir := filepath.Join(home, ".cache", "alps", "more", pkgName)
+	return os.RemoveAll(dir)
+}
+
 // CacheDir returns the path of the build cache directory.
 func CacheDir() string {
 	return getBuildCacheRoot()

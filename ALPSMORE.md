@@ -51,7 +51,6 @@ author = Name
 version = 1.0.0
 arch = x86_64, aarch64, armv7l, i686
 os = linux, debian, ubuntu, arch, fedora, alpine, termux, wsl
-sudo = true  # only allowed in free mode
 servers = https://my-mirror.example.com/
 deps = curl, git
 safety = strict  # strict (default) or free
@@ -89,7 +88,6 @@ purge_end
 | `desc` | Text | Package description |
 | `author` | Text | Package author/maintainer |
 | `version` | Semantic version | Version string for upgrades |
-| `sudo` | `true`, `false` | Require root privileges (only allowed in free mode) |
 | `servers` | URLs | Mirror servers for `{BASH_RUN}` |
 | `deps` | Binary names | Required system dependencies |
 | `upgrade_begin`/`upgrade_end` | Commands | Custom upgrade commands |
@@ -104,7 +102,6 @@ purge_end
 - Validates commands for dangerous patterns
 - Safer permissions and protected paths
 - **Uses `fakeroot` during build** if available for file operations
-- **Cannot have `sudo = true`** - strict mode uses fakeroot instead
 - **Defers file operations** (`{INSTALL_*}`, `{SYMLINK}`) until after build completes
 - **Auto-generates remove commands** from macros (no manual `remove_begin` needed)
 - Recommended for most packages
@@ -113,7 +110,6 @@ purge_end
 - Allows manual scripts and full control
 - No command validation
 - **Does not use fakeroot** - allows direct access
-- **Can have `sudo = true`** - full privilege control
 - File operations execute immediately
 - **Requires manual `remove_begin`/`remove_end`** blocks
 - For complex packages requiring custom behavior
@@ -126,45 +122,50 @@ purge_end
 | Placeholder | Example | Description |
 |------------|---------|-------------|
 | `{ARCH}` | `x86_64` | Normalized architecture |
+| `{OS}` | `linux` | Operating system (`runtime.GOOS`) |
+| `{DISTRO}` | `ubuntu` | Linux distribution ID from `/etc/os-release` |
 | `{VERSION}` | `1.0.0` | Package version from entry definition |
+| `{PKG_DIR}` | `~/.cache/alps/more/myapp/` | Build directory path for the package |
 | `{SERVER}` | `https://mirror.example.com/` | Resolved mirror base URL |
 | `{PKGNAME}` | `myapp` | Package name |
+| `{DISVER}` | `22.04` | Distro version |
 
-### Legacy Macros
+### Build Phase Macros (build_env)
+
+Execute during the build phase, before installation. In strict mode, these run under `fakeroot` for safe file operations.
+
 | Macro | Syntax | Behavior |
 |-------|--------|----------|
-| `{DOWNLOAD}` | `{DOWNLOAD} URL [FILE]` | Download file to build directory |
-| `{BASH_RUN}` | `{BASH_RUN} /path/to/script [args]` | Download and execute shell script. Supports full URLs or relative paths |
-| `{CURL_RUN}` | Same as `{BASH_RUN}` | **Deprecated** but supported for backward compatibility |
+| `{DOWNLOAD}` | `{DOWNLOAD} URL [FILE]` | Download file to build directory using Go's HTTP client |
+| `{BASH_RUN}` | `{BASH_RUN} /path/to/script [args]` | Download (if URL) and execute shell script via `bash` |
+| `{SH}` | `{SH} PATH` | Execute script with `bash` (or `sh` as fallback) |
+| `{EXTRACT}` | `{EXTRACT} ARCHIVE` | Extract archive (`.tar.gz`, `.tar.xz`, `.tar.bz2`, `.zip`) |
 
-### Installation Macros (Deferred - run after build)
+### Installation Phase Macros (after_env)
+
+Execute after the build phase completes, using `sudo` for real system access (skipped on Termux). All paths are tracked for automatic uninstall.
+
 | Macro | Syntax | Behavior |
 |-------|--------|----------|
-| `{INSTALL_BIN}` | `{INSTALL_BIN} SOURCE [DEST]` | Install binary to `/usr/bin/` or specified directory with `755` permissions |
-| `{INSTALL_LIB}` | `{INSTALL_LIB} SOURCE [DEST]` | Install library to `/usr/lib/` or specified directory with `644` permissions |
-| `{INSTALL_CONF}` | `{INSTALL_CONF} SOURCE [DEST]` | Install config file to `/etc/` or specified directory with `644` permissions |
-| `{INSTALL_MAN}` | `{INSTALL_MAN} SOURCE [DEST]` | Install man page to `/usr/share/man/man1/` and compress with gzip |
-| `{INSTALL_SERVICE}` | `{INSTALL_SERVICE} SOURCE [DEST]` | Install systemd service file to `/etc/systemd/system/` |
-| `{INSTALL_DIR}` | `{INSTALL_DIR} DIRECTORY` | Create directory with `755` permissions |
+| `{INSTALL_BIN}` | `{INSTALL_BIN} SOURCE [DEST]` | Install binary to `/usr/bin/` or DEST (755) |
+| `{INSTALL_LIB}` | `{INSTALL_LIB} SOURCE [DEST]` | Install library to `/usr/lib/` or DEST (644) |
+| `{INSTALL_CONF}` | `{INSTALL_CONF} SOURCE [DEST]` | Install config to `/etc/` or DEST (644) |
+| `{INSTALL_MAN}` | `{INSTALL_MAN} SOURCE [DEST]` | Install man page to `/usr/share/man/man1/` or DEST, gzipped |
+| `{INSTALL_SERVICE}` | `{INSTALL_SERVICE} SOURCE [DEST]` | Install systemd service to `/etc/systemd/system/` or DEST |
+| `{INSTALL_DIR}` | `{INSTALL_DIR} DIRECTORY` | Create directory (755) |
 | `{SYMLINK}` | `{SYMLINK} TARGET LINK_NAME` | Create symbolic link |
+| `{ENABLE_SERVICE}` | `{ENABLE_SERVICE} SERVICE` | Enable systemd service (`systemctl enable`) |
+| `{DISABLE_SERVICE}` | `{DISABLE_SERVICE} SERVICE` | Disable systemd service (`systemctl disable`) |
+| `{START_SERVICE}` | `{START_SERVICE} SERVICE` | Start systemd service (`systemctl start`) |
+| `{STOP_SERVICE}` | `{STOP_SERVICE} SERVICE` | Stop systemd service (`systemctl stop`) |
+| `{RESTART_SERVICE}` | `{RESTART_SERVICE} SERVICE` | Restart systemd service (`systemctl restart`) |
+| `{CREATE_USER}` | `{CREATE_USER} USERNAME` | Create system user (`useradd -r -s /bin/false`) |
+| `{REMOVE_USER}` | `{REMOVE_USER} USERNAME` | Remove system user (`userdel`) |
 
-### Service & User Management Macros (Immediate - run during build)
-| Macro | Syntax | Behavior |
-|-------|--------|----------|
-| `{ENABLE_SERVICE}` | `{ENABLE_SERVICE} SERVICE` | Enable systemd service |
-| `{DISABLE_SERVICE}` | `{DISABLE_SERVICE} SERVICE` | Disable systemd service |
-| `{START_SERVICE}` | `{START_SERVICE} SERVICE` | Start systemd service |
-| `{STOP_SERVICE}` | `{STOP_SERVICE} SERVICE` | Stop systemd service |
-| `{RESTART_SERVICE}` | `{RESTART_SERVICE} SERVICE` | Restart systemd service |
-| `{CREATE_USER}` | `{CREATE_USER} USERNAME` | Create system user with no shell |
-| `{REMOVE_USER}` | `{REMOVE_USER} USERNAME` | Remove system user |
+**Notes:**
+- Service/user macros are no-ops on Termux (no systemd/useradd).
+- `{CURL_RUN}` is **deprecated** (replaced by `{BASH_RUN}`).
 
-### Other Macros
-| Macro | Syntax | Behavior |
-|-------|--------|----------|
-| `{EXTRACT}` | `{EXTRACT} ARCHIVE` | Extract archive (supports `.tar.gz`, `.tar.xz`, `.tar.bz2`, `.zip`) |
-
----
 
 ## Complete Examples
 
@@ -204,14 +205,13 @@ cmd_end
 # Remove will: stop/disable service, remove user, delete tracked files
 ```
 
-### Example 2: Free Mode with Sudo
+### Example 2: Free Mode
 ```ini
 [complex-app]
 desc = Complex application with custom install script
 version = 3.0.0
 arch = x86_64
 os = linux
-sudo = true  # allowed in free mode
 safety = free  # no fakeroot, full control
 
 cmd_begin
@@ -256,7 +256,6 @@ When using structured macros (`{INSTALL_BIN}`, `{INSTALL_LIB}`, etc.), ALPS auto
       {"path": "myappuser", "type": "user"}
     ],
     "safety": "strict",
-    "sudo": false
   }
 }
 ```
@@ -292,8 +291,7 @@ When using structured macros (`{INSTALL_BIN}`, `{INSTALL_LIB}`, etc.), ALPS auto
 3. `deps` binaries exist (via `exec.LookPath`)
 4. `cmd_begin`/`cmd_end` defined (required)
 5. **Strict mode**: `remove_begin`/`remove_end` optional (auto-generated from macros)
-6. **Free mode**: `remove_begin`/`remove_end` required (no automatic tracking)
-7. **Strict mode**: Cannot have `sudo = true` (uses fakeroot instead)
+6. **Free mode**: `remove_begin`/`remove_end` required
 
 **Safety features:**
 - **Strict mode**: Validates commands for dangerous patterns (`rm -rf /`, etc.)
@@ -333,9 +331,6 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 - [ ] **Free mode**: Remove lines required (no auto-generation)
 - [ ] `purge_begin` for config/data cleanup (optional)
 - [ ] Set appropriate `safety` mode
-- [ ] **Strict mode**: Don't set `sudo = true`
-- [ ] **Free mode**: Can set `sudo = true` if needed
-- [ ] Tested with `--dry-run`
 
 ---
 
@@ -344,13 +339,10 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 1. **Always** define `arch` and `os` — prevents install on unsupported systems
 2. **Use structured macros** (`{INSTALL_BIN}`, etc.) for automatic cleanup
 3. **Set `safety = strict`** for most packages — safer and more predictable
-4. **Strict mode**: Don't set `sudo = true` — let fakeroot handle file operations
-5. **Free mode**: Set `sudo = true` only if you need full privilege control
-6. **Make scripts idempotent** — safe to re-run
-7. **Set `version`** — enables upgrade detection
-8. **List dependencies** in `deps` — pre-install validation
-9. **Prefer structured macros** over manual install commands for better tracking
-10. **Install fakeroot** on target systems for strict mode packages
+4. **Make scripts idempotent** — safe to re-run
+5. **Set `version`** — enables upgrade detection
+6. **List dependencies** in `deps` — pre-install validation
+7. **Prefer structured macros** over manual install commands for better tracking
 
 ---
 
@@ -365,7 +357,6 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 | Items not removed on uninstall | Check if using structured macros for tracking |
 | Permission errors in strict mode | Install fakeroot package |
 | Service not starting | Check `{ENABLE_SERVICE}` and `{START_SERVICE}` usage |
-| `sudo = true` rejected in strict mode | Remove `sudo = true` or use `safety = free` |
 | Missing remove commands in free mode | Add `remove_begin`/`remove_end` blocks (required in free mode) |
 
 **Debug locations:**
@@ -373,34 +364,8 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 - Cache: `/var/cache/alps/more/main.txt`
 - Build: `~/.cache/alps/more/<package>/`
 
-**Fakeroot installation:**
+**Fakeroot and GNU Core Utilities installation:**
+
 ```bash
-# Debian/Ubuntu
-sudo apt install fakeroot
-
-# Arch Linux
-sudo pacman -S fakeroot
-
-# Fedora
-sudo dnf install fakeroot
-
-# Alpine
-apk add fakeroot
+alps install fakeroot coreutils
 ```
-
----
-
-## Fakeroot Integration
-
-**What is fakeroot?**
-Fakeroot is a tool that fakes root privileges for file operations. It allows commands to run as if they were root without actually requiring root access, making package building and installation safer.
-
-**When is it used?**
-- **Strict mode**: Build commands run in fakeroot if available
-- **Free mode**: Never uses fakeroot
-- **Termux**: Never uses fakeroot (owns its prefix)
-
-**Behavior:**
-- Build phase: Commands run inside `fakeroot bash -c "command"` in strict mode
-- File operations: Deferred operations run without fakeroot (files already have correct ownership from build)
-- If fakeroot unavailable: Strict mode warns but continues without it

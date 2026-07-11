@@ -10,10 +10,6 @@
   [![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
   [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev)
   [![Build](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml/badge.svg)](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml)
-  [![Go Report Card](https://goreportcard.com/badge/github.com/adrianpriza-ai/alps?v=1)](https://goreportcard.com/report/github.com/adrianpriza-ai/alps)
-
-  [![AUR](https://img.shields.io/badge/AUR-built--in-1793D1?style=flat&logo=archlinux)](https://aur.archlinux.org)
-  [![alps-more](https://img.shields.io/badge/alps--more-repo-orange?style=flat)](https://github.com/adrianpriza-ai/alps-more)
   
 </div>
 
@@ -32,7 +28,7 @@ ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and
 | **WSL support** | Works on WSL; alps-more entries can target `os = wsl` |
 | **Built-in AUR** | Full recursive dep resolution, PKGBUILD review, yay fallback |
 | **Snap & Flatpak** | First-class subcommands; snap auto-offered on Ubuntu/Debian |
-| **alps-more** | Cross-distro script repo with version tracking, mirror failover, purge support, and remote installs from GitHub/GitLab |
+| **alps-more** | Cross-distro script repo with version tracking, mirror failover, and remote installs from GitHub/GitLab |
 | **Customizable** | Colors, symbols, header, aliases — all via config file |
 | **Smart completion** | fish, bash, zsh — distro-aware, AUR name cache, live package completion |
 | **Build isolation** | Per-package build directories (`~/.cache/alps/more/<pkg>/`) |
@@ -50,7 +46,7 @@ curl -fsSL https://alps-project.pages.dev/install.sh | sh
 #### Wget
 
 ```bash
-wget -qO- --show-progress=0 https://alps-project.pages.dev/install.sh | sh
+wget -qO- https://alps-project.pages.dev/install.sh | sh
 ```
 
 Auto-detects Termux, Debian/Ubuntu (.deb), Arch Linux (PKGBUILD), Alpine Linux (APKBUILD) or generic Linux (binary). Handles upgrades too — safe to re-run.
@@ -124,18 +120,7 @@ alps <command> [args]
 
 Unknown commands produce a clear error instead of being passed silently to the backend.
 
-## Command Resolution
-
-Every command goes through a **3-tier check** before anything runs:
-
-1. **Hard command** — built-in name (`install`, `repo`, `aur`, `flatpak`, ...)
-2. **Config alias** — defined by you in the config file (`alias_i = install`)
-3. **Default short** — built-in short names (`ins`, `rm`, `se`, `fp`, ...)
-4. Anything else → `unknown command "x" — run 'alps help' for available commands`
-
-The same 3-tier system applies to subcommands inside `aur`, `repo`, `flatpak`, and `snap`.
-
-### Default Aliases
+## Default Aliases
 
 **Top-level:**
 
@@ -208,6 +193,12 @@ alias_-R  = "remove"
 
 `alps install <pkg>` on Arch tries `pacman -S` first, then falls through to AUR automatically. Uses `yay` if available, otherwise the built-in makepkg path.
 
+### Requirements
+
+```bash
+sudo pacman -S --needed git base-devel
+```
+
 ### Built-in AUR features
 
 - **Full recursive dep resolution** — AUR deps are resolved and built in topological order
@@ -227,8 +218,6 @@ alps aur build-local [dir]      # build from a local PKGBUILD directory
 alps aur fetch-abs <pkg>        # fetch official PKGBUILD (asp or Arch GitLab)
 ```
 
-**Requirements**: `git` and `base-devel`. `sudo` is required — `su` fallback is not supported for AUR operations.
-
 ## Flatpak & Snap
 
 ```bash
@@ -239,7 +228,7 @@ alps flatpak update
 alps flatpak remove <pkg>
 alps flatpak list
 
-# Snap (Ubuntu/Debian only)
+# Snap (Ubuntu/Debian)
 alps snap install <pkg>
 alps snap search <query>
 alps snap update
@@ -247,22 +236,35 @@ alps snap remove <pkg>
 alps snap list
 ```
 
-Snap is available on Debian/Ubuntu and auto-offered as a fallback when apt can't find a package. `sudo` is required for both — `su` fallback is not supported.
+Snap is available on Debian/Ubuntu and auto-offered as a fallback when apt can't find a package.
 
 ## alps-more
 
-Cross-distro script repo for tools not in standard package managers. 
+Cross-distro script repo for tools
+
+### Requirements
+
+- GNU coreutils (mkdir, cp, chmod, gzip, ln)
+- tar (for .tar.gz, .tar.xz, .tar.bz2 archives)
+- unzip (for .zip archives)
+- bash (for running scripts)
+- fakeroot (not needed on Termux)
+- systemctl (for systemd services, not needed on Termux)
+- useradd/userdel (for user management, not needed on Termux)
+
+Install using your system package manager, or ALPS itself:
+
+```bash
+alps install fakeroot coreutils tar unzip bash
+```
 
 ### Quick User Guide
 
 ```bash
-# Repo management
 alps repo update                          # refresh cache from fastest mirror
 alps repo list                            # list available packages for your distro
 alps repo list install                    # list installed packages (alps-more + remote)
 alps repo list remove                     # list stale packages no longer in repo
-
-# Package operations
 alps repo search <query>                  # search by name or description
 alps repo install <pkg>                   # install with preview and validation
 alps repo install github.com/user/repo    # install from a GitHub ALPSMORE file
@@ -274,33 +276,26 @@ alps repo purge <pkg>                     # remove package and delete config/dat
 alps repo clean                           # remove build cache (~/.cache/alps/more)
 ```
 
-### Runtime Details
+### Runtime Details & Requirements
 
-- **Build directory**: Every package command runs inside a per-package build dir: `~/.cache/alps/more/<package>/`
-- **State file**: Installed packages and snapshots stored in `installed.json`:
-  - Default: `/var/lib/alps/installed.json`
-  - Termux: `$PREFIX/var/lib/alps/installed.json`
-- **Repo cache**: Upstream index cached at `/var/cache/alps/more/main.txt` (Termux path differs)
-- **Official mirrors**: [GitHub Pages](https://github.com/adrianpiza-ai/alps-more) and [Codeberg](https://codeberg.org/moreland/alps-more)
+- Build dir: `~/.cache/alps/more/<package>/`
+- State file: `/var/lib/alps/installed.json` (Termux: `$PREFIX/var/lib/alps/installed.json`)
+- Repo cache: `/var/cache/alps/more/main.txt`
+- Mirrors: [GitHub Pages](https://github.com/adrianpiza-ai/alps-more) and [Codeberg](https://codeberg.org/moreland/alps-more)
+- Requirement: `fakeroot` (required on all Linux platforms except Termux)
 
 ### Key Features
 
-- **Variable expansion**: `{ARCH}`, `{OS}`, `{DISTRO}`, `{VERSION}`, `{PKG_DIR}`, `{SERVER}` placeholders
-- **Macros**:
-  - `{DOWNLOAD} URL [OUTPUT_FILE]` — Downloads files using Go's HTTP client (no curl dependency)
-  - `{BASH_RUN} PATH [ARGS...]` — Downloads and runs bash scripts (no curl dependency)
-  - `{CURL_RUN}` — Deprecated alias of `{BASH_RUN}` (backward compatible)
-- **Mirror failover**: Packages using macros resolve reachable server before running
-- **Sudo handling**: `sudo = true` requests privilege escalation; Termux skips sudo
+- Simple placeholders: `{ARCH}`, `{OS}`, `{DISTRO}`, `{VERSION}`, `{PKG_DIR}`, `{SERVER}`
+- Practical macros: `{DOWNLOAD}`, `{BASH_RUN}` (no external curl)
+- Mirror failover and server reachability checks
+- Optional sudo handling (skipped on Termux)
 
 ### Validation & Safety
 
-- **Arch/OS validation**: Refuses to install if fields don't match the host
-- **Dependency checking**: `deps` checked via `exec.LookPath` before install
-- **Preview & confirmation**: Full install preview shown; explicit confirmation required (no `-y`)
-- **Remote install priority**: Official alps-more entries win on name conflict
-- **Dry-run support**: `--dry-run` (`-n`) supported for preview
-- **Auto-cleanup**: Install/upgrade failures trigger automatic cleanup via `remove_begin` if defined
+- Platform checks prevent mismatched installs
+- `deps` validated via `exec.LookPath`
+- Install preview + explicit confirmation required (no `-y` for repo installs)
 
 ### Full Authoring Guide
 

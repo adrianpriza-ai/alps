@@ -5,9 +5,9 @@ GO      := $(shell command -v go 2>/dev/null)
 color_setup = \
   SYM_INFO="[INFO]"; SYM_OK="[ OK ]"; SYM_WARN="[WARN]"; SYM_ERR="[ERRO]"; \
   if [ -t 1 ]; then \
-    GREEN="\033[32m"; RED="\033[31m"; CYAN="\033[36m"; YELLOW="\033[33m"; RESET="\033[0m"; \
+    GREEN="\033[32m"; RED="\033[31m"; BLUE="\033[0;34m"; YELLOW="\033[33m"; RESET="\033[0m"; \
   else \
-    GREEN=""; RED=""; CYAN=""; YELLOW=""; RESET=""; \
+    GREEN=""; RED=""; BLUE=""; YELLOW=""; RESET=""; \
   fi
 
 ifeq ($(PREFIX),)
@@ -63,14 +63,16 @@ build:
 		printf "       Arch:          sudo pacman -S go\n"; \
 		printf "       Debian/Ubuntu: sudo apt install golang-go\n"; \
 		printf "       Fedora:        sudo dnf install golang\n"; \
+		printf "       Alpine Linux:  sudo apk add go\n"; \
+        printf "       openSUSE:      sudo zypper install go\n"; \
 		exit 1; \
 	fi
-	@$(color_setup); printf "  $$CYAN$$SYM_INFO$$RESET Building $(BINARY) $(VERSION)...\n"
+	@$(color_setup); printf "  $$BLUE$$SYM_INFO$$RESET Building $(BINARY) $(VERSION)...\n"
 	go build -ldflags="-s -w -X main.Version=$(VERSION)" -o $(BINARY) .
 	@$(color_setup); printf "  $$GREEN$$SYM_OK$$RESET Build complete.\n"
 
 install: build
-	@$(color_setup); printf "  $$CYAN$$SYM_INFO$$RESET Installing $(BINARY)-pm to $(BINDIR)..."
+	@$(color_setup); printf "  $$BLUE$$SYM_INFO$$RESET Installing $(BINARY)-pm to $(BINDIR)..."
 	@$(SUDO) mkdir -p $(BINDIR)
 	@$(SUDO) rm -f $(BINDIR)/$(BINARY) $(BINDIR)/$(BINARY)-pm 2>/dev/null || true
 	@$(SUDO) cp $(BINARY) $(BINDIR)/$(BINARY)-pm
@@ -110,7 +112,7 @@ install: build
 	@$(color_setup); printf "  $$GREEN$$SYM_OK$$RESET Done! Run '$(BINARY) help' or '$(BINARY)-pm help' to get started.\n"
 
 uninstall:
-	@$(color_setup); printf "  $$CYAN$$SYM_INFO$$RESET Uninstalling $(BINARY) and $(BINARY)-pm...\n"
+	@$(color_setup); printf "  $$BLUE$$SYM_INFO$$RESET Uninstalling $(BINARY) and $(BINARY)-pm...\n"
 	@$(SUDO) rm -f $(BINDIR)/$(BINARY)
 	@$(SUDO) rm -f $(BINDIR)/$(BINARY)-pm
 	@$(SUDO) rm -f $(FISH_COMP)/$(BINARY).fish
@@ -122,7 +124,7 @@ uninstall:
 	@$(color_setup); printf "  $$GREEN$$SYM_OK$$RESET ALPS uninstalled successfully.\n"
 
 clean:
-	@$(color_setup); printf "  $$CYAN$$SYM_INFO$$RESET Cleaning build artifacts...\n"
+	@$(color_setup); printf "  $$BLUE$$SYM_INFO$$RESET Cleaning build artifacts...\n"
 	rm -f $(BINARY)
 	@$(color_setup); printf "  $$GREEN$$SYM_OK$$RESET Clean complete.\n"
 
