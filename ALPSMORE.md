@@ -364,8 +364,18 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 - Cache: `/var/cache/alps/more/main.txt`
 - Build: `~/.cache/alps/more/<package>/`
 
-**Fakeroot and GNU Core Utilities installation:**
+### Requirements
+
+- GNU coreutils (mkdir, cp, chmod, gzip, ln)
+- tar (for .tar.gz, .tar.xz, .tar.bz2 archives)
+- unzip (for .zip archives)
+- bash (for running scripts)
+- fakeroot (not needed on Termux)
+- systemctl (for systemd services, not needed on Termux)
+- useradd/userdel (for user management, not needed on Termux)
+
+Install using your system package manager, or ALPS itself:
 
 ```bash
-alps install fakeroot coreutils
+alps install fakeroot coreutils tar unzip bash
 ```
