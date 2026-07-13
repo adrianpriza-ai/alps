@@ -30,8 +30,7 @@ func termuxPrefix() string {
 	return prefix
 }
 
-// wrapWithFakeroot wraps a command with fakeroot if the current operation is
-// install/upgrade, safety mode is strict, not in Termux, and fakeroot is available.
+// wrapWithFakeroot wraps a command with fakeroot if the operation is install/upgrade, safety mode is strict, not in Termux, and fakeroot is available. 
 // Remove/purge are never wrapped — they need real privileges to delete files.
 func wrapWithFakeroot(cmd string, ctx *MacroContext) string {
 	isInstallOp := ctx.Op == OperationInstall || ctx.Op == OperationUpgrade || ctx.Op == ""
@@ -114,8 +113,7 @@ func NewMacroContext(e *Entry, server string) *MacroContext {
 	}
 }
 
-// ParseMacro parses a macro from a command line.
-// Supports both {MACRO arg1 arg2} (args inside braces) and {MACRO} arg1 arg2 (args outside braces).
+// ParseMacro parses a macro from a command line, handling both {MACRO arg1 arg2} (args inside braces) and {MACRO} arg1 arg2 (args outside braces). 
 // Returns (macro, remainingLine, isMacro).
 func ParseMacro(line string) (Macro, string, bool) {
 	if !strings.HasPrefix(line, "{") {
@@ -219,10 +217,7 @@ func expandMacroArgs(macro *Macro, ctx *MacroContext) {
 	}
 }
 
-// combineMacroResult combines the result of a macro execution with any remaining
-// text that follows the macro on the same line.
-// If result is empty the macro was handled internally; the raw line is returned
-// unchanged so legacy macros are preserved.
+// combineMacroResult combines the result of a macro execution with any remaining text on the same line, returning the raw line unchanged.
 func combineMacroResult(rawLine, result, remaining string, macro Macro, ctx *MacroContext) (string, error) {
 	if result == "" {
 		// Legacy / deferred macro — pass the raw line through, but still
@@ -418,8 +413,6 @@ func executeInstallMan(macro Macro, ctx *MacroContext) (string, error) {
 			Type:      "file",
 			Generated: true,
 		})
-		// Return install command using mkdir, cp, chmod, and gzip
-		// We need to copy to the destination without .gz first, then gzip it
 		uncompressedDest := strings.TrimSuffix(dest, ".gz")
 		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s && gzip -f %s", uncompressedDest, macro.Args[0], uncompressedDest, uncompressedDest, uncompressedDest), nil
 	}
@@ -618,9 +611,8 @@ func executeSymlink(macro Macro, ctx *MacroContext) (string, error) {
 	return fmt.Sprintf("ln -sf %s %s", target, link), nil
 }
 
-// executeCreateUser creates a system user.
-// On Termux, useradd is not available, so this is a no-op.
-// Note: Users are NOT tracked for automatic removal as they may be shared between packages.
+// executeCreateUser creates a system user. On Termux, useradd is not available, so this is a no-op. 
+// Users are not tracked for automatic removal as they may be shared between packages.
 func executeCreateUser(macro Macro, ctx *MacroContext) (string, error) {
 	if isTermux() {
 		return "", nil // Termux has no useradd

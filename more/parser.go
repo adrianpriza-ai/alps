@@ -29,10 +29,6 @@ type ExecutionManifest struct {
 }
 
 // Scrape extracts command blocks from an Entry based on the operation type
-// For install: uses cmd_begin/end from main.txt/ALPSMORE
-// For remove: uses remove_begin/end from main.txt/ALPSMORE or installed.json
-// For upgrade: uses upgrade_begin/end from main.txt/ALPSMORE
-// For purge: uses purge_begin/end from main.txt/ALPSMORE or installed.json
 func Scrape(e *Entry, op OperationType) ([]string, error) {
 	var lines []string
 
@@ -115,24 +111,13 @@ var AfterEnvMacros = map[string]bool{
 	"REMOVE_USER":     true,
 }
 
-// Filter separates build_env and after_env macros from scraped lines
-// It creates temporary script files for plain shell commands and generates
-// an execution manifest stored in the temp dir (os.TempDir(); /tmp on
-// Linux, $PREFIX/tmp on Termux), named .alps_runner.txt
-//
-// Privilege escalation (sudo/doas/pkexec/su) is stripped from plain shell
-// commands only when the operation is install/upgrade AND safety is strict,
-// because those commands run under fakeroot. Remove/purge and free-mode
-// operations keep their escalation prefixes since they need real privileges.
+// Separates build_env and after_env macros from scraped lines, creates temporary scripts and generates execution manifest in temp dir (os.TempDir(), /tmp), and removes privilege escalation from plain shell commands.
 func Filter(lines []string, ctx *MacroContext, op OperationType) (*ExecutionManifest, error) {
 	manifest := &ExecutionManifest{
 		BuildEnv:  []string{},
 		AfterEnv:  []string{},
 		ScriptNum: 0,
 	}
-
-	// Only strip privilege escalation when the command will run under fakeroot:
-	// install/upgrade operations with safety=strict (and not Termux, not root).
 	stripEsc := false
 	if (op == OperationInstall || op == OperationUpgrade) &&
 		(ctx.Safety == "strict" || ctx.Safety == "") &&
@@ -302,15 +287,8 @@ func ReadManifest() (*ExecutionManifest, error) {
 	return manifest, nil
 }
 
-// ExecuteManifest executes the execution manifest with proper error handling.
-// It runs build_env first, then after_env only if build_env succeeds.
-// On failure, the error is returned directly — no automatic cleanup/remove is attempted.
-// build_env commands are wrapped with fakeroot if safety=strict (macro-level wrapping
-// is preserved, and plain shell scripts get wrapped here too).
-// after_env commands run with sudo (real root) since fakeroot only simulates ownership.
+// Executes execution manifest with proper error handling, wraps build_env and after_env with fakeroot if safety=strict, and avoids automatic cleanup/removal.
 func ExecuteManifest(manifest *ExecutionManifest, e *Entry, op OperationType, ctx *MacroContext) error {
-	// For after_env operations, always use sudo (like pacman)
-	// unless running in Termux
 	afterEnvSudo := !isTermux()
 
 	// Get build directory for macro context and change to it
@@ -343,11 +321,7 @@ func ExecuteManifest(manifest *ExecutionManifest, e *Entry, op OperationType, ct
 				cmd = expanded[0]
 			}
 
-			// Wrap build_env commands with fakeroot only for install/upgrade
-			// operations under strict safety. Remove/purge need real privileges to
-			// actually delete system files, so they must never run under fakeroot.
-			// Macros already wrap with fakeroot via wrapWithFakeroot(), so we only
-			// wrap plain shell commands (scripts) that don't already have fakeroot.
+			// Wraps build_env and after_env with fakeroot for install/upgrade operations, removing permissions and purge system files.
 			if (op == OperationInstall || op == OperationUpgrade) &&
 				(ctx.Safety == "strict" || ctx.Safety == "") && !isTermux() && !isRoot() {
 				if err := requireFakeroot(); err != nil {

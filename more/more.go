@@ -29,18 +29,15 @@ type Entry struct {
 	Arch         []string
 	OS           []string
 	Deps         []string
-	Servers      []string // optional mirror list; falls back to defaultServers if empty
-	Safety       string   // "strict" or "free" (default: "strict")
+	Servers      []string
+	Safety       string
 	CmdLines     []string
 	RemoveLines  []string
 	UpgradeLines []string
 	PurgeLines   []string
-	// Source is set for entries fetched outside alps-more.
-	// Format: "github:user/repo"
-	Source string
+	Source       string
 }
 
-// Parse parses main.txt content.
 func Parse(data []byte) (map[string]*Entry, error) {
 	entries := make(map[string]*Entry)
 	var current *Entry
@@ -54,8 +51,7 @@ func Parse(data []byte) (map[string]*Entry, error) {
 			continue
 		}
 
-		// New package header
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			if current != nil {
 				resolveEntry(entries, current)
 			}
@@ -78,8 +74,7 @@ func Parse(data []byte) (map[string]*Entry, error) {
 		parseKeyValue(line, current)
 	}
 
-	// Save last entry
-	if current != nil {
+		if current != nil {
 		resolveEntry(entries, current)
 	}
 
@@ -100,7 +95,6 @@ func resolveEntry(entries map[string]*Entry, current *Entry) {
 	}
 }
 
-// parseSectionTag handles begin/end section markers and returns true when consumed.
 func parseSectionTag(line string, inCmd, inRemove, inUpgrade, inPurge *bool) bool {
 	switch line {
 	case "cmd_begin":
@@ -129,8 +123,6 @@ func parseSectionTag(line string, inCmd, inRemove, inUpgrade, inPurge *bool) boo
 	return true
 }
 
-// parseSectionBody appends a line to the active section of the entry.
-// Returns true when the line was consumed by an active section.
 func parseSectionBody(line string, e *Entry, inCmd, inRemove, inUpgrade, inPurge bool) bool {
 	switch {
 	case inCmd:
@@ -147,7 +139,6 @@ func parseSectionBody(line string, e *Entry, inCmd, inRemove, inUpgrade, inPurge
 	return true
 }
 
-// parseKeyValue parses a "key = value" line and populates the entry field.
 func parseKeyValue(line string, e *Entry) {
 	idx := strings.Index(line, "=")
 	if idx < 0 {
@@ -181,7 +172,6 @@ func parseKeyValue(line string, e *Entry) {
 	}
 }
 
-// Find looks up a package by name.
 func Find(name string, cfg *config.Config) (*Entry, error) {
 	exists, expired := CacheStatus()
 	if !exists {
@@ -220,9 +210,7 @@ func Find(name string, cfg *config.Config) (*Entry, error) {
 	return e, nil
 }
 
-// List returns all entries for current distro from main.txt,
-// plus any GitHub-sourced packages currently installed.
-// Official alps-more entries always win on name conflict.
+// List returns entries for the current distro, including GitHub-sourced installs.
 func List(cfg *config.Config) (map[string]*Entry, error) {
 	exists, expired := CacheStatus()
 	if !exists {
@@ -253,16 +241,15 @@ func List(cfg *config.Config) (map[string]*Entry, error) {
 		}
 	}
 
-	// Append GitHub-sourced installed packages not in main.txt.
+		// Append GitHub-sourced installs not in main.txt.
 	records, err := ReadInstalled()
 	if err == nil {
 		for name, rec := range records {
 			if !isRemoteSource(rec.Source) {
 				continue
 			}
-			if _, exists := filtered[name]; exists {
-				// Official entry wins — skip
-				continue
+				if _, exists := filtered[name]; exists {
+					continue
 			}
 			filtered[name] = &Entry{
 				Name:        name,
@@ -279,7 +266,6 @@ func List(cfg *config.Config) (map[string]*Entry, error) {
 	return filtered, nil
 }
 
-// Search returns entries matching query.
 func Search(query string, cfg *config.Config) ([]*Entry, error) {
 	entries, err := List(cfg)
 	if err != nil {
@@ -297,9 +283,7 @@ func Search(query string, cfg *config.Config) ([]*Entry, error) {
 	return results, nil
 }
 
-// Validate checks compatibility.
 func Validate(e *Entry) error {
-	// arch check (required)
 	if len(e.Arch) == 0 {
 		return fmt.Errorf(
 			"package %q has no 'arch' field defined in repo — cannot install safely",
@@ -314,8 +298,7 @@ func Validate(e *Entry) error {
 		)
 	}
 
-	// os/distro check
-	if len(e.OS) == 0 {
+		if len(e.OS) == 0 {
 		return fmt.Errorf(
 			"package %q has no 'os' field defined in repo — cannot install safely",
 			e.Name,
@@ -329,8 +312,7 @@ func Validate(e *Entry) error {
 		)
 	}
 
-	// deps check
-	if len(e.Deps) > 0 {
+		if len(e.Deps) > 0 {
 		var missing []string
 		for _, dep := range e.Deps {
 			if _, err := exec.LookPath(dep); err != nil {
@@ -345,35 +327,29 @@ func Validate(e *Entry) error {
 		}
 	}
 
-	// cmd_begin/cmd_end check (required)
-	if len(e.CmdLines) == 0 {
+		if len(e.CmdLines) == 0 {
 		return fmt.Errorf(
 			"package %q has no install commands (cmd_begin/cmd_end) defined — cannot install",
 			e.Name,
 		)
 	}
 
-	// Safety mode validation
-	if e.Safety == "" {
-		e.Safety = "strict" // default
-	}
+		if e.Safety == "" {
+			e.Safety = "strict"
+		}
 
-	// Remove lines validation based on safety mode
-	if e.Safety == "free" {
-		// Free mode requires remove lines since no automatic tracking
-		if len(e.RemoveLines) == 0 {
+		if e.Safety == "free" {
+			if len(e.RemoveLines) == 0 {
 			return fmt.Errorf(
 				"package %q has safety=free but no remove commands (remove_begin/remove_end) — free mode requires manual remove commands",
 				e.Name,
 			)
 		}
-	}
-	// Strict mode: remove lines are optional (auto-generated from macros)
+		}
 
-	return nil
+		return nil
 }
 
-// Install installs a package from alps-more.
 func Install(e *Entry, cfg *config.Config) error {
 	priv.Invalidate()
 
@@ -398,10 +374,8 @@ func Install(e *Entry, cfg *config.Config) error {
 	return runInstall(e, cfg)
 }
 
-// InstallFromGitHub fetches an ALPSMORE file from a GitHub repo and installs it.
-// repoPath must be in the form "user/repo".
-// Official alps-more entries always take priority — if the package name exists
-// in main.txt, that entry is used instead.
+// InstallFromGitHub fetches an ALPSMORE file and installs it.
+// Official alps-more entries take priority.
 func InstallFromGitHub(repoPath string, cfg *config.Config) error {
 	fmt.Printf("  fetching ALPSMORE from github.com/%s...\n", repoPath)
 

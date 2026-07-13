@@ -7,10 +7,10 @@ import (
 
 // RemoteRef identifies an ALPSMORE file hosted on a git forge.
 type RemoteRef struct {
-	Provider string // github, gitlab, codeberg
-	Host     string // e.g. github.com, gitlab.archlinux.org
-	RepoPath string // namespace/project path
-	Branch   string // empty = try default branches
+	Provider string
+	Host     string
+	RepoPath string
+	Branch   string
 }
 
 func defaultHost(provider string) string {
@@ -39,11 +39,7 @@ func providerFromHost(host string) string {
 	}
 }
 
-// ParseRemoteURL parses a user-facing remote URL such as:
-//   - github.com/user/repo
-//   - github.com/user/repo/main
-//   - gitlab.archlinux.org/pacman/pacman/main
-//   - codeberg.org/user/repo@dev
+// ParseRemoteURL parses a user-facing remote URL
 func ParseRemoteURL(input string) (*RemoteRef, error) {
 	input = strings.TrimSpace(input)
 	input = strings.TrimPrefix(input, "https://")
@@ -84,11 +80,7 @@ func ParseRemoteURL(input string) (*RemoteRef, error) {
 	return ref, nil
 }
 
-// ParseSource decodes a stored source string such as:
-//   - github:user/repo
-//   - github:user/repo@main
-//   - gitlab@gitlab.archlinux.org:pacman/pacman@main
-//   - codeberg:user/repo@dev
+// ParseSource decodes a stored source string
 func ParseSource(source string) (*RemoteRef, error) {
 	colon := strings.Index(source, ":")
 	if colon < 0 {

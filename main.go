@@ -217,6 +217,18 @@ func runPkg(subcmd string, args []string, cfg *config.Config) {
 	_, flags := splitFlagsAll(args)
 	dryRun := flags.DryRun
 
+	// Check if the backend supports this command
+	if !pack.CommandSupported(backend, subcmd) {
+		ui.Msgf(cfg, ui.LevelError, "Command '%s' is not supported by %s", subcmd, backend)
+		os.Exit(1)
+	}
+
+	// Handle edit-sources command
+	if subcmd == "edit-sources" {
+		runEditSources(backend, cfg)
+		return
+	}
+
 	if backend == "pacman" && (subcmd == "update" || subcmd == "upgrade") {
 		if !warnPacmanPartialUpgrade(cfg) {
 			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
@@ -372,6 +384,84 @@ func runWithBackendFlagsExt(cmdArgs []string, args []string, cfg *config.Config,
 
 func ensureSudo() error {
 	return priv.Ensure()
+}
+
+func runEditSources(backend string, cfg *config.Config) {
+	var sourcesFile string
+	var editor string
+
+	// Determine the sources file for each backend
+	switch backend {
+	case "apt", "apt-get":
+		sourcesFile = "/etc/apt/sources.list"
+	case "pacman":
+		sourcesFile = "/etc/pacman.conf"
+	case "dnf":
+		sourcesFile = "/etc/yum.repos.d/"
+	case "zypper":
+		sourcesFile = "/etc/zypp/repos.d/"
+	case "apk":
+		sourcesFile = "/etc/apk/repositories"
+	default:
+		ui.Msgf(cfg, ui.LevelError, "edit-sources is not supported for %s", backend)
+		os.Exit(1)
+	}
+
+	// Determine the editor to use
+	editor = os.Getenv("EDITOR")
+	if editor == "" {
+		editor = os.Getenv("VISUAL")
+	}
+	if editor == "" {
+		// Try common editors
+		for _, e := range []string{"nano", "vim", "vi", "editor"} {
+			if _, err := exec.LookPath(e); err == nil {
+				editor = e
+				break
+			}
+		}
+	}
+
+	if editor == "" {
+		ui.Msg(cfg, ui.LevelError, "No editor found. Please set EDITOR or VISUAL environment variable.")
+		os.Exit(1)
+	}
+
+	// Check if we need sudo
+	needSudo := needsSudo(backend)
+	if needSudo {
+		if err := ensureSudo(); err != nil {
+			ui.Msg(cfg, ui.LevelError, "privilege escalation failed")
+			os.Exit(1)
+		}
+	}
+
+	ui.Msgf(cfg, ui.LevelInfo, "Opening %s with %s...", sourcesFile, editor)
+
+	var cmd *exec.Cmd
+	var err error
+
+	if needSudo {
+		cmd, err = priv.Command(editor, sourcesFile)
+	} else {
+		cmd = exec.Command(editor, sourcesFile)
+	}
+
+	if err != nil {
+		ui.Msgf(cfg, ui.LevelError, "%v", err)
+		os.Exit(1)
+	}
+
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		ui.Msgf(cfg, ui.LevelError, "Failed to open editor: %v", err)
+		os.Exit(1)
+	}
+
+	ui.Msg(cfg, ui.LevelOK, "Done.")
 }
 
 func runPacmanAutoremove(cfg *config.Config) {
