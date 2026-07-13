@@ -15,6 +15,8 @@ make build
 > - Arch: `sudo pacman -S go`
 > - Debian/Ubuntu: `sudo apt install golang-go`
 > - Fedora: `sudo dnf install golang`
+> - OpenSUSE: `sudo zypper install go`
+> - Alpine Linux: `apk add --no-cache go`
 
 ## Project Structure
 
