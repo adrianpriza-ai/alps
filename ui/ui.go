@@ -102,7 +102,7 @@ func padRight(str string, w int) string {
 	return str + strings.Repeat(" ", pad)
 }
 
-// printRow prints one "bullet  command   description" line, padding the command column to cmdW. 
+// printRow prints one "bullet  command   description" line, padding the command column to cmdW.
 // Built with string concatenation (not a single Printf) so the number of %s verbs can never drift out of sync.
 func printRow(cfg *config.Config, cmdW int, cmd, desc string) {
 	s := cfg.Style
@@ -270,7 +270,7 @@ func isFlatpakAvailable() bool {
 // arrow and target command line up across every row.
 const aliasColWidth = 8
 
-// printAliasRow prints one "short -> target" line with aligned columns. 
+// printAliasRow prints one "short -> target" line with aligned columns.
 // Built with string concatenation (not a single Printf) to avoid the %s-verb / argument-count mismatch.
 func printAliasRow(cfg *config.Config, short, target string) {
 	s := cfg.Style

@@ -149,7 +149,7 @@ type Flags struct {
 	Force     bool
 }
 
-// ParseFlags splits raw args into package names and Flags struct. 
+// ParseFlags splits raw args into package names and Flags struct.
 // Recognized alps flags: / -n simulate, no changes written, / -y skip confirmation prompts, / -v enable verbose output, / -q suppress non-error output, / -f force operation (skip safety checks).
 func ParseFlags(args []string) (pkgs []string, dryRun, noConfirm bool) {
 	for _, a := range args {
@@ -188,7 +188,7 @@ func ParseFlagsExt(args []string) (pkgs []string, f Flags) {
 	return
 }
 
-// BuildExtraFlags assembles the extra flags slice to append to a backend command based on the resolved Flags state. 
+// BuildExtraFlags assembles the extra flags slice to append to a backend command based on the resolved Flags state.
 // Pass the backend name so the correct native flags are emitted.
 func BuildExtraFlags(backendName string, dryRun, noConfirm bool) []string {
 	return BuildExtraFlagsExt(backendName, Flags{DryRun: dryRun, NoConfirm: noConfirm})

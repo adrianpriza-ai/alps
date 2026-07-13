@@ -30,7 +30,7 @@ func termuxPrefix() string {
 	return prefix
 }
 
-// wrapWithFakeroot wraps a command with fakeroot if the operation is install/upgrade, safety mode is strict, not in Termux, and fakeroot is available. 
+// wrapWithFakeroot wraps a command with fakeroot if the operation is install/upgrade, safety mode is strict, not in Termux, and fakeroot is available.
 // Remove/purge are never wrapped — they need real privileges to delete files.
 func wrapWithFakeroot(cmd string, ctx *MacroContext) string {
 	isInstallOp := ctx.Op == OperationInstall || ctx.Op == OperationUpgrade || ctx.Op == ""
@@ -113,7 +113,7 @@ func NewMacroContext(e *Entry, server string) *MacroContext {
 	}
 }
 
-// ParseMacro parses a macro from a command line, handling both {MACRO arg1 arg2} (args inside braces) and {MACRO} arg1 arg2 (args outside braces). 
+// ParseMacro parses a macro from a command line, handling both {MACRO arg1 arg2} (args inside braces) and {MACRO} arg1 arg2 (args outside braces).
 // Returns (macro, remainingLine, isMacro).
 func ParseMacro(line string) (Macro, string, bool) {
 	if !strings.HasPrefix(line, "{") {
@@ -611,7 +611,7 @@ func executeSymlink(macro Macro, ctx *MacroContext) (string, error) {
 	return fmt.Sprintf("ln -sf %s %s", target, link), nil
 }
 
-// executeCreateUser creates a system user. On Termux, useradd is not available, so this is a no-op. 
+// executeCreateUser creates a system user. On Termux, useradd is not available, so this is a no-op.
 // Users are not tracked for automatic removal as they may be shared between packages.
 func executeCreateUser(macro Macro, ctx *MacroContext) (string, error) {
 	if isTermux() {

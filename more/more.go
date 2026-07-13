@@ -51,7 +51,7 @@ func Parse(data []byte) (map[string]*Entry, error) {
 			continue
 		}
 
-			if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			if current != nil {
 				resolveEntry(entries, current)
 			}
@@ -74,7 +74,7 @@ func Parse(data []byte) (map[string]*Entry, error) {
 		parseKeyValue(line, current)
 	}
 
-		if current != nil {
+	if current != nil {
 		resolveEntry(entries, current)
 	}
 
@@ -241,15 +241,15 @@ func List(cfg *config.Config) (map[string]*Entry, error) {
 		}
 	}
 
-		// Append GitHub-sourced installs not in main.txt.
+	// Append GitHub-sourced installs not in main.txt.
 	records, err := ReadInstalled()
 	if err == nil {
 		for name, rec := range records {
 			if !isRemoteSource(rec.Source) {
 				continue
 			}
-				if _, exists := filtered[name]; exists {
-					continue
+			if _, exists := filtered[name]; exists {
+				continue
 			}
 			filtered[name] = &Entry{
 				Name:        name,
@@ -298,7 +298,7 @@ func Validate(e *Entry) error {
 		)
 	}
 
-		if len(e.OS) == 0 {
+	if len(e.OS) == 0 {
 		return fmt.Errorf(
 			"package %q has no 'os' field defined in repo — cannot install safely",
 			e.Name,
@@ -312,7 +312,7 @@ func Validate(e *Entry) error {
 		)
 	}
 
-		if len(e.Deps) > 0 {
+	if len(e.Deps) > 0 {
 		var missing []string
 		for _, dep := range e.Deps {
 			if _, err := exec.LookPath(dep); err != nil {
@@ -327,27 +327,27 @@ func Validate(e *Entry) error {
 		}
 	}
 
-		if len(e.CmdLines) == 0 {
+	if len(e.CmdLines) == 0 {
 		return fmt.Errorf(
 			"package %q has no install commands (cmd_begin/cmd_end) defined — cannot install",
 			e.Name,
 		)
 	}
 
-		if e.Safety == "" {
-			e.Safety = "strict"
-		}
+	if e.Safety == "" {
+		e.Safety = "strict"
+	}
 
-		if e.Safety == "free" {
-			if len(e.RemoveLines) == 0 {
+	if e.Safety == "free" {
+		if len(e.RemoveLines) == 0 {
 			return fmt.Errorf(
 				"package %q has safety=free but no remove commands (remove_begin/remove_end) — free mode requires manual remove commands",
 				e.Name,
 			)
 		}
-		}
+	}
 
-		return nil
+	return nil
 }
 
 func Install(e *Entry, cfg *config.Config) error {
