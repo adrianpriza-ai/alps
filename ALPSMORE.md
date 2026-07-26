@@ -8,16 +8,16 @@ ALPSMORE files are INI-style metadata files for the **alps-more** cross-distro s
 
 ### Users
 ```bash
-alps repo update              # refresh cache
-alps repo search <pkg>        # search
-alps repo list                # list available
-alps repo list install        # list installed
-alps repo install <pkg>       # install
-alps repo install github.com/user/repo  # install from GitHub
-alps repo upgrade [pkg]       # upgrade
-alps repo remove <pkg>        # remove
-alps repo purge <pkg>         # remove + delete config
-alps repo clean               # remove build cache
+alps repo update                       # refresh cache
+alps repo search <pkg>                 # search
+alps repo list                         # list available
+alps repo list install                 # list installed
+alps repo install <pkg>                # install
+alps repo install github.com/user/repo # install from GitHub
+alps repo upgrade [pkg]                # upgrade
+alps repo remove <pkg>                 # remove
+alps repo purge <pkg>                  # remove + delete config
+alps repo clean                        # remove build cache
 ```
 
 ### Authors
@@ -74,16 +74,16 @@ purge_end
 
 ### Required Fields
 | Field | Values |
-|-------|--------|
+|-|-|
 | `[name]` | Package name (header) |
 | `arch` | `x86_64`, `aarch64`, `armv7l`, `i686` |
-| `os` | `linux`, `debian`, `ubuntu`, `arch`, `fedora`, `alpine`, `termux`, `wsl` |
+| `os` | `linux`, `debian`, `ubuntu`, `arch`, `fedora`, `alpine`, `termux`, `wsl`, `macos`, `darwin` |
 | `cmd_begin`/`cmd_end` | Install commands (required) |
 | `remove_begin`/`remove_end` | Required in free mode, optional in strict mode (auto-generated) |
 
 ### Optional Fields
 | Field | Values | Description |
-|-------|--------|-------------|
+|-|-|-|
 | `safety` | `strict`, `free` | Safety mode (default: `strict`) |
 | `desc` | Text | Package description |
 | `author` | Text | Package author/maintainer |
@@ -92,6 +92,49 @@ purge_end
 | `deps` | Binary names | Required system dependencies |
 | `upgrade_begin`/`upgrade_end` | Commands | Custom upgrade commands |
 | `purge_begin`/`purge_end` | Commands | Config/data cleanup commands |
+
+---
+
+## Platform Support
+
+### macOS Support
+
+ALPSMORE fully supports macOS with the following considerations:
+
+**OS Tags:**
+- Use `os = macos` or `os = darwin` for macOS-specific entries
+- Both tags are equivalent and will match on macOS systems
+
+**Directory Structure:**
+- Build directory: `~/.cache/alps/more/<package>/`
+- State directory: `~/Library/Application Support/alps`
+- Cache directory: `~/Library/Caches/alps/more`
+
+**Install Paths:**
+- Respects `HOMEBREW_PREFIX` environment variable if set
+- Defaults to `/usr/local` for binaries, libraries, and configs
+- Uses macOS-standard directory structure
+
+**Macro Behavior:**
+- Systemd service macros (ENABLE_SERVICE, START_SERVICE, etc.) are no-ops on macOS
+- User management macros (CREATE_USER, REMOVE_USER) are no-ops on macOS
+- Fakeroot wrapping is automatically skipped on macOS
+- All other macros work normally on macOS
+
+**Example macOS Entry:**
+```ini
+[mytool]
+version = 1.0.0
+desc = My tool for macOS
+os = macos
+arch = x86_64, arm64
+
+cmd_begin
+  {DOWNLOAD} https://example.com/mytool-{ARCH}.tar.gz
+  {EXTRACT} mytool-{ARCH}.tar.gz
+  {INSTALL_BIN} mytool
+cmd_end
+```
 
 ---
 
@@ -120,12 +163,12 @@ purge_end
 
 ### Placeholders (expanded before execution)
 | Placeholder | Example | Description |
-|------------|---------|-------------|
+|-|-|-|
 | `{ARCH}` | `x86_64` | Normalized architecture |
 | `{OS}` | `linux` | Operating system (`runtime.GOOS`) |
 | `{DISTRO}` | `ubuntu` | Linux distribution ID from `/etc/os-release` |
 | `{VERSION}` | `1.0.0` | Package version from entry definition |
-| `{PKG_DIR}` | `~/.cache/alps/more/myapp/` | Build directory path for the package |
+| `{PKG_DIR}` | `~/.cache/alps/more/myapp/` | Build directory path for the package (same on all platforms) |
 | `{SERVER}` | `https://mirror.example.com/` | Resolved mirror base URL |
 | `{PKGNAME}` | `myapp` | Package name |
 | `{DISVER}` | `22.04` | Distro version |
@@ -135,7 +178,7 @@ purge_end
 Execute during the build phase, before installation. In strict mode, these run under `fakeroot` for safe file operations.
 
 | Macro | Syntax | Behavior |
-|-------|--------|----------|
+|-|-|-|
 | `{DOWNLOAD}` | `{DOWNLOAD} URL [FILE]` | Download file to build directory using Go's HTTP client |
 | `{BASH_RUN}` | `{BASH_RUN} /path/to/script [args]` | Download (if URL) and execute shell script via `bash` |
 | `{SH}` | `{SH} PATH` | Execute script with `bash` (or `sh` as fallback) |
@@ -146,7 +189,7 @@ Execute during the build phase, before installation. In strict mode, these run u
 Execute after the build phase completes, using `sudo` for real system access (skipped on Termux). All paths are tracked for automatic uninstall.
 
 | Macro | Syntax | Behavior |
-|-------|--------|----------|
+|-|-|-|
 | `{INSTALL_BIN}` | `{INSTALL_BIN} SOURCE [DEST]` | Install binary to `/usr/bin/` or DEST (755) |
 | `{INSTALL_LIB}` | `{INSTALL_LIB} SOURCE [DEST]` | Install library to `/usr/lib/` or DEST (644) |
 | `{INSTALL_CONF}` | `{INSTALL_CONF} SOURCE [DEST]` | Install config to `/etc/` or DEST (644) |
@@ -277,9 +320,16 @@ When using structured macros (`{INSTALL_BIN}`, `{INSTALL_LIB}`, etc.), ALPS auto
   - **Strict mode**: Build commands run in fakeroot if available, file operations run after without fakeroot
   - **Free mode**: Never uses fakeroot
   - **Termux**: Skips fakeroot (owns its prefix)
+  - **macOS**: Skips fakeroot (not available)
 - **Deferred execution**: File installation macros run after all build commands complete
 - **Immediate execution**: Archives, services, user management run during build phase
 - **Cleanup**: On install/upgrade failure, removes tracked owned items automatically
+- **macOS-specific behavior:**
+  - No fakeroot wrapping (not available on macOS)
+  - No systemd support (service macros are no-ops)
+  - No user management (user macros are no-ops)
+  - Respects Homebrew prefix for install paths
+  - Uses macOS-standard directories for state and cache
 
 ---
 
@@ -307,9 +357,9 @@ When using structured macros (`{INSTALL_BIN}`, `{INSTALL_LIB}`, etc.), ALPS auto
 ## State Files
 
 | File | Location | Purpose |
-|------|----------|---------|
-| `main.txt` | `/var/cache/alps/more/main.txt` | Cached repo index (Termux: `$PREFIX/var/cache/alps/more/`) |
-| `installed.json` | `/var/lib/alps/installed.json` | Installed packages + owned items (Termux: `$PREFIX/var/lib/alps/`) |
+|-|-|-|
+| `main.txt` | `/var/cache/alps/more/main.txt` | Cached repo index (Termux: `$PREFIX/var/cache/alps/more/`, macOS: `~/Library/Caches/alps/more/main.txt`) |
+| `installed.json` | `/var/lib/alps/installed.json` | Installed packages + owned items (Termux: `$PREFIX/var/lib/alps/`, macOS: `~/Library/Application Support/alps/installed.json`) |
 
 Cache expires after 90 days; run `alps repo update` to refresh.
 
@@ -349,7 +399,7 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 ## Troubleshooting
 
 | Issue | Solution |
-|-------|----------|
+|-|-|
 | Package not found | Run `alps repo update` |
 | Cache missing/expired | Run `alps repo update` |
 | Wrong architecture | Check `arch` field supports your CPU |
@@ -360,22 +410,32 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 | Missing remove commands in free mode | Add `remove_begin`/`remove_end` blocks (required in free mode) |
 
 **Debug locations:**
-- Installed: `/var/lib/alps/installed.json` (contains `owned_items`)
-- Cache: `/var/cache/alps/more/main.txt`
-- Build: `~/.cache/alps/more/<package>/`
+- Installed:
+  - Linux: `/var/lib/alps/installed.json`
+  - Termux: `$PREFIX/var/lib/alps/installed.json`
+  - macOS: `~/Library/Application Support/alps/installed.json`
+- Cache:
+  - Linux: `/var/cache/alps/more/main.txt`
+  - Termux: `$PREFIX/var/cache/alps/more/main.txt`
+  - macOS: `~/Library/Caches/alps/more/main.txt`
+- Build: `~/.cache/alps/more/<package>/` (all platforms)
 
 ### Requirements
 
-- GNU coreutils (mkdir, cp, chmod, gzip, ln)
-- tar (for .tar.gz, .tar.xz, .tar.bz2 archives)
-- unzip (for .zip archives)
-- bash (for running scripts)
-- fakeroot (not needed on Termux)
-- systemctl (for systemd services, not needed on Termux)
-- useradd/userdel (for user management, not needed on Termux)
+**Common (all platforms):**
+- bash
+- tar & unzip
+- GNU coreutils
 
-Install using your system package manager, or ALPS itself:
+**Linux-specific:**
+- fakeroot (for strict mode)
+- systemctl (for service macros)
+- useradd/userdel (for user management)
 
-```bash
-alps install fakeroot coreutils tar unzip bash
-```
+**macOS:**
+- Most tools included with macOS
+- Homebrew (optional, for additional tools)
+
+**Termux:**
+- Uses Termux environment
+- No additional requirements

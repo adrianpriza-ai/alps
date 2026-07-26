@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -37,6 +39,11 @@ var defaultServers = []string{
 // defaultBranches are tried when no branch is specified.
 var defaultBranches = []string{"HEAD", "main", "master"}
 
+// isMacOS checks if running on macOS.
+func isMacOS() bool {
+	return runtime.GOOS == "darwin"
+}
+
 // getCacheDir returns the cache directory (expendable — main.txt, last_sync).
 func getCacheDir() string {
 	if isTermux() {
@@ -46,12 +53,21 @@ func getCacheDir() string {
 		}
 		return filepath.Join(prefix, "var/cache/alps/more")
 	}
+	if runtime.GOOS == "darwin" {
+		// On macOS, use ~/Library/Caches/alps/more for user cache
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return defaultCacheDir
+		}
+		return filepath.Join(home, "Library", "Caches", "alps", "more")
+	}
 	return defaultCacheDir
 }
 
 // getLibDir returns the state directory (persistent — installed.json).
 // /var/lib/ is the FHS standard for application state that must survive cache cleans.
 // On Termux: $PREFIX/var/lib/alps (same rationale, different root).
+// On macOS: ~/Library/Application Support/alps (standard macOS app support dir).
 func getLibDir() string {
 	if isTermux() {
 		prefix := os.Getenv("PREFIX")
@@ -59,6 +75,14 @@ func getLibDir() string {
 			prefix = "/data/data/com.termux/files/usr"
 		}
 		return filepath.Join(prefix, "var/lib/alps")
+	}
+	if runtime.GOOS == "darwin" {
+		// On macOS, use ~/Library/Application Support/alps for persistent state
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return defaultLibDir
+		}
+		return filepath.Join(home, "Library", "Application Support", "alps")
 	}
 	return defaultLibDir
 }
@@ -70,7 +94,8 @@ func getInstalledFile() string { return filepath.Join(getLibDir(), "installed.js
 // ensureCacheDir creates the cache directory.
 func ensureCacheDir() error {
 	dir := getCacheDir()
-	if isTermux() {
+	if isTermux() || runtime.GOOS == "darwin" {
+		// Termux and macOS use user directories, no sudo needed
 		return os.MkdirAll(dir, 0755)
 	}
 	cmd := exec.Command("sudo", "mkdir", "-p", dir)
@@ -82,7 +107,8 @@ func ensureCacheDir() error {
 // ensureLibDir creates the state directory.
 func ensureLibDir() error {
 	dir := getLibDir()
-	if isTermux() {
+	if isTermux() || runtime.GOOS == "darwin" {
+		// Termux and macOS use user directories, no sudo needed
 		return os.MkdirAll(dir, 0755)
 	}
 	cmd := exec.Command("sudo", "mkdir", "-p", dir)
@@ -93,7 +119,8 @@ func ensureLibDir() error {
 
 // writeCacheFile writes data to a cache path.
 func writeCacheFile(path string, data []byte) error {
-	if isTermux() {
+	if isTermux() || runtime.GOOS == "darwin" {
+		// Termux and macOS use user directories, no sudo needed
 		return os.WriteFile(path, data, 0644)
 	}
 	cmd := exec.Command("sudo", "tee", path)
@@ -168,14 +195,14 @@ func fetchRace() (data []byte, src string, err error) {
 	var lastErr error
 	for range sources {
 		r := <-ch
-		if r.err == nil && hasValidEntries(r.data) {
-			return r.data, r.src, nil
-		}
 		if r.err != nil {
 			lastErr = r.err
-		} else {
-			lastErr = fmt.Errorf("invalid content from %s", r.src)
+			continue
 		}
+		if hasValidEntries(r.data) {
+			return r.data, r.src, nil
+		}
+		lastErr = fmt.Errorf("invalid content from %s", r.src)
 	}
 	return nil, "", fmt.Errorf("all sources failed: %w", lastErr)
 }
@@ -302,23 +329,61 @@ func downloadWithRetry(url string) ([]byte, error) {
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
 }
 
-func downloadOnce(url string) ([]byte, error) {
+func isAllowedURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	allowedDomains := []string{
+		"github.com",
+		".github.com",
+		"githubusercontent.com",
+		".githubusercontent.com",
+		"github.io",
+		".github.io",
+		"gitlab.com",
+		".gitlab.com",
+		"codeberg.org",
+		".codeberg.org",
+		"codeberg.page",
+		".codeberg.page",
+	}
+	for _, domain := range allowedDomains {
+		if strings.HasPrefix(domain, ".") {
+			if strings.HasSuffix(host, domain) {
+				return true
+			}
+		} else if host == domain {
+			return true
+		}
+	}
+	return false
+}
+
+func downloadOnce(rawURL string) ([]byte, error) {
+	if !isAllowedURL(rawURL) {
+		return nil, fmt.Errorf("disallowed download URL host/scheme: %s", rawURL)
+	}
 	client := &http.Client{Timeout: downloadTimeout}
-	resp, err := client.Get(url)
+	resp, err := client.Get(rawURL)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, rawURL)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if len(body) == 0 {
-		return nil, fmt.Errorf("empty response from %s", url)
+		return nil, fmt.Errorf("empty response from %s", rawURL)
 	}
 	return body, nil
 }

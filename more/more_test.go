@@ -17,6 +17,15 @@ func TestDetectDistroVersion(t *testing.T) {
 		if version != expected {
 			t.Errorf("expected termux version %q, got %q", expected, version)
 		}
+	} else if isMacOS() {
+		// On macOS, sw_vers -productVersion should return a non-empty version string
+		if version == "" {
+			t.Errorf("expected non-empty macOS version, got empty string")
+		}
+		// macOS versions look like "14.5" or "13.6.1"
+		if version != "unknown" && !strings.Contains(version, ".") {
+			t.Errorf("expected macOS version to contain a dot (e.g. 14.5), got %q", version)
+		}
 	} else {
 		// On standard Linux/WSL, check if /etc/os-release exists and matches
 		data, err := os.ReadFile("/etc/os-release")
@@ -67,6 +76,20 @@ func TestExpandMacrosDisver(t *testing.T) {
 }
 
 func TestOSMatches(t *testing.T) {
+	// If the system is macOS, it should match "darwin" and "macos", but NOT "linux"
+	if isMacOS() {
+		if !osMatches([]string{"darwin"}, "macos", []string{"darwin", "macos"}) {
+			t.Errorf("expected 'darwin' to match on macOS")
+		}
+		if !osMatches([]string{"macos"}, "macos", []string{"darwin", "macos"}) {
+			t.Errorf("expected 'macos' to match on macOS")
+		}
+		if osMatches([]string{"linux"}, "macos", []string{"darwin", "macos"}) {
+			t.Errorf("expected 'linux' to NOT match on macOS")
+		}
+		return
+	}
+
 	// If the system is WSL, it should now match "linux"
 	// If the system is standard Linux, it should match "linux"
 	// If the system is Termux, it should NOT match "linux"
@@ -266,7 +289,7 @@ func TestExecuteManifestFakeroot(t *testing.T) {
 	if err != nil {
 		// If fakeroot is required but not installed, this could fail, which is expected.
 		// Let's check if fakeroot exists first.
-		if !hasFakeroot() && !isTermux() {
+		if !hasFakeroot() && !isTermux() && !isMacOS() {
 			if !strings.Contains(err.Error(), "fakeroot is required") {
 				t.Errorf("expected 'fakeroot is required' error when fakeroot is missing, got: %v", err)
 			}
@@ -283,7 +306,7 @@ func TestExecuteManifestFakeroot(t *testing.T) {
 	}
 
 	uidStr := strings.TrimSpace(string(data))
-	if !isTermux() && hasFakeroot() {
+	if !isTermux() && !isMacOS() && hasFakeroot() {
 		if uidStr != "0" {
 			t.Errorf("expected uid to be 0 under fakeroot, got %q", uidStr)
 		}
@@ -310,12 +333,84 @@ func TestExecuteManifestFakeroot(t *testing.T) {
 	}
 
 	uidStrFree := strings.TrimSpace(string(dataFree))
-	if !isTermux() && hasFakeroot() {
+	if !isTermux() && !isMacOS() && hasFakeroot() {
 		// If running as a normal user under free mode, uid should not be 0
 		// (Unless the test itself is running as root)
 		if os.Getuid() != 0 && uidStrFree == "0" {
 			t.Errorf("expected uid to not be 0 under free mode, got %q", uidStrFree)
 		}
+	}
+}
+
+// TestMacOS validates macOS-specific behaviour: correct OS detection, platform
+// directories, and no-op for Linux-only macros (systemd services, useradd).
+func TestMacOS(t *testing.T) {
+	if !isMacOS() {
+		t.Skip("skipping macOS-specific tests on non-macOS system")
+	}
+
+	// detectDistro should return "macos"
+	distro, idLike := detectDistro()
+	if distro != "macos" {
+		t.Errorf("expected distro %q on macOS, got %q", "macos", distro)
+	}
+	foundDarwin := false
+	for _, l := range idLike {
+		if l == "darwin" {
+			foundDarwin = true
+		}
+	}
+	if !foundDarwin {
+		t.Errorf("expected idLike to contain %q on macOS, got %v", "darwin", idLike)
+	}
+
+	// Cache dir should be inside ~/Library/Caches
+	cacheDir := getCacheDir()
+	if !strings.Contains(cacheDir, "Library/Caches") {
+		t.Errorf("expected cache dir to be under Library/Caches on macOS, got %q", cacheDir)
+	}
+
+	// Lib dir should be inside ~/Library/Application Support
+	libDir := getLibDir()
+	if !strings.Contains(libDir, "Library/Application Support") {
+		t.Errorf("expected lib dir to be under Library/Application Support on macOS, got %q", libDir)
+	}
+
+	// Service macros should be no-ops on macOS
+	ctx := NewMacroContext(&Entry{Name: "test", Safety: "strict"}, "")
+	for _, macroName := range []string{"ENABLE_SERVICE", "DISABLE_SERVICE", "START_SERVICE", "STOP_SERVICE", "RESTART_SERVICE", "INSTALL_SERVICE"} {
+		m := Macro{Name: macroName, Args: []string{"myservice"}}
+		result, err := executeMacro(m, ctx)
+		if err != nil {
+			t.Errorf("%s macro on macOS returned unexpected error: %v", macroName, err)
+		}
+		if result != "" {
+			t.Errorf("%s macro on macOS should return empty string (no-op), got %q", macroName, result)
+		}
+	}
+
+	// User macros should be no-ops on macOS
+	for _, macroName := range []string{"CREATE_USER", "REMOVE_USER"} {
+		m := Macro{Name: macroName, Args: []string{"myuser"}}
+		result, err := executeMacro(m, ctx)
+		if err != nil {
+			t.Errorf("%s macro on macOS returned unexpected error: %v", macroName, err)
+		}
+		if result != "" {
+			t.Errorf("%s macro on macOS should return empty string (no-op), got %q", macroName, result)
+		}
+	}
+
+	// requireFakeroot should not error on macOS (exempt)
+	if err := requireFakeroot(); err != nil {
+		t.Errorf("requireFakeroot() should be a no-op on macOS, got error: %v", err)
+	}
+
+	// wrapWithFakeroot should not wrap on macOS
+	origCmd := "make install"
+	wrapped := wrapWithFakeroot(origCmd, ctx)
+	if wrapped != origCmd {
+		t.Errorf("wrapWithFakeroot on macOS should not wrap the command; got %q", wrapped)
 	}
 }
 
@@ -353,6 +448,63 @@ func TestStripSudo(t *testing.T) {
 		actual := stripSudo(tc.input)
 		if actual != tc.expected {
 			t.Errorf("stripSudo(%q) = %q; expected %q", tc.input, actual, tc.expected)
+		}
+	}
+}
+
+func TestIsAllowedURL(t *testing.T) {
+	validURLs := []string{
+		"https://github.com/foo/bar",
+		"https://raw.githubusercontent.com/foo/bar/main/file.txt",
+		"https://adrianpriza-ai.github.io/alps-more/main.txt",
+		"https://codeberg.org/user/repo/raw/branch/main/file",
+		"https://moreland.codeberg.page/alps-more/main.txt",
+		"https://gitlab.com/user/repo/-/raw/main/file",
+	}
+
+	invalidURLs := []string{
+		"http://evil.com/payload.sh",
+		"https://attacker.org/malware",
+		"ftp://github.com/file",
+		"file:///etc/passwd",
+	}
+
+	for _, url := range validURLs {
+		if !isAllowedURL(url) {
+			t.Errorf("expected URL %q to be allowed", url)
+		}
+	}
+
+	for _, url := range invalidURLs {
+		if isAllowedURL(url) {
+			t.Errorf("expected URL %q to be rejected", url)
+		}
+	}
+}
+
+func TestValidateSafePath(t *testing.T) {
+	validPaths := []string{
+		"bin/app",
+		"/usr/bin/app",
+		"config.conf",
+		"dir/subdir/file",
+	}
+
+	invalidPaths := []string{
+		"../etc/passwd",
+		"dir/../../etc/passwd",
+		"../../bin/sh",
+	}
+
+	for _, path := range validPaths {
+		if err := validateSafePath(path); err != nil {
+			t.Errorf("expected path %q to be valid, got error: %v", path, err)
+		}
+	}
+
+	for _, path := range invalidPaths {
+		if err := validateSafePath(path); err == nil {
+			t.Errorf("expected path %q to be rejected for path traversal", path)
 		}
 	}
 }

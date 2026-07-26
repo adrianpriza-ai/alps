@@ -210,7 +210,7 @@ func runPkg(subcmd string, args []string, cfg *config.Config) {
 	ui.PrintHeader(cfg)
 
 	if backend == "" {
-		ui.Msg(cfg, ui.LevelError, "No supported package manager found (apt/dnf/pacman/zypper/apk)")
+		ui.Msg(cfg, ui.LevelError, "No supported package manager found (apt/dnf/pacman/zypper/apk/brew)")
 		os.Exit(1)
 	}
 
@@ -260,6 +260,9 @@ func runPkg(subcmd string, args []string, cfg *config.Config) {
 		default:
 			runPkgDefault(backend, subcmd, args, flags, cfg)
 		}
+	case "brew":
+		// brew doesn't need special handling like pacman/aur fallback
+		runPkgDefault(backend, subcmd, args, flags, cfg)
 	default:
 		runPkgDefault(backend, subcmd, args, flags, cfg)
 	}
@@ -402,6 +405,10 @@ func runEditSources(backend string, cfg *config.Config) {
 		sourcesFile = "/etc/zypp/repos.d/"
 	case "apk":
 		sourcesFile = "/etc/apk/repositories"
+	case "brew":
+		sourcesFile = "" // brew doesn't have a traditional sources file
+		ui.Msgf(cfg, ui.LevelInfo, "brew doesn't use traditional sources files. Use 'brew tap' to add repositories.")
+		return
 	default:
 		ui.Msgf(cfg, ui.LevelError, "edit-sources is not supported for %s", backend)
 		os.Exit(1)

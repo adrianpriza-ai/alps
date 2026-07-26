@@ -111,7 +111,13 @@ var AfterEnvMacros = map[string]bool{
 	"REMOVE_USER":     true,
 }
 
-// Separates build_env and after_env macros from scraped lines, creates temporary scripts and generates execution manifest in temp dir (os.TempDir(), /tmp), and removes privilege escalation from plain shell commands.
+// Filter separates build_env and after_env macros from scraped lines, creates temporary scripts,
+// and generates an execution manifest.
+// Note on Privilege Escalation & Macro Execution:
+//   - Macros in BuildEnvMacros (DOWNLOAD, BASH_RUN, EXTRACT, SH) and AfterEnvMacros (INSTALL_*, *_SERVICE, *_USER)
+//     are executed by Go with Go-level process privileges during manifest execution.
+//   - Plain shell commands placed into temp scripts are wrapped in fakeroot when running under strict safety
+//     (install/upgrade on Linux as non-root), and any inner sudo/doas/pkexec commands are stripped by stripSudo.
 func Filter(lines []string, ctx *MacroContext, op OperationType) (*ExecutionManifest, error) {
 	manifest := &ExecutionManifest{
 		BuildEnv:  []string{},
@@ -121,7 +127,7 @@ func Filter(lines []string, ctx *MacroContext, op OperationType) (*ExecutionMani
 	stripEsc := false
 	if (op == OperationInstall || op == OperationUpgrade) &&
 		(ctx.Safety == "strict" || ctx.Safety == "") &&
-		!isTermux() && !isRoot() {
+		!isTermux() && !isMacOS() && !isRoot() {
 		stripEsc = true
 	}
 
@@ -289,7 +295,7 @@ func ReadManifest() (*ExecutionManifest, error) {
 
 // Executes execution manifest with proper error handling, wraps build_env and after_env with fakeroot if safety=strict, and avoids automatic cleanup/removal.
 func ExecuteManifest(manifest *ExecutionManifest, e *Entry, op OperationType, ctx *MacroContext) error {
-	afterEnvSudo := !isTermux()
+	afterEnvSudo := !isTermux() && !isMacOS()
 
 	// Get build directory for macro context and change to it
 	pkgDir, err := getBuildDir(e.Name)
@@ -319,11 +325,15 @@ func ExecuteManifest(manifest *ExecutionManifest, e *Entry, op OperationType, ct
 			}
 			if len(expanded) > 0 && expanded[0] != "" {
 				cmd = expanded[0]
+			} else {
+				// Skip empty commands (macros that execute in Go)
+				continue
 			}
 
 			// Wraps build_env and after_env with fakeroot for install/upgrade operations, removing permissions and purge system files.
+			// On macOS, fakeroot is not available, so this is skipped.
 			if (op == OperationInstall || op == OperationUpgrade) &&
-				(ctx.Safety == "strict" || ctx.Safety == "") && !isTermux() && !isRoot() {
+				(ctx.Safety == "strict" || ctx.Safety == "") && !isTermux() && !isMacOS() && !isRoot() {
 				if err := requireFakeroot(); err != nil {
 					return err
 				}
@@ -351,6 +361,9 @@ func ExecuteManifest(manifest *ExecutionManifest, e *Entry, op OperationType, ct
 			}
 			if len(expanded) > 0 && expanded[0] != "" {
 				cmd = expanded[0]
+			} else {
+				// Skip empty commands (macros that execute in Go)
+				continue
 			}
 
 			if err := executeCommand(cmd, afterEnvSudo); err != nil {

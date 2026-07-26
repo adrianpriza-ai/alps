@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"runtime"
 	"strings"
 )
 
@@ -12,6 +13,11 @@ import (
 func isTermux() bool {
 	return os.Getenv("TERMUX_VERSION") != "" ||
 		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
+}
+
+// isMacOS checks if running on macOS.
+func isMacOS() bool {
+	return runtime.GOOS == "darwin"
 }
 
 // IsRoot checks if running as root.
@@ -69,6 +75,13 @@ func Command(args ...string) (*exec.Cmd, error) {
 		return exec.Command(args[0], args[1:]...), nil
 	}
 
+	// macOS uses user directories for most operations, no escalation needed for cache/lib
+	// But system directories still need sudo
+	if isMacOS() {
+		// On macOS, we still allow sudo for system operations
+		// The caller should determine if escalation is needed
+	}
+
 	// Already root — run directly
 	if IsRoot() {
 		return exec.Command(args[0], args[1:]...), nil
@@ -105,6 +118,24 @@ func Command(args ...string) (*exec.Cmd, error) {
 func Ensure() error {
 	// Termux owns its prefix — no escalation needed or available
 	if isTermux() {
+		return nil
+	}
+
+	// macOS may need sudo for system operations
+	if isMacOS() {
+		// If sudo is available, ensure it's authenticated
+		if HasSudo() {
+			if exec.Command("sudo", "-n", "true").Run() == nil {
+				return nil
+			}
+			fmt.Println()
+			pw := exec.Command("sudo", "-v")
+			pw.Stdout = os.Stdout
+			pw.Stderr = os.Stderr
+			pw.Stdin = os.Stdin
+			return pw.Run()
+		}
+		// If no sudo available, that's okay for user directory operations
 		return nil
 	}
 
@@ -153,12 +184,25 @@ func CommandSudoOnly(args ...string) (*exec.Cmd, error) {
 		return exec.Command(args[0], args[1:]...), nil
 	}
 
+	if isMacOS() {
+		// On macOS, allow sudo for system operations
+		if HasSudo() {
+			return exec.Command("sudo", args...), nil
+		}
+		// If no sudo, run without escalation for user directories
+		return exec.Command(args[0], args[1:]...), nil
+	}
+
 	if IsRoot() {
 		return exec.Command(args[0], args[1:]...), nil
 	}
 
 	if HasSudo() {
 		return exec.Command("sudo", args...), nil
+	}
+
+	if HasDoas() {
+		return exec.Command("doas", args...), nil
 	}
 
 	return nil, fmt.Errorf("sudo is required for this operation — install sudo or run as root")
@@ -171,6 +215,15 @@ func CommandModern(args ...string) (*exec.Cmd, error) {
 	}
 
 	if isTermux() {
+		return exec.Command(args[0], args[1:]...), nil
+	}
+
+	if isMacOS() {
+		// On macOS, prefer sudo if available
+		if HasSudo() {
+			return exec.Command("sudo", args...), nil
+		}
+		// If no sudo, run without escalation for user directories
 		return exec.Command(args[0], args[1:]...), nil
 	}
 
@@ -195,6 +248,23 @@ func EnsureSudoOnly() error {
 		return nil
 	}
 
+	if isMacOS() {
+		// On macOS, if sudo is available, ensure it's authenticated
+		if HasSudo() {
+			if exec.Command("sudo", "-n", "true").Run() == nil {
+				return nil
+			}
+			fmt.Println()
+			pw := exec.Command("sudo", "-v")
+			pw.Stdout = os.Stdout
+			pw.Stderr = os.Stderr
+			pw.Stdin = os.Stdin
+			return pw.Run()
+		}
+		// If no sudo, that's okay for user directory operations
+		return nil
+	}
+
 	if IsRoot() {
 		return nil
 	}
@@ -211,12 +281,34 @@ func EnsureSudoOnly() error {
 		return pw.Run()
 	}
 
+	if HasDoas() {
+		// doas will prompt when command is run, nothing to pre-auth
+		return nil
+	}
+
 	return fmt.Errorf("sudo is required for this operation — install sudo or run as root")
 }
 
 // EnsureModern ensures privilege access using modern methods (sudo/doas) only.
 func EnsureModern() error {
 	if isTermux() {
+		return nil
+	}
+
+	if isMacOS() {
+		// On macOS, if sudo is available, ensure it's authenticated
+		if HasSudo() {
+			if exec.Command("sudo", "-n", "true").Run() == nil {
+				return nil
+			}
+			fmt.Println()
+			pw := exec.Command("sudo", "-v")
+			pw.Stdout = os.Stdout
+			pw.Stderr = os.Stderr
+			pw.Stdin = os.Stdin
+			return pw.Run()
+		}
+		// If no sudo, that's okay for user directory operations
 		return nil
 	}
 
@@ -246,6 +338,16 @@ func EnsureModern() error {
 // Invalidate invalidates all available privilege escalation caches.
 func Invalidate() error {
 	if isTermux() {
+		return nil
+	}
+
+	if isMacOS() {
+		// On macOS, invalidate sudo if available
+		if HasSudo() {
+			if err := exec.Command("sudo", "-k").Run(); err != nil {
+				return fmt.Errorf("sudo invalidate failed: %v", err)
+			}
+		}
 		return nil
 	}
 

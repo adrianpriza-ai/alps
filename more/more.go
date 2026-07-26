@@ -438,6 +438,7 @@ func Remove(e *Entry, cfg *config.Config) error {
 
 	if err := ExecuteManifest(manifest, e, OperationRemove, ctx); err != nil {
 		fmt.Printf("  remove commands failed: %v\n", err)
+		return fmt.Errorf("remove execution failed: %w", err)
 	}
 
 	// Step 2: Remove tracked items (always run this last)
@@ -505,7 +506,7 @@ func cleanupOwnedItems(items []OwnedItem) {
 	fmt.Printf("  cleaning up owned items (%d items)...\n", len(items))
 
 	// Check if we need sudo
-	needSudo := !isTermux() && !isRoot()
+	needSudo := !isTermux() && !isMacOS() && !isRoot()
 
 	for i := len(items) - 1; i >= 0; i-- {
 		item := items[i]
@@ -546,7 +547,7 @@ func isRoot() bool {
 
 // removeFileWithSudo removes a file with optional sudo
 func removeFileWithSudo(path string, useSudo bool) error {
-	if isTermux() || !useSudo {
+	if isTermux() || isMacOS() || !useSudo {
 		cmd := exec.Command("rm", "-f", path)
 		return cmd.Run()
 	}
@@ -561,7 +562,7 @@ func removeFileWithSudo(path string, useSudo bool) error {
 
 // removeSymlinkWithSudo removes a symlink with optional sudo
 func removeSymlinkWithSudo(path string, useSudo bool) error {
-	if isTermux() || !useSudo {
+	if isTermux() || isMacOS() || !useSudo {
 		cmd := exec.Command("rm", "-f", path)
 		return cmd.Run()
 	}
@@ -575,12 +576,12 @@ func removeSymlinkWithSudo(path string, useSudo bool) error {
 }
 
 func removeFile(path string) error {
-	if isTermux() {
+	if isTermux() || isMacOS() {
 		cmd := exec.Command("rm", "-f", path)
 		return cmd.Run()
 	}
 
-	// Use priv for elevated privileges on non-Termux systems
+	// Use priv for elevated privileges on non-Termux/non-macOS systems
 	cmd, err := priv.Command("rm", "-f", path)
 	if err != nil {
 		return err
@@ -597,12 +598,12 @@ func removeDir(path string) error {
 }
 
 func removeSymlink(path string) error {
-	if isTermux() {
+	if isTermux() || isMacOS() {
 		cmd := exec.Command("rm", "-f", path)
 		return cmd.Run()
 	}
 
-	// Use priv for elevated privileges on non-Termux systems
+	// Use priv for elevated privileges on non-Termux/non-macOS systems
 	cmd, err := priv.Command("rm", "-f", path)
 	if err != nil {
 		return err
@@ -611,7 +612,7 @@ func removeSymlink(path string) error {
 }
 
 func removeService(service string) error {
-	if isTermux() {
+	if isTermux() || isMacOS() {
 		return nil
 	}
 
@@ -948,49 +949,41 @@ func Purge(name string, cfg *config.Config) error {
 
 	// Step 1: Run remove commands
 	if len(e.RemoveLines) > 0 {
-
 		lines, err := Scrape(e, OperationRemove)
 		if err != nil {
-			fmt.Printf("  remove commands failed: %v\n", err)
-		} else {
-			ctx := NewMacroContext(e, server)
-			ctx.Op = OperationRemove
-			manifest, err := Filter(lines, ctx, OperationRemove)
-			if err != nil {
-				fmt.Printf("  failed to filter remove commands: %v\n", err)
-			} else {
-				if err := WriteManifest(manifest); err != nil {
-					fmt.Printf("  failed to write manifest: %v\n", err)
-				} else {
-					if err := ExecuteManifest(manifest, e, OperationRemove, ctx); err != nil {
-						fmt.Printf("  remove step failed: %v\n", err)
-					}
-				}
-			}
+			return fmt.Errorf("remove commands failed: %w", err)
+		}
+		ctx := NewMacroContext(e, server)
+		ctx.Op = OperationRemove
+		manifest, err := Filter(lines, ctx, OperationRemove)
+		if err != nil {
+			return fmt.Errorf("failed to filter remove commands: %w", err)
+		}
+		if err := WriteManifest(manifest); err != nil {
+			return fmt.Errorf("failed to write manifest: %w", err)
+		}
+		if err := ExecuteManifest(manifest, e, OperationRemove, ctx); err != nil {
+			return fmt.Errorf("remove step failed: %w", err)
 		}
 	}
 
 	// Step 2: Run purge commands
 	if len(e.PurgeLines) > 0 {
-
 		lines, err := Scrape(e, OperationPurge)
 		if err != nil {
-			fmt.Printf("  purge commands failed: %v\n", err)
-		} else {
-			ctx := NewMacroContext(e, server)
-			ctx.Op = OperationPurge
-			manifest, err := Filter(lines, ctx, OperationPurge)
-			if err != nil {
-				fmt.Printf("  failed to filter purge commands: %v\n", err)
-			} else {
-				if err := WriteManifest(manifest); err != nil {
-					fmt.Printf("  failed to write manifest: %v\n", err)
-				} else {
-					if err := ExecuteManifest(manifest, e, OperationPurge, ctx); err != nil {
-						fmt.Printf("  purge step failed: %v\n", err)
-					}
-				}
-			}
+			return fmt.Errorf("purge commands failed: %w", err)
+		}
+		ctx := NewMacroContext(e, server)
+		ctx.Op = OperationPurge
+		manifest, err := Filter(lines, ctx, OperationPurge)
+		if err != nil {
+			return fmt.Errorf("failed to filter purge commands: %w", err)
+		}
+		if err := WriteManifest(manifest); err != nil {
+			return fmt.Errorf("failed to write manifest: %w", err)
+		}
+		if err := ExecuteManifest(manifest, e, OperationPurge, ctx); err != nil {
+			return fmt.Errorf("purge step failed: %w", err)
 		}
 	}
 
@@ -1131,10 +1124,88 @@ func runUpgrade(e *Entry, cfg *config.Config) error {
 }
 
 func ensureSudo() error {
-	if isTermux() {
-		return nil // Termux owns its prefix — no privilege escalation needed
+	if isTermux() || isMacOS() {
+		return nil // Termux and macOS own their prefix — no privilege escalation needed
 	}
 	return priv.EnsureSudoOnly()
+}
+
+// reqTool describes a single binary requirement.
+type reqTool struct {
+	bin   string      // executable to look up via PATH
+	label string      // human-readable name shown in the warning
+	hint  string      // short install hint shown after the warning
+	skip  func() bool // return true to skip the check on this platform
+}
+
+// requirements lists every tool that alps-more may need.
+var requirements = []reqTool{
+	{
+		bin:   "bash",
+		label: "bash",
+		hint:  "install bash via your package manager",
+	},
+	{
+		bin:   "tar",
+		label: "tar",
+		hint:  "install tar via your package manager",
+	},
+	{
+		bin:   "unzip",
+		label: "unzip (needed for .zip archives)",
+		hint:  "install unzip via your package manager",
+	},
+	{
+		// mkdir, cp, chmod, gzip, ln — all from coreutils; test one sentinel binary
+		bin:   "gzip",
+		label: "gzip / GNU coreutils (mkdir, cp, chmod, gzip, ln)",
+		hint:  "install coreutils and gzip via your package manager",
+	},
+	{
+		bin:   "fakeroot",
+		label: "fakeroot (needed for strict-mode installs)",
+		hint:  "alps install fakeroot  OR  apt install fakeroot",
+		// fakeroot is not needed on Termux or macOS
+		skip: func() bool { return isTermux() || isMacOS() },
+	},
+	{
+		bin:   "systemctl",
+		label: "systemctl (needed for systemd service macros)",
+		hint:  "install systemd or run on a systemd-based distro",
+		// systemd is not available on Termux or macOS
+		skip: func() bool { return isTermux() || isMacOS() },
+	},
+	{
+		bin:   "useradd",
+		label: "useradd/userdel (needed for CREATE_USER / REMOVE_USER macros)",
+		hint:  "install shadow-utils or equivalent via your package manager",
+		// useradd is not available on Termux or macOS
+		skip: func() bool { return isTermux() || isMacOS() },
+	},
+}
+
+// WarnMissingRequirements checks for missing tools and prints a warning for
+// each one that is absent but relevant on the current platform.
+// It never returns an error — the warnings are informational only.
+func WarnMissingRequirements(cfg *config.Config) {
+	var missing []reqTool
+	for _, r := range requirements {
+		if r.skip != nil && r.skip() {
+			continue
+		}
+		if _, err := exec.LookPath(r.bin); err != nil {
+			missing = append(missing, r)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	fmt.Printf("  %s  some requirements are missing — certain features may not work:\n", cfg.Style.SymWarn)
+	for _, r := range missing {
+		fmt.Printf("       • %s\n", r.label)
+		fmt.Printf("         hint: %s\n", r.hint)
+	}
+	fmt.Println()
 }
 
 // needsMirror checks if commands use {BASH_RUN} or {SERVER}.
@@ -1215,6 +1286,9 @@ func handleDownloadMacro(line, pkgDir string) error {
 	}
 
 	url := parts[0]
+	if !isAllowedURL(url) {
+		return fmt.Errorf("disallowed URL host/scheme for {DOWNLOAD}: %s", url)
+	}
 	output := ""
 	if len(parts) >= 2 {
 		output = parts[1]
@@ -1289,6 +1363,10 @@ func handleBashRun(line, server, pkgDir string) (string, error) {
 			return "", fmt.Errorf("{BASH_RUN} relative path requires a server to be configured")
 		}
 		scriptURL = server + scriptPath
+	}
+
+	if !isAllowedURL(scriptURL) {
+		return "", fmt.Errorf("disallowed URL host/scheme for {BASH_RUN}: %s", scriptURL)
 	}
 
 	client := &http.Client{Timeout: scriptDownloadTimeout}
@@ -1546,9 +1624,9 @@ func hasFakeroot() bool {
 }
 
 // requireFakeroot returns an error if fakeroot is not available.
-// Termux is exempt — it owns its own prefix and does not need fakeroot.
+// Termux and macOS are exempt — they own their prefix and do not use fakeroot.
 func requireFakeroot() error {
-	if isTermux() || isRoot() {
+	if isTermux() || isMacOS() || isRoot() {
 		return nil
 	}
 	if !hasFakeroot() {
@@ -1617,6 +1695,11 @@ func detectDistro() (id string, idLike []string) {
 		return "termux", []string{"termux"}
 	}
 
+	// macOS detection
+	if runtime.GOOS == "darwin" {
+		return "macos", []string{"darwin", "macos"}
+	}
+
 	data, err := os.ReadFile("/etc/os-release")
 	if err != nil {
 		return "unknown", nil
@@ -1647,6 +1730,16 @@ func detectDistroVersion() string {
 		return "unknown"
 	}
 
+	// macOS version detection
+	if runtime.GOOS == "darwin" {
+		cmd := exec.Command("sw_vers", "-productVersion")
+		output, err := cmd.Output()
+		if err == nil {
+			return strings.TrimSpace(string(output))
+		}
+		return "unknown"
+	}
+
 	data, err := os.ReadFile("/etc/os-release")
 	if err != nil {
 		return "unknown"
@@ -1664,7 +1757,13 @@ func osMatches(osList []string, distro string, idLike []string) bool {
 	for _, o := range osList {
 		o = strings.ToLower(strings.TrimSpace(o))
 		if o == "linux" {
-			if !isTermux() {
+			if !isTermux() && runtime.GOOS != "darwin" {
+				return true
+			}
+			continue
+		}
+		if o == "darwin" || o == "macos" {
+			if runtime.GOOS == "darwin" {
 				return true
 			}
 			continue

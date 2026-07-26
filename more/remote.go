@@ -7,10 +7,10 @@ import (
 
 // RemoteRef identifies an ALPSMORE file hosted on a git forge.
 type RemoteRef struct {
-	Provider string
-	Host     string
-	RepoPath string
-	Branch   string
+	Provider string // github, gitlab, codeberg
+	Host     string // e.g. github.com, gitlab.archlinux.org
+	RepoPath string // namespace/project path
+	Branch   string // empty = try default branches
 }
 
 func defaultHost(provider string) string {

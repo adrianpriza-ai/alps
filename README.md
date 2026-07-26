@@ -4,7 +4,7 @@
   # ALPS
   **Advanced Linux Package System**
 
-  *The customizable package manager frontend*
+  *The customizable package manager frontend (Linux, macOS, Termux, WSL)*
 
   [![Release](https://img.shields.io/github/v/release/adrianpriza-ai/alps?include_prereleases&style=flat&color=red)](https://github.com/adrianpriza-ai/alps/releases)
   [![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
@@ -15,16 +15,17 @@
 
 ---
 
-ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and `apk` with built-in AUR, Flatpak, and Snap support, a custom cross-distro script repo (alps-more), fully customizable output styling, and a unified command interface across distros — including Termux on Android and WSL on Windows.
+ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and `apk` with built-in AUR, Flatpak, and Snap support, a custom cross-distro script repo (alps-more), fully customizable output styling, and a unified command interface across distros — including Linux, macOS, Termux on Android and WSL on Windows.
 
 > **One tool. Every distro. Your style.**
 
 ## Features
 
 | Feature | Description |
-|---------|-------------|
+|-|-|
 | **Multi-distro** | Auto-detects `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, or `apk` |
 | **Termux support** | Full support on Android — no sudo, native `$PREFIX` paths |
+|| **macOS support** | Full support with Homebrew integration; macOS-specific paths and behaviors |
 | **WSL support** | Works on WSL; alps-more entries can target `os = wsl` |
 | **Built-in AUR** | Full recursive dep resolution, PKGBUILD review, yay fallback |
 | **Snap & Flatpak** | First-class subcommands; snap auto-offered on Ubuntu/Debian |
@@ -64,25 +65,48 @@ Requires Go 1.22+
 
 Download `alps-linux-amd64`, `alps-linux-arm64`, or `alps-linux-armv7` from [Releases](https://github.com/adrianpriza-ai/alps/releases).
 
-### Shell completion
+### Shell Completion
 
-```bash
-# Fish
+#### Fish
+```fish
+mkdir -p ~/.config/fish/completions
 alps completion fish > ~/.config/fish/completions/alps.fish
 
-# Bash
-sudo sh -c 'alps completion bash > /usr/share/bash-completion/completions/alps'
-
-# Zsh
-alps completion zsh > "${fpath[1]}/_alps" && autoload -U compinit && compinit
 ```
+
+#### Bash
+
+```bash
+# Linux
+sudo mkdir -p /usr/share/bash-completion/completions
+alps completion bash | sudo tee /usr/share/bash-completion/completions/alps > /dev/null
+
+# macOS
+mkdir -p $(brew --prefix)/etc/bash_completion.d
+alps completion bash > $(brew --prefix)/etc/bash_completion.d/alps
+
+```
+
+#### Zsh
+
+```zsh
+# Linux
+alps completion zsh | sudo tee "${fpath[1]}/_alps" > /dev/null
+
+# macOS
+mkdir -p $(brew --prefix)/share/zsh/site-functions
+alps completion zsh > $(brew --prefix)/share/zsh/site-functions/_alps
+
+```
+
+> **Note:** For Zsh, run `autoload -U compinit && compinit` in your shell (or add it to `~/.zshrc`) to enable completions.
 
 Completion is environment-aware — AUR subcommands only appear on Arch, snap only on Debian/Ubuntu, neither on Termux. Tab-completing `alps aur install` draws from a local AUR name cache populated by every search. `alps repo install [TAB]` completes live from the alps-more cache.
 
 ## Global Flags
 
 | Flag | Description | Supported Subsystems |
-|------|-------------|---------------------|
+|-|-|-|
 | `-n, --dry-run` | Preview actions without making changes | All (repo, aur, flatpak, snap, apt, pacman, dnf, zypper, apk) |
 | `-y, --noconfirm` | Skip confirmation prompts | Main package managers only (apt, pacman, dnf, zypper, apk) |
 
@@ -95,7 +119,7 @@ alps <command> [args]
 ```
 
 | Command | Description |
-|---|---|
+|-|-|
 | `install <pkg>` | Install from repo or fallback (auto-detected) |
 | `remove <pkg>` | Remove package |
 | `purge <pkg>` | Remove package and config/data |
@@ -125,7 +149,7 @@ Unknown commands produce a clear error instead of being passed silently to the b
 **Top-level:**
 
 | Alias | Command | Alias | Command |
-|---|---|---|---|
+|-|-|-|-|
 | `ins` | install | `se` | search |
 | `rm` | remove | `sh` | show |
 | `pu` | purge | `ls` | list |
@@ -137,7 +161,7 @@ Unknown commands produce a clear error instead of being passed silently to the b
 **Subcommand-only** (work inside any subsystem that has a matching subcommand):
 
 | Alias | Command | Context |
-|---|---|---|
+|-|-|-|
 | `bl` | build-local | aur only |
 | `fa` | fetch-abs | aur only |
 | `abs` | fetch-abs | aur only |
@@ -145,7 +169,7 @@ Unknown commands produce a clear error instead of being passed silently to the b
 ```bash
 alps fp ins firefox       # flatpak install firefox
 alps aur se neovim-git    # aur search neovim-git
-alps repo ins ollama      # repo install ollama
+alps repo ins ollama      # alps-more install ollama
 alps aur bl ./mypkg       # aur build-local ./mypkg
 ```
 
@@ -154,7 +178,7 @@ alps aur bl ./mypkg       # aur build-local ./mypkg
 ## Configuration
 
 | Path | Scope |
-|---|---|
+|-|-|
 | `/etc/alps/config` | Global |
 | `~/.config/alps/config` | Per-user (overrides global) |
 
@@ -172,9 +196,12 @@ color_bold    = "\e[1m"     # bold
 color_reset   = "\e[0m"     # reset
 
 # Symbols
-sym_ok   = "✓"    sym_err  = "✗"
-sym_warn = "⚠"    sym_info = "◆"
-sym_arrow = "→"   sym_bullet = "•"
+sym_ok   = "✓"
+sym_err  = "✗"
+sym_warn = "⚠"
+sym_info = "◆"
+sym_arrow = "→"
+sym_bullet = "•"
 
 # Header
 show_header  = true
@@ -244,18 +271,29 @@ Cross-distro script repo for tools
 
 ### Requirements
 
-- GNU coreutils (mkdir, cp, chmod, gzip, ln)
-- tar (for .tar.gz, .tar.xz, .tar.bz2 archives)
-- unzip (for .zip archives)
-- bash (for running scripts)
-- fakeroot (not needed on Termux)
-- systemctl (for systemd services, not needed on Termux)
-- useradd/userdel (for user management, not needed on Termux)
+**Common requirements (all platforms):**
+- **bash** – For running installation scripts.
+- **tar & unzip** – For extracting archives (.tar.gz, .tar.xz, .tar.bz2, .zip).
+- **GNU Coreutils** – Standard file utilities (mkdir, cp, chmod, gzip, ln).
 
-Install using your system package manager, or ALPS itself:
+**Linux-specific:**
+- **fakeroot** – Handles sandboxed file ownership (not needed on macOS/Termux).
+- **systemctl** – Manages systemd service macros (not needed on macOS/Termux).
+- **useradd / userdel** – Handles user account management macros (not needed on macOS/Termux).
 
+**macOS:** Most requirements are already included with macOS. Additional tools can be installed via Homebrew if needed.
+
+**Install dependencies:**
+
+Linux:
 ```bash
 alps install fakeroot coreutils tar unzip bash
+```
+
+macOS (most tools already included):
+```bash
+# Only if you need additional tools via Homebrew
+brew install coreutils
 ```
 
 ### Quick User Guide
@@ -279,10 +317,9 @@ alps repo clean                           # remove build cache (~/.cache/alps/mo
 ### Runtime Details & Requirements
 
 - Build dir: `~/.cache/alps/more/<package>/`
-- State file: `/var/lib/alps/installed.json` (Termux: `$PREFIX/var/lib/alps/installed.json`)
-- Repo cache: `/var/cache/alps/more/main.txt`
+- State file: `/var/lib/alps/installed.json` (Termux: `$PREFIX/var/lib/alps/installed.json`, macOS: `~/Library/Application Support/alps/installed.json`)
+- Repo cache: `/var/cache/alps/more/main.txt` (macOS: `~/Library/Caches/alps/more/main.txt`)
 - Mirrors: [GitHub Pages](https://github.com/adrianpiza-ai/alps-more) and [Codeberg](https://codeberg.org/moreland/alps-more)
-- Requirement: `fakeroot` (required on all Linux platforms except Termux)
 
 ### Key Features
 

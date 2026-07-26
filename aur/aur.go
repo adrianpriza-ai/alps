@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -67,8 +68,9 @@ func editorIsSafe(editor string) bool {
 }
 
 const (
-	aurRPCBase = "https://aur.archlinux.org/rpc/v5/"
-	absGitLab  = "https://gitlab.archlinux.org/archlinux/packaging/packages/"
+	aurRPCBase    = "https://aur.archlinux.org/rpc/v5/"
+	absGitLab     = "https://gitlab.archlinux.org/archlinux/packaging/packages/"
+	aurMaxRetries = 5 // maximum number of AUR RPC fetch attempts
 )
 
 // aurHTTPClient is a shared HTTP client for AUR requests.
@@ -169,31 +171,76 @@ func hasInPath(name string) bool {
 	return err == nil
 }
 
+// fetchRPC performs an AUR RPC request with up to aurMaxRetries attempts.
+// Network errors and HTTP 429/5xx responses are retried with exponential
+// backoff (base 1 s, doubled each attempt) plus ±25 % jitter.
+// Bad request errors (4xx other than 429) and AUR-level errors are returned
+// immediately without retrying.
 func fetchRPC(rawURL string) (*rpcResponse, error) {
+	// Building the request can only fail for malformed URLs — no point retrying.
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("AUR request build failed (%s): %w", rawURL, err)
 	}
-	resp, err := aurHTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("AUR request failed (%s): %w", rawURL, err)
+
+	var lastErr error
+	backoff := time.Second // initial wait before first retry
+
+	for attempt := 1; attempt <= aurMaxRetries; attempt++ {
+		// Clone the request so the body (none here) is reusable across retries.
+		attemptReq := req.Clone(req.Context())
+
+		resp, err := aurHTTPClient.Do(attemptReq)
+		if err != nil {
+			// Transport / network error — always retry.
+			lastErr = fmt.Errorf("AUR request failed (%s): %w", rawURL, err)
+		} else {
+			// Got a response; check the status code.
+			switch {
+			case resp.StatusCode == http.StatusOK:
+				// Success path — read, parse, and return.
+				body, readErr := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if readErr != nil {
+					lastErr = fmt.Errorf("failed to read AUR response: %w", readErr)
+					// Treat a read error as transient and fall through to retry.
+					break
+				}
+				var result rpcResponse
+				if jsonErr := json.Unmarshal(body, &result); jsonErr != nil {
+					// Malformed JSON is unlikely to be transient.
+					return nil, fmt.Errorf("failed to parse AUR response: %w", jsonErr)
+				}
+				if result.Error != "" {
+					// AUR application-level error — not transient.
+					return nil, fmt.Errorf("AUR error: %s", result.Error)
+				}
+				return &result, nil
+
+			case resp.StatusCode == http.StatusTooManyRequests ||
+				resp.StatusCode >= http.StatusInternalServerError:
+				// Rate-limited or server-side error — retry.
+				resp.Body.Close()
+				lastErr = fmt.Errorf("AUR returned HTTP %d for %s", resp.StatusCode, rawURL)
+
+			default:
+				// 4xx client error (other than 429) — not worth retrying.
+				resp.Body.Close()
+				return nil, fmt.Errorf("AUR returned HTTP %d for %s", resp.StatusCode, rawURL)
+			}
+		}
+
+		if attempt < aurMaxRetries {
+			// Exponential backoff with ±25 % jitter.
+			jitter := time.Duration(float64(backoff) * (0.75 + 0.5*rand.Float64()))
+			fmt.Fprintf(os.Stderr, "  [aur] attempt %d/%d failed, retrying in %s: %v\n",
+				attempt, aurMaxRetries, jitter.Round(time.Millisecond), lastErr)
+			time.Sleep(jitter)
+			backoff *= 2
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("AUR returned HTTP %d for %s", resp.StatusCode, rawURL)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read AUR response: %w", err)
-	}
-	var result rpcResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse AUR response: %w", err)
-	}
-	if result.Error != "" {
-		return nil, fmt.Errorf("AUR error: %s", result.Error)
-	}
-	return &result, nil
+
+	return nil, fmt.Errorf("AUR request failed after %d attempts (%s): %w", aurMaxRetries, rawURL, lastErr)
 }
 
 // Search searches AUR sorted by votes.

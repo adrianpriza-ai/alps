@@ -20,7 +20,7 @@ type Backend struct {
 }
 
 var registry = map[string]*Backend{} // backend name to Backend
-var detectionOrder = []string{"apt", "apt-get", "dnf", "pacman", "zypper", "apk"}
+var detectionOrder = []string{"apt", "apt-get", "dnf", "pacman", "zypper", "apk", "brew"}
 
 // Register adds a backend.
 func Register(b Backend) {
@@ -107,6 +107,9 @@ func CommandSupported(backendName, verb string) bool {
 		if verb == "edit-sources" {
 			return true
 		}
+	case "brew":
+		// brew doesn't have traditional edit-sources
+		return false
 	}
 	return false
 }
@@ -401,6 +404,32 @@ func init() {
 			"autoremove":   {"apk", "fix", "--purge"}, // Alpine equivalent: fix dependencies and remove unused
 			"autoclean":    {"apk", "cache", "clean"},
 			"clean":        {"apk", "cache", "clean"},
+		},
+	})
+
+	// brew (Homebrew)
+	Register(Backend{
+		Name:        "brew",
+		Bin:         "brew",
+		Sudo:        false,
+		YesFlag:     "",
+		DryRunFlag:  "",
+		VerboseFlag: "-v",
+		QuietFlag:   "-q",
+		ForceFlag:   "--force",
+		CmdMap: map[string][]string{
+			"install":      {"brew", "install"},
+			"remove":       {"brew", "uninstall"},
+			"purge":        {"brew", "uninstall"},
+			"update":       {"brew", "update"},
+			"upgrade":      {"brew", "upgrade"},
+			"full-upgrade": {"brew", "upgrade"},
+			"search":       {"brew", "search"},
+			"show":         {"brew", "info"},
+			"list":         {"brew", "list"},
+			"autoremove":   {"brew", "autoremove"},
+			"autoclean":    {"brew", "cleanup"},
+			"clean":        {"brew", "cleanup"},
 		},
 	})
 }
