@@ -35,34 +35,34 @@ jobs:
           sudo apt update
           sudo apt install -y dpkg-dev apt-utils
 
-- name: Build binaries
-         run: |
-           TAG=${{ inputs.tag || github.ref_name }}
+    - name: Build binaries
+        run: |
+          TAG=${{ inputs.tag || github.ref_name }}
            
-           GOOS=linux GOARCH=amd64 \
-             go build \
-             -ldflags="-s -w -X main.Version=$TAG" \
-             -o alps-linux-amd64 .
+          GOOS=linux GOARCH=amd64 \
+            go build \
+            -ldflags="-s -w -X main.Version=$TAG" \
+            -o alps-linux-amd64 .
              
-           GOOS=linux GOARCH=arm64 \
-             go build \
-             -ldflags="-s -w -X main.Version=$TAG" \
-             -o alps-linux-arm64 .
-           GOOS=linux GOARCH=arm GOARM=7 \
-             go build \
-             -ldflags="-s -w -X main.Version=$TAG" \
-             -o alps-linux-armv7 .
+          GOOS=linux GOARCH=arm64 \
+            go build \
+            -ldflags="-s -w -X main.Version=$TAG" \
+            -o alps-linux-arm64 .
              
-           # macOS binaries
-           GOOS=darwin GOARCH=amd64 \
-             go build \
-             -ldflags="-s -w -X main.Version=$TAG" \
-             -o alps-darwin-amd64 .
+          GOOS=linux GOARCH=arm GOARM=7 \
+            go build \
+            -ldflags="-s -w -X main.Version=$TAG" \
+            -o alps-linux-armv7 .
              
-           GOOS=darwin GOARCH=arm64 \
-             go build \
-             -ldflags="-s -w -X main.Version=$TAG" \
-             -o alps-darwin-arm64 .
+          GOOS=darwin GOARCH=amd64 \
+            go build \
+            -ldflags="-s -w -X main.Version=$TAG" \
+            -o alps-darwin-amd64 .
+             
+          GOOS=darwin GOARCH=arm64 \
+            go build \
+            -ldflags="-s -w -X main.Version=$TAG" \
+            -o alps-darwin-arm64 .
             
       - name: Install Android NDK
         run: |
@@ -133,19 +133,19 @@ jobs:
           
           rm -rf pkg
 
-- name: Generate checksums
-         run: |
+      - name: Generate checksums
+        run: |
            sha256sum \
-             alps-linux-amd64 \
-             alps-linux-arm64 \
-             alps-linux-armv7 \
-             alps-termux-aarch64 \
-             alps-termux-arm \
-             alps-termux-x86_64 \
-             alps-darwin-amd64 \
-             alps-darwin-arm64 \
-             *.deb \
-             > SHA256SUMS
+           alps-linux-amd64 \
+           alps-linux-arm64 \
+           alps-linux-armv7 \
+           alps-termux-aarch64 \
+           alps-termux-arm \
+           alps-termux-x86_64 \
+           alps-darwin-amd64 \
+           alps-darwin-arm64 \
+           *.deb \
+           > SHA256SUMS
 
       - name: Clone APT repository
         run: |
