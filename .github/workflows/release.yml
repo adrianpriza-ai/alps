@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (example: v0.9.6)"
+        description: "Tag to release (example: v1.0.0)"
         required: true
 
 permissions:
@@ -35,7 +35,7 @@ jobs:
           sudo apt update
           sudo apt install -y dpkg-dev apt-utils
 
-    - name: Build binaries
+      - name: Build binaries
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
            
@@ -209,24 +209,24 @@ jobs:
           git commit -m "Release ${{ inputs.tag || github.ref_name }}" || true
           git push
 
-- name: Create GitHub release
-         if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
-         uses: softprops/action-gh-release@v2
-         with:
-           tag_name: ${{ inputs.tag || github.ref_name }}
-           generate_release_notes: ${{ inputs.tag == '' }}
-           files: |
-             alps-linux-amd64
-             alps-linux-arm64
-             alps-linux-armv7
-             
-             alps-termux-aarch64
-             alps-termux-arm
-             alps-termux-x86_64
-             
-             alps-darwin-amd64
-             alps-darwin-arm64
-             
-             *.deb
-             
-             SHA256SUMS
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: ${{ inputs.tag == '' }}
+          files: |
+            alps-linux-amd64
+            alps-linux-arm64
+            alps-linux-armv7
+
+            alps-termux-aarch64
+            alps-termux-arm
+            alps-termux-x86_64
+
+            alps-darwin-amd64
+            alps-darwin-arm64
+
+            *.deb
+
+            SHA256SUMS
