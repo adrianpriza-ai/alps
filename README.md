@@ -318,7 +318,7 @@ alps repo clean                           # remove build cache (~/.cache/alps/mo
 
 - Build dir: `~/.cache/alps/more/<package>/`
 - State file: `/var/lib/alps/installed.json` (Termux: `$PREFIX/var/lib/alps/installed.json`, macOS: `~/Library/Application Support/alps/installed.json`)
-- Repo cache: `/var/cache/alps/more/main.txt` (macOS: `~/Library/Caches/alps/more/main.txt`)
+- Repo cache: `/var/cache/alps/more/main.txt` ((Termux: `$PREFIX/var/cache/alps/more/main.txt macOS: `~/Library/Caches/alps/more/main.txt`)
 - Mirrors: [GitHub Pages](https://github.com/adrianpiza-ai/alps-more) and [Codeberg](https://codeberg.org/moreland/alps-more)
 
 ### Key Features
