@@ -5,1045 +5,64 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ALPS — Advanced Linux Package System</title>
+
+  <!-- SEO -->
+  <meta name="description" content="ALPS is a unified CLI frontend for Linux package managers. Supports apt, pacman, dnf, zypper, apk with built-in AUR, Flatpak, Snap, and alps-more cross-distro script repository. Works on Linux, macOS, Termux, and WSL.">
+  <meta name="keywords" content="linux, package manager, apt, pacman, dnf, zypper, apk, aur, flatpak, snap, alps, terminal, cli, command line, tool">
+  <meta name="author" content="adrianpriza-ai">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://alps-project.pages.dev/">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="ALPS — Advanced Linux Package System">
+  <meta property="og:description" content="One tool. Every distro. Your style. Unified CLI frontend for Linux package managers with AUR, Flatpak, Snap, and alps-more support.">
+  <meta property="og:url" content="https://alps-project.pages.dev/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="ALPS">
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="ALPS — Advanced Linux Package System">
+  <meta name="twitter:description" content="One tool. Every distro. Unified CLI frontend for Linux package managers.">
+
+  <!-- JSON-LD Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "ALPS",
+    "alternateName": "Advanced Linux Package System",
+    "description": "Unified CLI frontend for Linux package managers. Supports apt, pacman, dnf, zypper, apk with built-in AUR, Flatpak, Snap, and alps-more cross-distro script repository.",
+    "url": "https://alps-project.pages.dev/",
+    "downloadUrl": "https://github.com/adrianpriza-ai/alps/releases",
+    "applicationCategory": "DeveloperTools",
+    "operatingSystem": "Linux, macOS, Termux, WSL",
+    "programmingLanguage": "Go",
+    "license": "https://opensource.org/licenses/MIT",
+    "author": {
+      "@type": "Person",
+      "name": "adrianpriza-ai",
+      "url": "https://github.com/adrianpriza-ai"
+    },
+    "codeRepository": "https://github.com/adrianpriza-ai/alps",
+    "softwareVersion": "v1.0.4",
+    "releaseNotes": "https://github.com/adrianpriza-ai/alps/releases",
+    "keywords": "linux, package manager, cli, terminal, apt, pacman, dnf, aur"
+  }
+  </script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;600;700;800&family=DM+Sans:wght@300;400;500&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
-
-  <style>
-    /* ─── RESET ─────────────────────────────────────── */
-    *, *::before, *::after {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
-    /* ─── TOKENS ─────────────────────────────────────── */
-    :root {
-      --bg:        #E4E0EC;   /* lightest — soft lavender */
-      --fg:        #05326F;   /* darkest  — deep navy     */
-      --accent:    #3F6DA2;   /* mid-blue CTA             */
-      --accent-lt: #6A9BC8;   /* lighter accent           */
-      --muted:     #9195B6;   /* blue-gray secondary text */
-      --border:    #05326F;   /* navy borders             */
-      --surface:   #AEBBDE;   /* 2nd-lightest swatch      */
-      --code-bg:   #021540;   /* very dark navy terminal  */
-      --code-fg:   #AEBBDE;   /* surface blue as code fg  */
-      --code-dim:  #3F6DA2;   /* accent as dim code       */
-
-      --nav-h:     56px;
-      --max-w:     1400px;
-      --gap:       1px;        /* grid gap = black line */
-
-      --f-display: 'Barlow Condensed', sans-serif;
-      --f-body:    'DM Sans', sans-serif;
-      --f-mono:    'JetBrains Mono', monospace;
-
-      --ease: cubic-bezier(0.16, 1, 0.3, 1);
-    }
-
-    html, body { scroll-behavior: smooth; overflow-x: hidden; }
-
-    body {
-      background: var(--bg);
-      color: var(--fg);
-      font-family: var(--f-body);
-      font-weight: 300;
-      line-height: 1.6;
-      -webkit-font-smoothing: antialiased;
-      overflow-x: hidden;
-    }
-
-    /* ─── NO-RADIUS ENFORCEMENT ─────────────────────── */
-    * { border-radius: 0 !important; }
-
-    /* ─── NAV ────────────────────────────────────────── */
-    nav {
-      position: fixed;
-      top: 0; left: 0; right: 0;
-      z-index: 100;
-      height: var(--nav-h);
-      background: var(--bg);
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 32px;
-    }
-
-    .nav-brand {
-      font-family: var(--f-display);
-      font-weight: 800;
-      font-size: 22px;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      text-decoration: none;
-      color: var(--fg);
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    .nav-brand-tag {
-      font-family: var(--f-mono);
-      font-weight: 400;
-      font-size: 10px;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-      border: 1px solid var(--muted);
-      padding: 2px 6px;
-      text-transform: uppercase;
-    }
-
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 0;
-      list-style: none;
-    }
-
-    .nav-links a {
-      display: block;
-      padding: 0 20px;
-      height: var(--nav-h);
-      line-height: var(--nav-h);
-      font-family: var(--f-mono);
-      font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      text-decoration: none;
-      color: var(--fg);
-      border-left: 1px solid var(--border);
-      transition: background 0.2s var(--ease), color 0.2s var(--ease);
-    }
-
-    .nav-links a:hover {
-      background: var(--fg);
-      color: var(--bg);
-    }
-
-    .nav-links a.nav-cta {
-      background: var(--fg);
-      color: var(--bg);
-    }
-
-    .nav-links a.nav-cta:hover {
-      background: var(--accent);
-    }
-
-    /* ─── HERO ───────────────────────────────────────── */
-    .hero {
-      margin-top: var(--nav-h);
-      display: grid;
-      grid-template-columns: 58fr 42fr;
-      min-height: calc(100svh - var(--nav-h));
-      border-bottom: 1px solid var(--border);
-    }
-
-    .hero-image-col {
-      position: relative;
-      overflow: hidden;
-      border-right: 1px solid var(--border);
-    }
-
-    .hero-image-col img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      object-position: center 40%;
-      display: block;
-      filter: contrast(1.04) saturate(0.9);
-      transition: transform 8s var(--ease);
-    }
-
-    .hero-image-col:hover img {
-      transform: scale(1.03);
-    }
-
-    .hero-image-label {
-      position: absolute;
-      bottom: 24px;
-      left: 24px;
-      font-family: var(--f-mono);
-      font-size: 10px;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: rgba(255,255,255,0.7);
-    }
-
-    .hero-content-col {
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      padding: 48px 52px;
-    }
-
-    .hero-content-top {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-    }
-
-    .hero-eyebrow {
-      font-family: var(--f-mono);
-      font-size: 11px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--accent);
-      margin-bottom: 28px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    .hero-eyebrow::before {
-      content: '';
-      display: block;
-      width: 28px;
-      height: 1px;
-      background: var(--accent);
-    }
-
-    .hero-title {
-      font-family: var(--f-display);
-      font-weight: 800;
-      font-size: clamp(80px, 9vw, 136px);
-      line-height: 0.88;
-      letter-spacing: -0.01em;
-      text-transform: uppercase;
-      color: var(--fg);
-      margin-bottom: 32px;
-    }
-
-    .hero-title .accent-char {
-      color: var(--accent);
-    }
-
-    .hero-tagline {
-      font-family: var(--f-body);
-      font-weight: 300;
-      font-size: 15px;
-      line-height: 1.7;
-      color: var(--muted);
-      max-width: 340px;
-      margin-bottom: 48px;
-    }
-
-    .hero-install-block {
-      border: 1px solid var(--border);
-      overflow: hidden;
-    }
-
-    .hero-install-label {
-      font-family: var(--f-mono);
-      font-size: 10px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--muted);
-      padding: 8px 16px;
-      border-bottom: 1px solid var(--border);
-      background: var(--surface);
-    }
-
-    .hero-install-code {
-      background: var(--code-bg);
-      color: var(--code-fg);
-      font-family: var(--f-mono);
-      font-size: 13px;
-      padding: 16px 20px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 16px;
-    }
-
-    .hero-install-code code { min-width: 0; flex: 1; word-break: break-word; }
-    .hero-install-code span { opacity: 0.5; margin-right: 4px; }
-
-    .copy-btn {
-      font-family: var(--f-mono);
-      font-size: 10px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      background: none;
-      border: 1px solid var(--code-dim);
-      color: var(--code-dim);
-      padding: 4px 10px;
-      cursor: pointer;
-      flex-shrink: 0;
-      transition: border-color 0.2s, color 0.2s;
-    }
-
-    .copy-btn:hover { border-color: var(--code-fg); color: var(--code-fg); }
-    .copy-btn.copied { border-color: var(--accent-lt); color: var(--accent-lt); }
-
-    .hero-bottom {
-      display: flex;
-      align-items: center;
-      gap: 24px;
-      padding-top: 40px;
-      border-top: 1px solid var(--surface);
-    }
-
-    .hero-stat {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    .hero-stat-num {
-      font-family: var(--f-display);
-      font-weight: 700;
-      font-size: 28px;
-      line-height: 1;
-      color: var(--fg);
-    }
-
-    .hero-stat-label {
-      font-family: var(--f-mono);
-      font-size: 10px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }
-
-    .hero-stat-sep { width: 1px; height: 32px; background: var(--surface); }
-
-    /* ─── MARQUEE ─────────────────────────────────────── */
-    .marquee-track {
-      border-bottom: 1px solid var(--border);
-      background: var(--fg);
-      color: var(--bg);
-      overflow: hidden;
-      height: 40px;
-      display: flex;
-      align-items: center;
-    }
-
-    .marquee-inner {
-      display: flex;
-      gap: 0;
-      animation: marquee 22s linear infinite;
-      white-space: nowrap;
-    }
-
-    .marquee-item {
-      font-family: var(--f-mono);
-      font-size: 11px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      padding: 0 28px;
-      opacity: 0.6;
-      flex-shrink: 0;
-    }
-
-    .marquee-sep {
-      font-size: 16px;
-      opacity: 0.3;
-      flex-shrink: 0;
-    }
-
-    @keyframes marquee {
-      from { transform: translateX(0); }
-      to   { transform: translateX(-50%); }
-    }
-
-    /* ─── SECTION SCAFFOLDING ────────────────────────── */
-    .section-label {
-      font-family: var(--f-mono);
-      font-size: 10px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }
-
-    /* ─── WHAT SECTION ───────────────────────────────── */
-    .what-section {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      border-bottom: 1px solid var(--border);
-      min-height: 65vh;
-    }
-
-    .what-left {
-      padding: 72px 64px;
-      border-right: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-    }
-
-    .what-headline {
-      font-family: var(--f-display);
-      font-weight: 700;
-      font-size: clamp(36px, 4.5vw, 68px);
-      line-height: 1.0;
-      letter-spacing: -0.01em;
-      text-transform: uppercase;
-      margin-top: 36px;
-      max-width: 520px;
-    }
-
-    .what-headline em {
-      color: var(--accent);
-      font-style: normal;
-    }
-
-    .what-desc {
-      font-size: 15px;
-      line-height: 1.75;
-      color: var(--muted);
-      max-width: 380px;
-      margin-top: 28px;
-    }
-
-    .what-right {
-      padding: 72px 64px;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      gap: 0;
-    }
-
-    .feat-row {
-      display: grid;
-      grid-template-columns: 28px 1fr;
-      gap: 16px;
-      align-items: start;
-      padding: 24px 0;
-      border-bottom: 1px solid var(--surface);
-    }
-
-    .feat-row:first-child { border-top: 1px solid var(--surface); }
-
-    .feat-idx {
-      font-family: var(--f-mono);
-      font-size: 10px;
-      color: var(--muted);
-      padding-top: 3px;
-    }
-
-    .feat-name {
-      font-family: var(--f-body);
-      font-weight: 500;
-      font-size: 14px;
-      color: var(--fg);
-      margin-bottom: 4px;
-    }
-
-    .feat-desc {
-      font-family: var(--f-body);
-      font-size: 13px;
-      color: var(--muted);
-      line-height: 1.6;
-    }
-
-    /* ─── FEATURES GRID ──────────────────────────────── */
-    .features-section {
-      border-bottom: 1px solid var(--border);
-    }
-
-    .features-header {
-      padding: 48px 64px 32px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: flex-end;
-      justify-content: space-between;
-    }
-
-    .features-header-title {
-      font-family: var(--f-display);
-      font-weight: 700;
-      font-size: 42px;
-      letter-spacing: -0.01em;
-      text-transform: uppercase;
-      margin-top: 12px;
-    }
-
-    .features-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 0;
-    }
-
-    .feat-tile {
-      border-right: 1px solid var(--border);
-      border-bottom: 1px solid var(--border);
-      padding: 36px 32px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-      transition: background 0.25s var(--ease);
-    }
-
-    .feat-tile:nth-child(4n) { border-right: none; }
-    .feat-tile:last-child,
-    .feat-tile:nth-last-child(-n+4) { border-bottom: none; }
-
-    .feat-tile:hover {
-      background: var(--fg);
-    }
-
-    .feat-tile:hover .feat-tile-name,
-    .feat-tile:hover .feat-tile-desc,
-    .feat-tile:hover .feat-tile-icon,
-    .feat-tile:hover .feat-tile-num { color: var(--bg); }
-
-    .feat-tile-num {
-      font-family: var(--f-mono);
-      font-size: 10px;
-      letter-spacing: 0.1em;
-      color: var(--muted);
-      transition: color 0.25s;
-    }
-
-    .feat-tile-icon {
-      font-family: var(--f-mono);
-      font-size: 20px;
-      color: var(--accent);
-      transition: color 0.25s;
-      line-height: 1;
-    }
-
-    .feat-tile:hover .feat-tile-icon { color: var(--accent-lt); }
-
-    .feat-tile-name {
-      font-family: var(--f-body);
-      font-weight: 500;
-      font-size: 15px;
-      color: var(--fg);
-      transition: color 0.25s;
-    }
-
-    .feat-tile-desc {
-      font-family: var(--f-body);
-      font-size: 13px;
-      color: var(--muted);
-      line-height: 1.65;
-      transition: color 0.25s;
-    }
-
-    /* ─── INSTALL SECTION ────────────────────────────── */
-    .install-section {
-      background: var(--code-bg);
-      color: var(--bg);
-      border-bottom: 1px solid var(--border);
-      display: grid;
-      grid-template-columns: 42fr 58fr;
-      min-height: 70vh;
-    }
-
-    .install-left {
-      padding: 72px 64px;
-      border-right: 1px solid #0A2A55;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-    }
-
-    .install-label {
-      font-family: var(--f-mono);
-      font-size: 10px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--code-dim);
-    }
-
-    .install-headline {
-      font-family: var(--f-display);
-      font-weight: 800;
-      font-size: clamp(52px, 5.5vw, 88px);
-      line-height: 0.9;
-      text-transform: uppercase;
-      color: #E4E0EC;
-      margin: 32px 0 24px;
-    }
-
-    .install-sub {
-      font-size: 14px;
-      color: #7A8FB0;
-      line-height: 1.7;
-      max-width: 300px;
-    }
-
-    .install-platforms {
-      display: flex;
-      gap: 0;
-      margin-top: 48px;
-    }
-
-    .platform-badge {
-      font-family: var(--f-mono);
-      font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      padding: 8px 16px;
-      border: 1px solid #0A2A55;
-      color: #3F6DA2;
-      margin-right: -1px;
-    }
-
-    .platform-badge.active { border-color: var(--accent-lt); color: var(--accent-lt); }
-
-    .install-right {
-      padding: 56px 64px;
-      display: flex;
-      flex-direction: column;
-      gap: 1px;
-    }
-
-    .cmd-block {
-      background: #031228;
-      border: 1px solid #0A2A55;
-      overflow: hidden;
-    }
-
-    .cmd-header {
-      padding: 10px 20px;
-      border-bottom: 1px solid #0A2A55;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .cmd-method {
-      font-family: var(--f-mono);
-      font-size: 10px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--accent-lt);
-    }
-
-    .cmd-tag {
-      font-family: var(--f-mono);
-      font-size: 10px;
-      color: #2A4A70;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }
-
-    .cmd-body {
-      padding: 20px 20px;
-      font-family: var(--f-mono);
-      font-size: 13px;
-      line-height: 2;
-      color: var(--code-fg);
-      overflow-x: auto;
-      word-break: break-word;
-    }
-
-    .cmd-body .c  { color: var(--code-dim); }
-    .cmd-body .p  { color: #3F6DA2; }
-    .cmd-body .k  { color: #8BB8E8; }
-
-    /* ─── DOWNLOAD SECTION ───────────────────────────── */
-    .download-section {
-      border-bottom: 1px solid var(--border);
-    }
-
-    .download-header {
-      padding: 48px 64px 32px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: flex-end;
-      justify-content: space-between;
-    }
-
-    .download-header-title {
-      font-family: var(--f-display);
-      font-weight: 700;
-      font-size: 42px;
-      letter-spacing: -0.01em;
-      text-transform: uppercase;
-      margin-top: 12px;
-    }
-
-    .download-note {
-      font-family: var(--f-mono);
-      font-size: 11px;
-      color: var(--muted);
-      letter-spacing: 0.06em;
-      max-width: 280px;
-      text-align: right;
-      line-height: 1.6;
-    }
-
-    .download-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 0;
-    }
-
-    .dl-tile {
-      border-right: 1px solid var(--border);
-      padding: 52px 48px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      min-height: 340px;
-      position: relative;
-    }
-
-    .dl-tile:last-child { border-right: none; }
-
-    .dl-tile.coming-soon {
-      background: var(--surface);
-      cursor: not-allowed;
-    }
-
-    .dl-tile.available {
-      background: var(--bg);
-      transition: background 0.2s var(--ease);
-    }
-
-    .dl-tile.available:hover { background: var(--fg); }
-
-    .dl-tile.available:hover .dl-name,
-    .dl-tile.available:hover .dl-ext { color: var(--bg); }
-
-    .dl-coming-badge {
-      position: absolute;
-      top: 24px;
-      right: 24px;
-      font-family: var(--f-mono);
-      font-size: 10px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--muted);
-      border: 1px solid var(--surface);
-      background: var(--bg);
-      padding: 4px 10px;
-    }
-
-    .dl-ext {
-      font-family: var(--f-display);
-      font-weight: 800;
-      font-size: 72px;
-      line-height: 1;
-      text-transform: uppercase;
-      color: var(--muted);
-      opacity: 0.4;
-      transition: color 0.2s;
-    }
-
-    .dl-tile.available .dl-ext { color: var(--fg); opacity: 1; }
-
-    .dl-name {
-      font-family: var(--f-body);
-      font-weight: 500;
-      font-size: 15px;
-      color: var(--fg);
-      margin-bottom: 6px;
-      transition: color 0.2s;
-    }
-
-    .dl-desc {
-      font-family: var(--f-body);
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.6;
-      margin-bottom: 20px;
-    }
-
-    /* ─── UNIFIED DOWNLOAD WIDGET ────────────────────── */
-    .dl-widget {
-      display: flex;
-      flex-direction: column;
-      margin-top: 24px;
-    }
-    
-    .dl-widget-tabs {
-      display: flex;
-      width: 100%;
-      border: 1px solid var(--border);
-      background: rgba(5, 50, 111, 0.04);
-      margin-bottom: 12px;
-      transition: border-color 0.2s var(--ease), background-color 0.2s var(--ease);
-    }
-    
-    .dl-tile.available:hover .dl-widget-tabs {
-      border-color: rgba(255, 255, 255, 0.3);
-      background: rgba(255, 255, 255, 0.05);
-    }
-    
-    .dl-widget-tab {
-      flex: 1;
-      font-family: var(--f-mono);
-      font-size: 10px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      padding: 8px 4px;
-      border: none;
-      border-right: 1px solid var(--border);
-      background: transparent;
-      color: var(--fg);
-      cursor: pointer;
-      text-align: center;
-      transition: background 0.2s var(--ease), color 0.2s var(--ease), border-color 0.2s var(--ease);
-    }
-    
-    .dl-widget-tab:last-child {
-      border-right: none;
-    }
-    
-    .dl-widget-tab.active {
-      background: var(--fg);
-      color: #ffffff;
-      font-weight: 600;
-    }
-    
-    .dl-tile.available:hover .dl-widget-tab {
-      color: rgba(255, 255, 255, 0.8);
-      border-right-color: rgba(255, 255, 255, 0.3);
-    }
-    
-    .dl-tile.available:hover .dl-widget-tab.active {
-      background: #ffffff;
-      color: var(--fg);
-      font-weight: 600;
-    }
-    
-    .dl-tile.available:hover .dl-widget-tab:hover:not(.active) {
-      background: rgba(255, 255, 255, 0.2);
-      color: #ffffff;
-    }
-    
-    .dl-widget-tab:hover:not(.active) {
-      background: rgba(5, 50, 111, 0.08);
-      color: var(--fg);
-    }
-    
-    .dl-widget-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      padding: 11px 16px;
-      background: var(--fg);
-      color: #ffffff;
-      border: 1px solid var(--fg);
-      font-family: var(--f-mono);
-      font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      text-decoration: none;
-      cursor: pointer;
-      transition: background 0.2s var(--ease), color 0.2s var(--ease), border-color 0.2s var(--ease);
-      width: 100%;
-      text-align: center;
-      font-weight: 500;
-    }
-    
-    .dl-widget-btn:hover {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #ffffff;
-    }
-    
-    .dl-tile.available:hover .dl-widget-btn {
-      background: #ffffff;
-      color: var(--fg);
-      border-color: #ffffff;
-    }
-    
-    .dl-tile.available:hover .dl-widget-btn:hover {
-      background: var(--bg);
-      color: var(--fg);
-      border-color: var(--bg);
-    }
-
-    .dl-release-link {
-      display: inline-block;
-      margin-top: 16px;
-      font-family: var(--f-mono);
-      font-size: 10px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--muted);
-      text-decoration: none;
-      transition: color 0.2s var(--ease);
-    }
-    .dl-release-link:hover { color: var(--accent); }
-    .dl-tile.available:hover .dl-release-link { color: rgba(255,255,255,0.7); }
-    .dl-tile.available:hover .dl-release-link:hover { color: #fff; }
-
-    /* For coming soon / unavailable cards */
-    .dl-tile.coming-soon .dl-widget {
-      opacity: 0.6;
-    }
-    
-    .dl-tile.coming-soon .dl-widget-tabs {
-      border: 1px solid #9195B6;
-      background: transparent;
-    }
-    
-    .dl-tile.coming-soon .dl-widget-tab {
-      border-right: 1px solid #9195B6;
-      color: var(--muted);
-      cursor: not-allowed;
-    }
-    
-    .dl-tile.coming-soon .dl-widget-btn {
-      background: var(--surface);
-      color: var(--muted);
-      border: 1px solid #9195B6;
-      cursor: not-allowed;
-    }
-
-    /* ─── LINKS / MORE ───────────────────────────────── */
-    .links-section {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      border-bottom: 1px solid var(--border);
-    }
-
-    .link-col {
-      padding: 52px 40px;
-      border-right: 1px solid var(--border);
-    }
-
-    .link-col:last-child { border-right: none; }
-
-    .link-col-label {
-      font-family: var(--f-mono);
-      font-size: 10px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 24px;
-      padding-bottom: 16px;
-      border-bottom: 1px solid var(--surface);
-    }
-
-    .link-list { list-style: none; display: flex; flex-direction: column; gap: 0; }
-
-    .link-list a {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 0;
-      font-family: var(--f-body);
-      font-size: 14px;
-      color: var(--fg);
-      text-decoration: none;
-      border-bottom: 1px solid var(--surface);
-      transition: color 0.2s;
-    }
-
-    .link-list a:last-child { border-bottom: none; }
-
-    .link-list a:hover { color: var(--accent); }
-
-    .link-arrow {
-      font-family: var(--f-mono);
-      font-size: 12px;
-      opacity: 0.3;
-    }
-
-    /* ─── FOOTER ─────────────────────────────────────── */
-    footer {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      padding: 40px 64px;
-      gap: 40px;
-      align-items: center;
-    }
-
-    .footer-left {
-      display: flex;
-      align-items: center;
-      gap: 24px;
-    }
-
-    .footer-brand {
-      font-family: var(--f-display);
-      font-weight: 800;
-      font-size: 18px;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: var(--fg);
-    }
-
-    .footer-meta {
-      font-family: var(--f-mono);
-      font-size: 11px;
-      color: var(--muted);
-      letter-spacing: 0.06em;
-    }
-
-    .footer-right {
-      text-align: right;
-      font-family: var(--f-mono);
-      font-size: 11px;
-      color: var(--muted);
-      letter-spacing: 0.06em;
-      line-height: 1.8;
-    }
-
-    .footer-right a {
-      color: var(--muted);
-      text-decoration: none;
-      transition: color 0.2s;
-    }
-
-    .footer-right a:hover { color: var(--accent); }
-
-    /* ─── RESPONSIVE ─────────────────────────────────── */
-    @media (max-width: 900px) {
-      nav { padding: 0 20px; }
-      .nav-links a { padding: 0 12px; font-size: 10px; }
-
-      .hero { grid-template-columns: 1fr; }
-      .hero-image-col {
-        height: 50vw;
-        border-right: none;
-        border-bottom: 1px solid var(--border);
-      }
-      .hero-content-col { padding: 40px 28px; }
-
-      .what-section { grid-template-columns: 1fr; }
-      .what-left { padding: 48px 28px; border-right: none; border-bottom: 1px solid var(--border); }
-      .what-right { padding: 48px 28px; }
-
-      .features-grid { grid-template-columns: 1fr 1fr; }
-      .feat-tile:nth-child(4n) { border-right: 1px solid var(--border); }
-      .feat-tile:nth-child(2n) { border-right: none; }
-
-      .install-section { grid-template-columns: 1fr; }
-      .install-left { padding: 48px 28px; border-right: none; border-bottom: 1px solid #222; }
-      .install-right { padding: 40px 28px; }
-
-      .download-grid { grid-template-columns: 1fr; }
-      .dl-tile { border-right: none; border-bottom: 1px solid var(--border); }
-      .dl-tile:last-child { border-bottom: none; }
-
-      .links-section { grid-template-columns: 1fr 1fr; }
-      .link-col:nth-child(2n) { border-right: none; }
-      .link-col { border-bottom: 1px solid var(--border); }
-
-      .features-header { padding: 40px 28px 24px; flex-direction: column; align-items: flex-start; gap: 12px; }
-      .download-header { padding: 40px 28px 24px; flex-direction: column; align-items: flex-start; gap: 12px; }
-      .download-note { text-align: left; }
-
-      footer { grid-template-columns: 1fr; padding: 32px 28px; }
-      .footer-right { text-align: left; }
-    }
-
-    @media (max-width: 600px) {
-      .nav-links li:not(:last-child) { display: none; }
-      .features-grid { grid-template-columns: 1fr; }
-      .links-section { grid-template-columns: 1fr; }
-      .link-col { border-right: none; }
-    }
-  </style>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-  <!-- ── NAV ─────────────────────────────────────────── -->
+  <!-- NAV -->
   <nav>
     <a class="nav-brand" href="#">
       ALPS
-      <span class="nav-brand-tag" id="ver-nav">v1.0</span>
+      <span class="nav-brand-tag" id="ver-nav">v1.0.4</span>
     </a>
     <ul class="nav-links">
       <li><a href="#features">Features</a></li>
@@ -1053,7 +72,7 @@
     </ul>
   </nav>
 
-  <!-- ── HERO ─────────────────────────────────────────── -->
+  <!-- HERO -->
   <section class="hero">
     <div class="hero-image-col">
       <img src="1w.jpg" alt="The Alps mountain range">
@@ -1067,8 +86,8 @@
         </h1>
         <p class="hero-tagline">
           Stop remembering which command works on which distro. 
-          One unified interface for apt, dnf, pacman — with AUR, 
-          Snap, and Flatpak built in.
+          One unified interface for apt, dnf, pacman, zypper, apk — with AUR, 
+          Snap, Flatpak, and alps-more built in. Works on Linux, macOS, Termux, and WSL.
         </p>
         <div class="hero-install-block">
           <div class="hero-install-label">Quick install</div>
@@ -1080,7 +99,7 @@
       </div>
       <div class="hero-bottom">
         <div class="hero-stat">
-          <span class="hero-stat-num">4</span>
+          <span class="hero-stat-num">5</span>
           <span class="hero-stat-label">Backends</span>
         </div>
         <div class="hero-stat-sep"></div>
@@ -1095,14 +114,14 @@
         </div>
         <div class="hero-stat-sep"></div>
         <div class="hero-stat">
-          <span class="hero-stat-num" id="ver-hero-num">v1.0</span>
+          <span class="hero-stat-num" id="ver-hero-num">v1.0.4</span>
           <span class="hero-stat-label">Current</span>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- ── MARQUEE ───────────────────────────────────────── -->
+  <!-- MARQUEE -->
   <div class="marquee-track" aria-hidden="true">
     <div class="marquee-inner">
       <span class="marquee-item">One tool</span><span class="marquee-sep">/</span>
@@ -1111,6 +130,8 @@
       <span class="marquee-item">apt</span><span class="marquee-sep">/</span>
       <span class="marquee-item">dnf</span><span class="marquee-sep">/</span>
       <span class="marquee-item">pacman</span><span class="marquee-sep">/</span>
+      <span class="marquee-item">zypper</span><span class="marquee-sep">/</span>
+      <span class="marquee-item">apk</span><span class="marquee-sep">/</span>
       <span class="marquee-item">AUR</span><span class="marquee-sep">/</span>
       <span class="marquee-item">Flatpak</span><span class="marquee-sep">/</span>
       <span class="marquee-item">Snap</span><span class="marquee-sep">/</span>
@@ -1122,6 +143,8 @@
       <span class="marquee-item">apt</span><span class="marquee-sep">/</span>
       <span class="marquee-item">dnf</span><span class="marquee-sep">/</span>
       <span class="marquee-item">pacman</span><span class="marquee-sep">/</span>
+      <span class="marquee-item">zypper</span><span class="marquee-sep">/</span>
+      <span class="marquee-item">apk</span><span class="marquee-sep">/</span>
       <span class="marquee-item">AUR</span><span class="marquee-sep">/</span>
       <span class="marquee-item">Flatpak</span><span class="marquee-sep">/</span>
       <span class="marquee-item">Snap</span><span class="marquee-sep">/</span>
@@ -1129,7 +152,7 @@
     </div>
   </div>
 
-  <!-- ── WHAT IS ALPS ──────────────────────────────────── -->
+  <!-- WHAT IS ALPS -->
   <section class="what-section">
     <div class="what-left">
       <div>
@@ -1147,7 +170,7 @@
       <div style="margin-top: 48px;">
         <div style="font-family: var(--f-mono); font-size: 11px; color: var(--muted); margin-bottom: 8px; letter-spacing: 0.1em; text-transform: uppercase;">Detection priority</div>
         <div style="font-family: var(--f-mono); font-size: 13px; color: var(--fg); line-height: 2.2;">
-          pacman &rarr; dnf &rarr; apt &rarr; apt-get
+          pacman &rarr; dnf &rarr; apt &rarr; apt-get &rarr; zypper &rarr; apk
         </div>
       </div>
     </div>
@@ -1190,7 +213,7 @@
     </div>
   </section>
 
-  <!-- ── FEATURES GRID ─────────────────────────────────── -->
+  <!-- FEATURES GRID -->
   <section class="features-section" id="features">
     <div class="features-header">
       <div>
@@ -1259,7 +282,7 @@
     </div>
   </section>
 
-  <!-- ── INSTALL ───────────────────────────────────────── -->
+  <!-- INSTALL -->
   <section class="install-section" id="install">
     <div class="install-left">
       <div>
@@ -1274,6 +297,7 @@
         <span class="platform-badge active">Ubuntu</span>
         <span class="platform-badge active">Debian</span>
         <span class="platform-badge active">Fedora</span>
+        <span class="platform-badge active">macOS</span>
         <span class="platform-badge active">Termux</span>
       </div>
     </div>
@@ -1320,7 +344,22 @@
         </div>
         <div class="cmd-body">
           <span class="c"># available on AUR as alps-pm</span><br>
-          <span class="p">$</span> <span class="k">yay -S</span> alps-pm
+          <span class="p">$</span> <span class="k">sudo pacman -S</span> --needed git base-devel<br>
+		  <span class="p">$</span> <span class="k">git clone</span> https://aur.archlinux.org/alps-pm.git<br>
+		  <span class="p">$</span> <span class="k">cd</span> alps-pm<br>
+		  <span class="p">$</span> <span class="k">makepkg</span> -si
+        </div>
+      </div>
+
+      <div class="cmd-block" style="margin-top: 1px;">
+        <div class="cmd-header">
+          <span class="cmd-method">macOS — Homebrew</span>
+          <span class="cmd-tag">brew install</span>
+        </div>
+        <div class="cmd-body">
+          <span class="c"># compile from source (requires Go 1.22+)</span><br>
+          <span class="p">$</span> <span class="k">git clone</span> https://github.com/adrianpriza-ai/alps<br>
+          <span class="p">$</span> <span class="k">cd</span> alps &amp;&amp; <span class="k">make install</span>
         </div>
       </div>
 
@@ -1353,7 +392,7 @@
     </div>
   </section>
 
-  <!-- ── DOWNLOAD ──────────────────────────────────────── -->
+  <!-- DOWNLOAD -->
   <section class="download-section" id="download">
     <div class="download-header">
       <div>
@@ -1386,20 +425,19 @@
         </div>
       </div>
 
-      <!-- .rpm — coming soon -->
-      <div class="dl-tile coming-soon">
-        <span class="dl-coming-badge">Coming soon</span>
-        <div class="dl-ext">.rpm</div>
+      <!-- macOS — available now -->
+      <div class="dl-tile available">
+        <div class="dl-ext" style="font-size: 52px; line-height: 1.2;">macOS</div>
         <div>
-          <div class="dl-name">Fedora / RHEL package</div>
-          <div class="dl-desc">Native dnf-compatible .rpm package for Fedora, RHEL, AlmaLinux, Rocky Linux, and compatible distributions.</div>
+          <div class="dl-name">macOS binary</div>
+          <div class="dl-desc">Standalone static binary for macOS (Intel and Apple Silicon). Download, chmod +x, copy to /usr/local/bin.</div>
           <div class="dl-widget">
-            <div class="dl-widget-tabs">
-              <button class="dl-widget-tab" disabled>x86_64</button>
-              <button class="dl-widget-tab" disabled>aarch64</button>
+            <div class="dl-widget-tabs" id="arch-list-macos">
+              <button class="dl-widget-tab" onclick="setArch(this, 'macos', 'amd64')">amd64</button>
+              <button class="dl-widget-tab active" onclick="setArch(this, 'macos', 'arm64')">arm64</button>
             </div>
-            <a class="dl-widget-btn" style="pointer-events: none;">
-              <span>Not yet available</span>
+            <a href="https://github.com/adrianpriza-ai/alps/releases/latest" target="_blank" rel="noopener" class="dl-widget-btn" id="dl-macos-link">
+              <span id="dl-macos-text">Download for arm64</span>
             </a>
           </div>
         </div>
@@ -1447,7 +485,7 @@
     </div>
   </section>
 
-  <!-- ── LINKS ─────────────────────────────────────────── -->
+  <!-- LINKS -->
   <section class="links-section">
     <div class="link-col">
       <div class="link-col-label">Project</div>
@@ -1486,11 +524,11 @@
     </div>
   </section>
 
-  <!-- ── FOOTER ─────────────────────────────────────────── -->
+  <!-- FOOTER -->
   <footer>
     <div class="footer-left">
       <span class="footer-brand">ALPS</span>
-      <span class="footer-meta" id="ver-footer">v1.0 &nbsp;/&nbsp; MIT License &nbsp;/&nbsp; Go 1.22+</span>
+      <span class="footer-meta" id="ver-footer">v1.0.4 &nbsp;/&nbsp; MIT License &nbsp;/&nbsp; Go 1.22+</span>
     </div>
     <div class="footer-right">
       by <a href="https://github.com/adrianpriza-ai" target="_blank" rel="noopener">adrianpriza-ai</a>
@@ -1498,166 +536,6 @@
       <a href="https://github.com/adrianpriza-ai/alps" target="_blank" rel="noopener">github.com/adrianpriza-ai/alps</a>
     </div>
   </footer>
-
-  <script>
-    // Global variable to hold version, default is the static fallback from HTML
-    window.alpsVersion = 'v1.0';
-
-    // Copy to clipboard function
-    function copyInstall(btn) {
-      const text = 'curl -fsSL https://alps-project.pages.dev/install.sh | sh';
-      navigator.clipboard.writeText(text).then(() => {
-        btn.textContent = 'copied';
-        btn.classList.add('copied');
-        setTimeout(() => {
-          btn.textContent = 'copy';
-          btn.classList.remove('copied');
-        }, 2000);
-      });
-    }
-
-    // Dynamic layout state for setting active architecture and link
-    function setArch(btn, type, arch) {
-      const list = btn.parentElement;
-      for (const child of list.children) {
-        child.classList.remove('active');
-      }
-      btn.classList.add('active');
-      
-      const link = document.getElementById(type === 'linux' ? 'ver-dl-link' : 'dl-' + type + '-link');
-      const text = document.getElementById('dl-' + type + '-text');
-      if (!link || !text) return;
-      
-      const v = window.alpsVersion || 'v1.0';
-      const pureV = v.replace(/^v/, '');
-      
-      if (type === 'deb') {
-        link.href = `https://github.com/adrianpriza-ai/alps/releases/download/${v}/alps_${pureV}_${arch}.deb`;
-      } else if (type === 'termux') {
-        link.href = `https://github.com/adrianpriza-ai/alps/releases/download/${v}/alps-termux-${arch}`;
-      } else if (type === 'linux') {
-        link.href = `https://github.com/adrianpriza-ai/alps/releases/download/${v}/alps-linux-${arch}`;
-      }
-      text.textContent = `Download for ${arch}`;
-    }
-
-    // Helper to find and trigger setArch on the correct button
-    function triggerArch(type, arch) {
-      const list = document.getElementById('arch-list-' + type);
-      if (list) {
-        const btn = Array.from(list.children).find(b => b.textContent.trim() === arch);
-        if (btn) {
-          setArch(btn, type, arch);
-        }
-      }
-    }
-
-    // Re-apply links when version is dynamically fetched
-    function refreshDownloadLinks() {
-      ['deb', 'termux', 'linux'].forEach(type => {
-        const list = document.getElementById('arch-list-' + type);
-        if (list) {
-          const activeBtn = list.querySelector('.dl-widget-tab.active');
-          if (activeBtn) {
-            const arch = activeBtn.textContent.trim();
-            setArch(activeBtn, type, arch);
-          }
-        }
-      });
-    }
-
-    // Sync initialization of arch detection & default links
-    function initDownloads() {
-      // 1. Get fallback version from DOM if possible
-      const heroNum = document.getElementById('ver-hero-num');
-      if (heroNum && heroNum.textContent.trim()) {
-        window.alpsVersion = heroNum.textContent.trim();
-      }
-
-      // 2. Perform client-side CPU architecture detection
-      let archLinux = 'amd64';
-      let archDeb = 'amd64';
-      let archTermux = 'aarch64';
-      
-      const ua = navigator.userAgent.toLowerCase();
-      const platform = (navigator.platform || '').toLowerCase();
-      
-      const isArm64 = ua.includes('aarch64') || ua.includes('arm64') || 
-                      platform.includes('arm64') || platform.includes('aarch64') ||
-                      (navigator.userAgentData && navigator.userAgentData.platform === 'Android');
-      const isArm32 = ua.includes('arm') || platform.includes('arm');
-
-      if (isArm64) {
-        archLinux = 'arm64';
-        archDeb = 'arm64';
-        archTermux = 'aarch64';
-      } else if (isArm32) {
-        archLinux = 'armv7';
-        archDeb = 'armhf';
-        archTermux = 'arm';
-      } else {
-        // x86_64
-        if (ua.includes('x86_64') || platform.includes('x86_64') || platform.includes('win64') || platform.includes('wow64') || ua.includes('amd64')) {
-          archLinux = 'amd64';
-          archDeb = 'amd64';
-          archTermux = 'x86_64';
-        }
-      }
-
-      // 3. Trigger initial setup for each category
-      triggerArch('linux', archLinux);
-      triggerArch('deb', archDeb);
-      triggerArch('termux', archTermux);
-
-      // 4. Try high entropy userAgentData for modern browsers (async fallback)
-      if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
-        navigator.userAgentData.getHighEntropyValues(['architecture']).then(values => {
-          const entropyArch = (values.architecture || '').toLowerCase();
-          if (entropyArch === 'arm64' || entropyArch === 'aarch64') {
-            triggerArch('linux', 'arm64');
-            triggerArch('deb', 'arm64');
-            triggerArch('termux', 'aarch64');
-          } else if (entropyArch === 'arm') {
-            triggerArch('linux', 'armv7');
-            triggerArch('deb', 'armhf');
-            triggerArch('termux', 'arm');
-          }
-        }).catch(() => {});
-      }
-    }
-
-    // Async fetch version from GitHub API
-    async function fetchVersion() {
-      try {
-        const res = await fetch(
-          'https://api.github.com/repos/adrianpriza-ai/alps/releases/latest',
-          { headers: { Accept: 'application/vnd.github+json' } }
-        );
-        if (!res.ok) return;
-        const { tag_name } = await res.json();
-        if (!tag_name) return;
-        const v = tag_name.startsWith('v') ? tag_name : 'v' + tag_name;
-
-        window.alpsVersion = v;
-
-        /* Update version labels on the page */
-        const navTag = document.getElementById('ver-nav');
-        if (navTag) navTag.textContent = v;
-
-        const heroNum = document.getElementById('ver-hero-num');
-        if (heroNum) heroNum.textContent = v;
-
-        const footerMeta = document.getElementById('ver-footer');
-        if (footerMeta) footerMeta.textContent = v + ' \u00a0/\u00a0 MIT License \u00a0/\u00a0 Go 1.22+';
-
-        /* Update active download links with the newly fetched version tag */
-        refreshDownloadLinks();
-      } catch (_) { /* Keep static fallback if offline */ }
-    }
-
-    // Kickstart the processes
-    initDownloads();
-    fetchVersion();
-  </script>
+  <script src="script.js"></script>
 </body>
 </html>
