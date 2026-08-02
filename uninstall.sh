@@ -60,26 +60,37 @@ is_termux() {
     [ -n "$TERMUX_VERSION" ] || [ "$PREFIX" = "/data/data/com.termux/files/usr" ]
 }
 
+is_macos() {
+    [ "$(uname -s)" = "Darwin" ]
+}
+
 detect_privileges() {
     if [ "$(id -u)" -eq 0 ]; then
         UNINSTALL_MODE="system"
         SUDO=""
         info "Running as root. Will uninstall system-wide."
-    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-        UNINSTALL_MODE="system"
-        SUDO="sudo"
-        info "Sudo privileges detected. Will attempt system-wide uninstallation."
-    elif command -v sudo >/dev/null 2>&1 && [ -t 1 ]; then
-        UNINSTALL_MODE="system"
-        SUDO="sudo"
-        info "Sudo available. Prompting may occur for system-wide uninstallation."
     else
-        UNINSTALL_MODE="user"
         SUDO=""
-        if command -v sudo >/dev/null 2>&1; then
-            info "Sudo found but not usable (non-interactive or no passwordless access). Will attempt user-local uninstallation."
+        if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            SUDO="sudo"
+        elif command -v doas >/dev/null 2>&1 && doas -n true 2>/dev/null; then
+            SUDO="doas"
+        elif command -v sudo >/dev/null 2>&1 && [ -t 1 ]; then
+            SUDO="sudo"
+        elif command -v doas >/dev/null 2>&1 && [ -t 1 ]; then
+            SUDO="doas"
+        fi
+
+        if [ -n "$SUDO" ]; then
+            UNINSTALL_MODE="system"
+            info "$SUDO privileges detected. Will attempt system-wide uninstallation."
         else
-            info "No sudo/root access available. Will attempt user-local uninstallation."
+            UNINSTALL_MODE="user"
+            if command -v sudo >/dev/null 2>&1 || command -v doas >/dev/null 2>&1; then
+                info "sudo/doas found but not usable (non-interactive or no passwordless access). Will attempt user-local uninstallation."
+            else
+                info "No sudo/root access available. Will attempt user-local uninstallation."
+            fi
         fi
     fi
 }
@@ -283,6 +294,34 @@ remove_completions_user() {
     remove_file "$HOME/.zsh/completion/_alps-pm"
 }
 
+remove_completions_macos() {
+    info "Removing macOS shell completions..."
+
+    remove_file "$HOME/.config/fish/completions/alps.fish"
+    remove_file "$HOME/.config/fish/completions/alps-pm.fish"
+
+    remove_file "$HOME/.bash_completion.d/alps"
+    remove_file "$HOME/.bash_completion.d/alps-pm"
+
+    remove_file "/usr/local/share/zsh/site-functions/_alps"
+    remove_file "/usr/local/share/zsh/site-functions/_alps-pm"
+}
+
+remove_config_cache_macos() {
+    info "Purging macOS configurations and caches..."
+
+    remove_dir "$HOME/Library/Application Support/alps"
+    remove_dir "$HOME/Library/Caches/alps"
+}
+
+remove_binaries_macos() {
+    info "Removing macOS binary files..."
+
+    remove_file "/usr/local/bin/alps"
+    remove_file "/usr/local/bin/alps-pm"
+    remove_symlink "/usr/local/bin/alps"
+}
+
 remove_package_manager() {
     pkg_manager=""
     pkg_name="alps-pm"
@@ -457,6 +496,20 @@ uninstall_standard() {
     fi
 }
 
+uninstall_macos() {
+    info "Uninstalling ALPS from macOS..."
+
+    remove_binaries_macos
+    remove_completions_macos
+    remove_binaries_user
+    remove_completions_user
+
+    if [ "$PURGE" -eq 1 ]; then
+        remove_config_cache_macos
+        remove_config_cache_user
+    fi
+}
+
 main() {
     PURGE=0
     for arg in "$@"; do
@@ -477,6 +530,10 @@ main() {
         UNINSTALL_MODE="termux"
         info "Environment: Termux (Android)"
         uninstall_termux
+    elif is_macos; then
+        detect_privileges
+        info "Environment: macOS"
+        uninstall_macos
     else
         detect_privileges
 

@@ -112,38 +112,32 @@ detect_privileges() {
     if [ "$(id -u)" -eq 0 ]; then
         INSTALL_MODE="system"
         SUDO=""
-        if [ "$MACOS" -eq 1 ]; then
-            BIN_DIR="/usr/local/bin"
-        else
-            BIN_DIR="/usr/local/bin"
-        fi
+        BIN_DIR="/usr/local/bin"
         info "Running as root. Will install system-wide."
-    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-        INSTALL_MODE="system"
-        SUDO="sudo"
-        if [ "$MACOS" -eq 1 ]; then
-            BIN_DIR="/usr/local/bin"
-        else
-            BIN_DIR="/usr/local/bin"
-        fi
-        info "Sudo privileges detected. Will install system-wide."
-    elif command -v sudo >/dev/null 2>&1 && [ -t 1 ]; then
-        INSTALL_MODE="system"
-        SUDO="sudo"
-        if [ "$MACOS" -eq 1 ]; then
-            BIN_DIR="/usr/local/bin"
-        else
-            BIN_DIR="/usr/local/bin"
-        fi
-        info "Sudo available. Prompting may occur for system-wide installation."
     else
-        INSTALL_MODE="user"
         SUDO=""
-        BIN_DIR="$HOME/.local/bin"
-        if command -v sudo >/dev/null 2>&1; then
-            info "Sudo found but not usable (non-interactive or no passwordless access). Will install to user directory ($BIN_DIR)."
+        if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            SUDO="sudo"
+        elif command -v doas >/dev/null 2>&1 && doas -n true 2>/dev/null; then
+            SUDO="doas"
+        elif command -v sudo >/dev/null 2>&1 && [ -t 1 ]; then
+            SUDO="sudo"
+        elif command -v doas >/dev/null 2>&1 && [ -t 1 ]; then
+            SUDO="doas"
+        fi
+
+        if [ -n "$SUDO" ]; then
+            INSTALL_MODE="system"
+            BIN_DIR="/usr/local/bin"
+            info "$SUDO privileges detected. Will install system-wide."
         else
-            info "No sudo/root access available. Will install to user directory ($BIN_DIR)."
+            INSTALL_MODE="user"
+            BIN_DIR="$HOME/.local/bin"
+            if command -v sudo >/dev/null 2>&1 || command -v doas >/dev/null 2>&1; then
+                info "sudo/doas found but not usable (non-interactive or no passwordless access). Will install to user directory ($BIN_DIR)."
+            else
+                info "No sudo/root access available. Will install to user directory ($BIN_DIR)."
+            fi
         fi
     fi
 }
