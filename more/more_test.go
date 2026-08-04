@@ -508,3 +508,34 @@ func TestValidateSafePath(t *testing.T) {
 		}
 	}
 }
+
+func TestParseDeps(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected []string
+	}{
+		{"curl, git", []string{"curl", "git"}},
+		{"curl/wget, git", []string{"curl/wget", "git"}},
+		{"curl/wget, git/svn", []string{"curl/wget", "git/svn"}},
+		{"curl", []string{"curl"}},
+		{"curl/wget", []string{"curl/wget"}},
+		{"curl, wget, git", []string{"curl", "wget", "git"}},
+		{"  curl  ,  wget  ", []string{"curl", "wget"}},
+		{"", []string{}},
+		{"  ", []string{}},
+	}
+
+	for _, tc := range tests {
+		result := parseDeps(tc.input)
+		if len(result) != len(tc.expected) {
+			t.Errorf("parseDeps(%q) = %v; expected %v (length mismatch)", tc.input, result, tc.expected)
+			continue
+		}
+		for i := range result {
+			if result[i] != tc.expected[i] {
+				t.Errorf("parseDeps(%q) = %v; expected %v (element %d mismatch)", tc.input, result, tc.expected, i)
+				break
+			}
+		}
+	}
+}

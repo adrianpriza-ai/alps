@@ -161,7 +161,7 @@ func parseKeyValue(line string, e *Entry) {
 	case "servers":
 		e.Servers = splitTrim(val)
 	case "deps":
-		e.Deps = splitTrim(val)
+		e.Deps = parseDeps(val)
 	case "safety":
 		safety := strings.ToLower(val)
 		if safety == "strict" || safety == "free" {
@@ -284,6 +284,33 @@ func Search(query string, cfg *config.Config) ([]*Entry, error) {
 }
 
 func Validate(e *Entry) error {
+	if err := validateArchitecture(e); err != nil {
+		return err
+	}
+
+	if err := validateOS(e); err != nil {
+		return err
+	}
+
+	if err := validateDependencies(e); err != nil {
+		return err
+	}
+
+	if err := validateInstallCommands(e); err != nil {
+		return err
+	}
+
+	validateSafetyMode(e)
+
+	if err := validateSafetyRequirements(e); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateArchitecture checks that the package supports the current architecture
+func validateArchitecture(e *Entry) error {
 	if len(e.Arch) == 0 {
 		return fmt.Errorf(
 			"package %q has no 'arch' field defined in repo — cannot install safely",
@@ -297,7 +324,11 @@ func Validate(e *Entry) error {
 			e.Name, sysArch, strings.Join(e.Arch, ", "),
 		)
 	}
+	return nil
+}
 
+// validateOS checks that the package supports the current OS/distro
+func validateOS(e *Entry) error {
 	if len(e.OS) == 0 {
 		return fmt.Errorf(
 			"package %q has no 'os' field defined in repo — cannot install safely",
@@ -311,42 +342,74 @@ func Validate(e *Entry) error {
 			e.Name, distro, strings.Join(e.OS, ", "),
 		)
 	}
+	return nil
+}
 
-	if len(e.Deps) > 0 {
-		var missing []string
-		for _, dep := range e.Deps {
-			if _, err := exec.LookPath(dep); err != nil {
-				missing = append(missing, dep)
-			}
-		}
-		if len(missing) > 0 {
-			return fmt.Errorf(
-				"package %q requires missing dependencies: %s\n  install them first then retry",
-				e.Name, strings.Join(missing, ", "),
-			)
+// validateDependencies checks that all required dependencies are available
+func validateDependencies(e *Entry) error {
+	if len(e.Deps) == 0 {
+		return nil
+	}
+
+	var missing []string
+	for _, depGroup := range e.Deps {
+		if !checkDependencyGroup(depGroup) {
+			missing = append(missing, depGroup)
 		}
 	}
 
+	if len(missing) > 0 {
+		return fmt.Errorf(
+			"package %q requires missing dependencies: %s\n  install them first then retry",
+			e.Name, strings.Join(missing, ", "),
+		)
+	}
+	return nil
+}
+
+// checkDependencyGroup checks if a dependency group (single or OR-group) is satisfied
+func checkDependencyGroup(depGroup string) bool {
+	if strings.Contains(depGroup, "/") {
+		alternatives := strings.Split(depGroup, "/")
+		for _, alt := range alternatives {
+			alt = strings.TrimSpace(alt)
+			if _, err := exec.LookPath(alt); err == nil {
+				return true
+			}
+		}
+		return false
+	}
+	// Single dependency
+	_, err := exec.LookPath(depGroup)
+	return err == nil
+}
+
+// validateInstallCommands checks that install commands are defined
+func validateInstallCommands(e *Entry) error {
 	if len(e.CmdLines) == 0 {
 		return fmt.Errorf(
 			"package %q has no install commands (cmd_begin/cmd_end) defined — cannot install",
 			e.Name,
 		)
 	}
+	return nil
+}
 
+// validateSafetyMode sets default safety mode if not specified
+func validateSafetyMode(e *Entry) {
 	if e.Safety == "" {
 		e.Safety = "strict"
 	}
+}
 
-	if e.Safety == "free" {
-		if len(e.RemoveLines) == 0 {
-			return fmt.Errorf(
-				"package %q has safety=free but no remove commands (remove_begin/remove_end) — free mode requires manual remove commands",
-				e.Name,
-			)
-		}
+// validateSafetyRequirements checks that safety mode requirements are met
+func validateSafetyRequirements(e *Entry) error {
+	if e.Safety == "free" && len(e.RemoveLines) == 0 {
+		return fmt.Errorf(
+			"package %q has safety=free but no remove commands (remove_begin/remove_end) — free mode requires manual remove commands",
+			e.Name,
+		)
 	}
-
 	return nil
 }
 
@@ -405,7 +468,6 @@ func Remove(e *Entry, cfg *config.Config) error {
 	priv.Invalidate()
 
 	rec, isInstalled := GetInstalled(e.Name)
-	// Skip validation here since it's done in main.go before confirmation
 
 	// Step 1: Run remove commands
 	lines, err := Scrape(e, OperationRemove)
@@ -460,6 +522,10 @@ func RemoveOwnedItems(items []OwnedItem) error {
 		return nil
 	}
 
+	cfg := config.Load()
+	symOK := cfg.Style.SymOK
+	symWarn := cfg.Style.SymWarn
+
 	fmt.Printf("  removing owned items (%d items)...\n", len(items))
 
 	for i := len(items) - 1; i >= 0; i-- {
@@ -468,27 +534,27 @@ func RemoveOwnedItems(items []OwnedItem) error {
 		switch item.Type {
 		case "file":
 			if err := removeFile(item.Path); err != nil {
-				fmt.Printf("  %s  failed to remove file %s: %v\n", "⚠", item.Path, err)
+				fmt.Printf("  %s  failed to remove file %s: %v\n", symWarn, item.Path, err)
 			} else {
-				fmt.Printf("  ✓ removed file %s\n", item.Path)
+				fmt.Printf("  %s  removed file %s\n", symOK, item.Path)
 			}
 		case "dir":
 			if err := removeDir(item.Path); err != nil {
-				fmt.Printf("  %s  failed to remove directory %s: %v\n", "⚠", item.Path, err)
+				fmt.Printf("  %s  failed to remove directory %s: %v\n", symWarn, item.Path, err)
 			} else {
-				fmt.Printf("  ✓ removed directory %s\n", item.Path)
+				fmt.Printf("  %s  removed directory %s\n", symOK, item.Path)
 			}
 		case "symlink":
 			if err := removeSymlink(item.Path); err != nil {
-				fmt.Printf("  %s  failed to remove symlink %s: %v\n", "⚠", item.Path, err)
+				fmt.Printf("  %s  failed to remove symlink %s: %v\n", symWarn, item.Path, err)
 			} else {
-				fmt.Printf("  ✓ removed symlink %s\n", item.Path)
+				fmt.Printf("  %s  removed symlink %s\n", symOK, item.Path)
 			}
 		case "service":
 			if err := removeService(item.Path); err != nil {
-				fmt.Printf("  %s  failed to remove service %s: %v\n", "⚠", item.Path, err)
+				fmt.Printf("  %s  failed to remove service %s: %v\n", symWarn, item.Path, err)
 			} else {
-				fmt.Printf("  ✓ removed service %s\n", item.Path)
+				fmt.Printf("  %s  removed service %s\n", symOK, item.Path)
 			}
 		}
 	}
@@ -503,6 +569,10 @@ func cleanupOwnedItems(items []OwnedItem) {
 		return
 	}
 
+	cfg := config.Load()
+	symOK := cfg.Style.SymOK
+	symWarn := cfg.Style.SymWarn
+
 	fmt.Printf("  cleaning up owned items (%d items)...\n", len(items))
 
 	// Check if we need sudo
@@ -514,27 +584,27 @@ func cleanupOwnedItems(items []OwnedItem) {
 		switch item.Type {
 		case "file":
 			if err := removeFileWithSudo(item.Path, needSudo); err != nil {
-				fmt.Printf("  %s  failed to remove file %s: %v\n", "⚠", item.Path, err)
+				fmt.Printf("  %s  failed to remove file %s: %v\n", symWarn, item.Path, err)
 			} else {
-				fmt.Printf("  ✓ removed file %s\n", item.Path)
+				fmt.Printf("  %s  removed file %s\n", symOK, item.Path)
 			}
 		case "dir":
 			if err := removeDir(item.Path); err != nil {
-				fmt.Printf("  %s  failed to remove directory %s: %v\n", "⚠", item.Path, err)
+				fmt.Printf("  %s  failed to remove directory %s: %v\n", symWarn, item.Path, err)
 			} else {
-				fmt.Printf("  ✓ removed directory %s\n", item.Path)
+				fmt.Printf("  %s  removed directory %s\n", symOK, item.Path)
 			}
 		case "symlink":
 			if err := removeSymlinkWithSudo(item.Path, needSudo); err != nil {
-				fmt.Printf("  %s  failed to remove symlink %s: %v\n", "⚠", item.Path, err)
+				fmt.Printf("  %s  failed to remove symlink %s: %v\n", symWarn, item.Path, err)
 			} else {
-				fmt.Printf("  ✓ removed symlink %s\n", item.Path)
+				fmt.Printf("  %s  removed symlink %s\n", symOK, item.Path)
 			}
 		case "service":
 			if err := removeService(item.Path); err != nil {
-				fmt.Printf("  %s  failed to remove service %s: %v\n", "⚠", item.Path, err)
+				fmt.Printf("  %s  failed to remove service %s: %v\n", symWarn, item.Path, err)
 			} else {
-				fmt.Printf("  ✓ removed service %s\n", item.Path)
+				fmt.Printf("  %s  removed service %s\n", symOK, item.Path)
 			}
 		}
 	}
@@ -936,10 +1006,9 @@ func Purge(name string, cfg *config.Config) error {
 	}
 
 	rec, isInstalled := GetInstalled(name)
-	// Skip validation here since it's done in main.go before confirmation
 
-	if len(e.RemoveLines) == 0 && len(e.PurgeLines) == 0 && len(rec.OwnedItems) == 0 {
-		return fmt.Errorf("package %q has no remove or purge commands defined", e.Name)
+	if err := validatePurgeCommands(e, rec); err != nil {
+		return err
 	}
 
 	server, err := resolveServerIfNeeded(e)
@@ -948,43 +1017,13 @@ func Purge(name string, cfg *config.Config) error {
 	}
 
 	// Step 1: Run remove commands
-	if len(e.RemoveLines) > 0 {
-		lines, err := Scrape(e, OperationRemove)
-		if err != nil {
-			return fmt.Errorf("remove commands failed: %w", err)
-		}
-		ctx := NewMacroContext(e, server)
-		ctx.Op = OperationRemove
-		manifest, err := Filter(lines, ctx, OperationRemove)
-		if err != nil {
-			return fmt.Errorf("failed to filter remove commands: %w", err)
-		}
-		if err := WriteManifest(manifest); err != nil {
-			return fmt.Errorf("failed to write manifest: %w", err)
-		}
-		if err := ExecuteManifest(manifest, e, OperationRemove, ctx); err != nil {
-			return fmt.Errorf("remove step failed: %w", err)
-		}
+	if err := executePurgeRemoveStep(e, server); err != nil {
+		return err
 	}
 
 	// Step 2: Run purge commands
-	if len(e.PurgeLines) > 0 {
-		lines, err := Scrape(e, OperationPurge)
-		if err != nil {
-			return fmt.Errorf("purge commands failed: %w", err)
-		}
-		ctx := NewMacroContext(e, server)
-		ctx.Op = OperationPurge
-		manifest, err := Filter(lines, ctx, OperationPurge)
-		if err != nil {
-			return fmt.Errorf("failed to filter purge commands: %w", err)
-		}
-		if err := WriteManifest(manifest); err != nil {
-			return fmt.Errorf("failed to write manifest: %w", err)
-		}
-		if err := ExecuteManifest(manifest, e, OperationPurge, ctx); err != nil {
-			return fmt.Errorf("purge step failed: %w", err)
-		}
+	if err := executePurgePurgeStep(e, server); err != nil {
+		return err
 	}
 
 	// Step 3: Remove tracked items (always run this last)
@@ -997,6 +1036,74 @@ func Purge(name string, cfg *config.Config) error {
 	if isInstalled {
 		return UnmarkInstalled(name)
 	}
+	return nil
+}
+
+// validatePurgeCommands checks that purge operations have required commands
+func validatePurgeCommands(e *Entry, rec InstalledRecord) error {
+	if len(e.RemoveLines) == 0 && len(e.PurgeLines) == 0 && len(rec.OwnedItems) == 0 {
+		return fmt.Errorf("package %q has no remove or purge commands defined", e.Name)
+	}
+	return nil
+}
+
+// executePurgeRemoveStep executes the remove phase of purge
+func executePurgeRemoveStep(e *Entry, server string) error {
+	if len(e.RemoveLines) == 0 {
+		return nil
+	}
+
+	lines, err := Scrape(e, OperationRemove)
+	if err != nil {
+		return fmt.Errorf("remove commands failed: %w", err)
+	}
+
+	ctx := NewMacroContext(e, server)
+	ctx.Op = OperationRemove
+
+	manifest, err := Filter(lines, ctx, OperationRemove)
+	if err != nil {
+		return fmt.Errorf("failed to filter remove commands: %w", err)
+	}
+
+	if err := WriteManifest(manifest); err != nil {
+		return fmt.Errorf("failed to write manifest: %w", err)
+	}
+
+	if err := ExecuteManifest(manifest, e, OperationRemove, ctx); err != nil {
+		return fmt.Errorf("remove step failed: %w", err)
+	}
+
+	return nil
+}
+
+// executePurgePurgeStep executes the purge phase of purge
+func executePurgePurgeStep(e *Entry, server string) error {
+	if len(e.PurgeLines) == 0 {
+		return nil
+	}
+
+	lines, err := Scrape(e, OperationPurge)
+	if err != nil {
+		return fmt.Errorf("purge commands failed: %w", err)
+	}
+
+	ctx := NewMacroContext(e, server)
+	ctx.Op = OperationPurge
+
+	manifest, err := Filter(lines, ctx, OperationPurge)
+	if err != nil {
+		return fmt.Errorf("failed to filter purge commands: %w", err)
+	}
+
+	if err := WriteManifest(manifest); err != nil {
+		return fmt.Errorf("failed to write manifest: %w", err)
+	}
+
+	if err := ExecuteManifest(manifest, e, OperationPurge, ctx); err != nil {
+		return fmt.Errorf("purge step failed: %w", err)
+	}
+
 	return nil
 }
 
@@ -1271,70 +1378,6 @@ func expandVars(line, server, pkgDir, pkgVersion string) string {
 	return line
 }
 
-// handleDownloadMacro processes {DOWNLOAD} macro.
-// See ALPSMORE.md for usage and examples.
-func handleDownloadMacro(line, pkgDir string) error {
-	trimmed := strings.TrimSpace(line)
-	if !strings.HasPrefix(trimmed, "{DOWNLOAD}") {
-		return fmt.Errorf("not a download macro: %s", line)
-	}
-
-	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "{DOWNLOAD}"))
-	parts := strings.Fields(rest)
-	if len(parts) == 0 {
-		return fmt.Errorf("{DOWNLOAD} requires a URL")
-	}
-
-	url := parts[0]
-	if !isAllowedURL(url) {
-		return fmt.Errorf("disallowed URL host/scheme for {DOWNLOAD}: %s", url)
-	}
-	output := ""
-	if len(parts) >= 2 {
-		output = parts[1]
-	} else {
-		// Derive filename from URL
-		if idx := strings.LastIndex(url, "/"); idx >= 0 && idx < len(url)-1 {
-			output = url[idx+1:]
-		} else {
-			output = "download"
-		}
-		// Strip query string
-		if idx := strings.Index(output, "?"); idx >= 0 {
-			output = output[:idx]
-		}
-	}
-
-	destPath := filepath.Join(pkgDir, output)
-
-	fmt.Printf("  ↓ downloading %s\n", url)
-
-	client := &http.Client{Timeout: 5 * time.Minute}
-	resp, err := client.Get(url)
-	if err != nil {
-		return fmt.Errorf("download failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed: HTTP %d from %s", resp.StatusCode, url)
-	}
-
-	f, err := os.Create(destPath)
-	if err != nil {
-		return fmt.Errorf("cannot create file %s: %w", destPath, err)
-	}
-	defer f.Close()
-
-	_, err = io.Copy(f, resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to write %s: %w", destPath, err)
-	}
-
-	fmt.Printf("  ✓ saved %s\n", output)
-	return nil
-}
-
 // handleBashRun processes {BASH_RUN} macro (downloads and executes scripts).
 // Supports full URLs and relative paths. See ALPSMORE.md for details.
 func handleBashRun(line, server, pkgDir string) (string, error) {
@@ -1491,7 +1534,7 @@ func buildScriptCmd(scriptPath, pkgDir string, entry *Entry, ctx *MacroContext) 
 	return cmd
 }
 
-// processLineMacros handles {DOWNLOAD}, {BASH_RUN}, and structured macros.
+// processLineMacros handles {BASH_RUN} and structured macros.
 // Returns (skip, expandedLine, error). skip=true means the caller should continue to the next line.
 func processLineMacros(line, server, pkgDir string, ctx *MacroContext) (skip bool, out string, err error) {
 	// Handle legacy macros
@@ -1499,20 +1542,13 @@ func processLineMacros(line, server, pkgDir string, ctx *MacroContext) (skip boo
 		return skip, result, err
 	}
 
-	// Handle structured macros (INSTALL_BIN, etc.) when context is available
+	// Handle structured macros (DOWNLOAD, INSTALL_BIN, etc.) when context is available
 	return handleStructuredMacros(line, ctx)
 }
 
-// handleLegacyMacros handles {DOWNLOAD} and {BASH_RUN} macros.
+// handleLegacyMacros handles {BASH_RUN} macros.
+// Note: {DOWNLOAD} is now handled by the structured macro system in macros.go
 func handleLegacyMacros(line, server, pkgDir string) (skip bool, out string, err error) {
-	// Handle {DOWNLOAD} macro
-	if strings.HasPrefix(strings.TrimSpace(line), "{DOWNLOAD}") {
-		if err := handleDownloadMacro(line, pkgDir); err != nil {
-			return false, "", fmt.Errorf("{DOWNLOAD} failed: %w", err)
-		}
-		return true, "", nil
-	}
-
 	// Handle {BASH_RUN} macro
 	if strings.Contains(line, "{BASH_RUN}") {
 		line, err = handleBashRun(line, server, pkgDir)
@@ -1659,6 +1695,20 @@ func splitTrim(s string) []string {
 		p = strings.TrimSpace(p)
 		if p != "" {
 			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// parseDeps parses dependency string, preserving OR groups (slash-separated)
+// e.g., "curl/wget, git" -> ["curl/wget", "git"]
+func parseDeps(val string) []string {
+	groups := strings.Split(val, ",")
+	out := make([]string, 0, len(groups))
+	for _, group := range groups {
+		group = strings.TrimSpace(group)
+		if group != "" {
+			out = append(out, group)
 		}
 	}
 	return out

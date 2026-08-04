@@ -231,10 +231,8 @@ func fetchRPC(rawURL string) (*rpcResponse, error) {
 		}
 
 		if attempt < aurMaxRetries {
-			// Exponential backoff with ±25 % jitter.
+			// Exponential backoff with ±25 % jitter — retries are silent.
 			jitter := time.Duration(float64(backoff) * (0.75 + 0.5*rand.Float64()))
-			fmt.Fprintf(os.Stderr, "  [aur] attempt %d/%d failed, retrying in %s: %v\n",
-				attempt, aurMaxRetries, jitter.Round(time.Millisecond), lastErr)
 			time.Sleep(jitter)
 			backoff *= 2
 		}

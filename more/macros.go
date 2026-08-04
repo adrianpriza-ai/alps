@@ -12,7 +12,13 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/adrianpriza-ai/alps/config"
 )
+
+func getSymOK() string {
+	return config.Load().Style.SymOK
+}
 
 // isTermux checks if running in Termux.
 func isTermux() bool {
@@ -148,6 +154,16 @@ func NewMacroContext(e *Entry, server string) *MacroContext {
 	}
 }
 
+// isKnownMacro checks if a macro name is recognized by ALPS.
+func isKnownMacro(name string) bool {
+	name = strings.ToUpper(name)
+	if name == "DONWLOAD" {
+		return true
+	}
+	_, ok := macroRegistry[name]
+	return ok
+}
+
 // ParseMacro parses a macro from a command line, handling both {MACRO arg1 arg2} (args inside braces) and {MACRO} arg1 arg2 (args outside braces).
 // Returns (macro, remainingLine, isMacro).
 func ParseMacro(line string) (Macro, string, bool) {
@@ -166,8 +182,17 @@ func ParseMacro(line string) (Macro, string, bool) {
 		return Macro{}, line, false
 	}
 
+	name := strings.ToUpper(parts[0])
+	if name == "DONWLOAD" {
+		name = "DOWNLOAD"
+	}
+
+	if !isKnownMacro(name) {
+		return Macro{}, line, false
+	}
+
 	macro := Macro{
-		Name: strings.ToUpper(parts[0]),
+		Name: name,
 		Args: parts[1:],
 	}
 
@@ -218,6 +243,9 @@ func expandLine(line string, ctx *MacroContext) (string, error) {
 		s = strings.ReplaceAll(s, "{SERVER}", ctx.Server)
 		s = strings.ReplaceAll(s, "{PKGNAME}", ctx.PackageName)
 		s = strings.ReplaceAll(s, "{DISVER}", ctx.DistroVersion)
+		// Strip any remaining unknown {TOKEN} placeholders so they never reach the shell.
+		s = strings.ReplaceAll(s, "{", "")
+		s = strings.ReplaceAll(s, "}", "")
 		return s
 	}
 
@@ -248,44 +276,27 @@ func expandMacroArgs(macro *Macro, ctx *MacroContext) {
 		arg = strings.ReplaceAll(arg, "{SERVER}", ctx.Server)
 		arg = strings.ReplaceAll(arg, "{PKGNAME}", ctx.PackageName)
 		arg = strings.ReplaceAll(arg, "{DISVER}", ctx.DistroVersion)
+		// Strip any remaining unknown {TOKEN} placeholders.
+		arg = strings.ReplaceAll(arg, "{", "")
+		arg = strings.ReplaceAll(arg, "}", "")
 		macro.Args[i] = arg
 	}
 }
 
-// combineMacroResult combines the result of a macro execution with any remaining text on the same line, returning the raw line unchanged.
+// combineMacroResult combines the result of a macro execution with any remaining text on the same line.
 func combineMacroResult(rawLine, result, remaining string, macro Macro, ctx *MacroContext) (string, error) {
-	// Macros that execute entirely in Go and should not be passed to shell
-	goOnlyMacros := map[string]bool{
-		"DOWNLOAD": true,
-	}
-
 	if result == "" {
-		// If this is a Go-only macro, skip it entirely
-		if goOnlyMacros[macro.Name] {
-			if remaining == "" {
-				return "", nil // Skip the entire line
-			}
-			// Process remaining text only
-			remainingResult, err := expandLine(remaining, ctx)
-			if err != nil {
-				return "", err
-			}
-			return remainingResult, nil
-		}
-
-		// Legacy / deferred macro — pass the raw line through, but still
-		// process any trailing text.
+		// Macro produced no shell command (Go-only work, conditional no-op, or unknown macro).
+		// Never pass the raw {MACRO ...} line through to the shell.
 		if remaining == "" {
-			return rawLine, nil
+			return "", nil
 		}
+		// Process any trailing text that followed the macro on the same line.
 		remainingResult, err := expandLine(remaining, ctx)
 		if err != nil {
 			return "", err
 		}
-		if remainingResult != "" {
-			return "{" + macro.Name + " " + strings.Join(macro.Args, " ") + "} " + remainingResult, nil
-		}
-		return rawLine, nil
+		return remainingResult, nil
 	}
 
 	if remaining == "" {
@@ -327,11 +338,28 @@ var macroRegistry = map[string]macroHandler{
 	"REMOVE_USER":     executeRemoveUser,
 }
 
+// isInstallOnlyMacro returns true for macros that install or create files/services/users
+func isInstallOnlyMacro(name string) bool {
+	switch name {
+	case "INSTALL_BIN", "INSTALL_LIB", "INSTALL_CONF", "INSTALL_MAN",
+		"INSTALL_SERVICE", "INSTALL_DIR", "SYMLINK", "ENABLE_SERVICE",
+		"START_SERVICE", "RESTART_SERVICE", "CREATE_USER":
+		return true
+	default:
+		return false
+	}
+}
+
 // executeMacro executes a single macro and returns the shell command.
+// Unknown macro names are silently ignored (return "", nil) so that typos
+// or unrecognised macros never reach the shell.
 func executeMacro(macro Macro, ctx *MacroContext) (string, error) {
+	if ctx != nil && (ctx.Op == OperationRemove || ctx.Op == OperationPurge) && isInstallOnlyMacro(macro.Name) {
+		return "", nil // Skip install/creation macros during remove or purge
+	}
 	handler, ok := macroRegistry[macro.Name]
 	if !ok {
-		return "", fmt.Errorf("unknown macro: %s", macro.Name)
+		return "", nil // Unknown macros are silently skipped
 	}
 	return handler(macro, ctx)
 }
@@ -376,13 +404,14 @@ func executeInstallBin(macro Macro, ctx *MacroContext) (string, error) {
 		})
 	}
 
-	// Return install command using mkdir, cp, and chmod
+	// Return install command using mkdir, cp, chmod, and echo
+	symOK := getSymOK()
 	if len(macro.Args) >= 2 {
 		dest := macro.Args[len(macro.Args)-1]
 		if strings.HasSuffix(dest, "/") {
 			dest = dest + filepath.Base(macro.Args[0])
 		}
-		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 755 %s", dest, macro.Args[0], dest, dest), nil
+		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 755 %s && echo \"  %s  installed %s to %s\"", dest, macro.Args[0], dest, dest, symOK, macro.Args[0], dest), nil
 	}
 	// Default to /usr/bin directory (or macOS equivalent)
 	var binDir, dest string
@@ -392,7 +421,7 @@ func executeInstallBin(macro Macro, ctx *MacroContext) (string, error) {
 		binDir = filepath.Join(termuxPrefix(), "/usr/bin")
 	}
 	dest = filepath.Join(binDir, filepath.Base(macro.Args[0]))
-	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 755 %s", binDir, macro.Args[0], dest, dest), nil
+	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 755 %s && echo \"  %s  installed %s to %s\"", binDir, macro.Args[0], dest, dest, symOK, macro.Args[0], dest), nil
 }
 
 // executeInstallLib installs a library to /usr/lib (or Termux equivalent) or specified directory
@@ -404,6 +433,7 @@ func executeInstallLib(macro Macro, ctx *MacroContext) (string, error) {
 		return "", fmt.Errorf("INSTALL_LIB invalid source: %w", err)
 	}
 
+	symOK := getSymOK()
 	// Track for uninstall (use the last arg as dest if provided)
 	if len(macro.Args) >= 2 {
 		dest := macro.Args[len(macro.Args)-1]
@@ -419,8 +449,8 @@ func executeInstallLib(macro Macro, ctx *MacroContext) (string, error) {
 			Type:      "file",
 			Generated: true,
 		})
-		// Return install command using mkdir, cp, and chmod
-		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s", dest, macro.Args[0], dest, dest), nil
+		// Return install command using mkdir, cp, chmod, and echo
+		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s && echo \"  %s  installed %s to %s\"", dest, macro.Args[0], dest, dest, symOK, macro.Args[0], dest), nil
 	}
 	// Default to /usr/lib directory (or macOS equivalent)
 	var libDir, dest string
@@ -435,8 +465,8 @@ func executeInstallLib(macro Macro, ctx *MacroContext) (string, error) {
 		Type:      "file",
 		Generated: true,
 	})
-	// Return install command using mkdir, cp, and chmod
-	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 644 %s", libDir, macro.Args[0], dest, dest), nil
+	// Return install command using mkdir, cp, chmod, and echo
+	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 644 %s && echo \"  %s  installed %s to %s\"", libDir, macro.Args[0], dest, dest, symOK, macro.Args[0], dest), nil
 }
 
 // executeInstallConf installs a config file to /etc (or Termux equivalent) or specified directory
@@ -448,6 +478,7 @@ func executeInstallConf(macro Macro, ctx *MacroContext) (string, error) {
 		return "", fmt.Errorf("INSTALL_CONF invalid source: %w", err)
 	}
 
+	symOK := getSymOK()
 	// Track for uninstall (use the last arg as dest if provided)
 	if len(macro.Args) >= 2 {
 		dest := macro.Args[len(macro.Args)-1]
@@ -463,8 +494,8 @@ func executeInstallConf(macro Macro, ctx *MacroContext) (string, error) {
 			Type:      "file",
 			Generated: true,
 		})
-		// Return install command using mkdir, cp, and chmod
-		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s", dest, macro.Args[0], dest, dest), nil
+		// Return install command using mkdir, cp, chmod, and echo
+		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s && echo \"  %s  installed %s to %s\"", dest, macro.Args[0], dest, dest, symOK, macro.Args[0], dest), nil
 	}
 	// Default to /etc directory (or macOS equivalent)
 	var etcDir, dest string
@@ -479,8 +510,8 @@ func executeInstallConf(macro Macro, ctx *MacroContext) (string, error) {
 		Type:      "file",
 		Generated: true,
 	})
-	// Return install command using mkdir, cp, and chmod
-	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 644 %s", etcDir, macro.Args[0], dest, dest), nil
+	// Return install command using mkdir, cp, chmod, and echo
+	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 644 %s && echo \"  %s  installed %s to %s\"", etcDir, macro.Args[0], dest, dest, symOK, macro.Args[0], dest), nil
 }
 
 // executeInstallMan installs a man page to /usr/share/man (or Termux equivalent) or specified directory
@@ -492,6 +523,7 @@ func executeInstallMan(macro Macro, ctx *MacroContext) (string, error) {
 		return "", fmt.Errorf("INSTALL_MAN invalid source: %w", err)
 	}
 
+	symOK := getSymOK()
 	// Track for uninstall (use the last arg as dest if provided)
 	if len(macro.Args) >= 2 {
 		dest := macro.Args[len(macro.Args)-1]
@@ -512,7 +544,7 @@ func executeInstallMan(macro Macro, ctx *MacroContext) (string, error) {
 			Generated: true,
 		})
 		uncompressedDest := strings.TrimSuffix(dest, ".gz")
-		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s && gzip -f %s", uncompressedDest, macro.Args[0], uncompressedDest, uncompressedDest, uncompressedDest), nil
+		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s && gzip -f %s && echo \"  %s  installed %s to %s\"", uncompressedDest, macro.Args[0], uncompressedDest, uncompressedDest, uncompressedDest, symOK, macro.Args[0], dest), nil
 	}
 	// Default to /usr/share/man/man1 directory (or macOS equivalent)
 	sourceFile := filepath.Base(macro.Args[0])
@@ -532,10 +564,10 @@ func executeInstallMan(macro Macro, ctx *MacroContext) (string, error) {
 		Type:      "file",
 		Generated: true,
 	})
-	// Return install command using mkdir, cp, chmod, and gzip
+	// Return install command using mkdir, cp, chmod, gzip, and echo
 	// We need to copy to the destination without .gz first, then gzip it
 	uncompressedDest := strings.TrimSuffix(dest, ".gz")
-	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 644 %s && gzip -f %s", manDir, macro.Args[0], uncompressedDest, uncompressedDest, uncompressedDest), nil
+	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 644 %s && gzip -f %s && echo \"  %s  installed %s to %s\"", manDir, macro.Args[0], uncompressedDest, uncompressedDest, uncompressedDest, symOK, macro.Args[0], dest), nil
 }
 
 // executeInstallService installs a systemd service file.
@@ -552,6 +584,7 @@ func executeInstallService(macro Macro, ctx *MacroContext) (string, error) {
 		return "", fmt.Errorf("INSTALL_SERVICE invalid source: %w", err)
 	}
 
+	symOK := getSymOK()
 	// Track for uninstall (use the service name, not the full path)
 	if len(macro.Args) >= 2 {
 		dest := macro.Args[len(macro.Args)-1]
@@ -568,8 +601,8 @@ func executeInstallService(macro Macro, ctx *MacroContext) (string, error) {
 			Type:      "service",
 			Generated: true,
 		})
-		// Return install command using mkdir, cp, and chmod
-		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s", dest, macro.Args[0], dest, dest), nil
+		// Return install command using mkdir, cp, chmod, and echo
+		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s && echo \"  %s  installed %s to %s\"", dest, macro.Args[0], dest, dest, symOK, macro.Args[0], dest), nil
 	}
 	// Default to /etc/systemd/system directory, store just the service name
 	serviceName := filepath.Base(macro.Args[0])
@@ -579,8 +612,8 @@ func executeInstallService(macro Macro, ctx *MacroContext) (string, error) {
 		Type:      "service",
 		Generated: true,
 	})
-	// Return install command using mkdir, cp, and chmod
-	return fmt.Sprintf("mkdir -p /etc/systemd/system && cp %s %s && chmod 644 %s", macro.Args[0], dest, dest), nil
+	// Return install command using mkdir, cp, chmod, and echo
+	return fmt.Sprintf("mkdir -p /etc/systemd/system && cp %s %s && chmod 644 %s && echo \"  %s  installed %s to %s\"", macro.Args[0], dest, dest, symOK, macro.Args[0], dest), nil
 }
 
 // executeEnableService enables a systemd service.
@@ -706,7 +739,8 @@ func executeInstallDir(macro Macro, ctx *MacroContext) (string, error) {
 		Generated: true,
 	})
 
-	return fmt.Sprintf("mkdir -p %s", dir), nil
+	symOK := getSymOK()
+	return fmt.Sprintf("mkdir -p %s && echo \"  %s  installed directory %s\"", dir, symOK, dir), nil
 }
 
 // executeSymlink creates a symbolic link
@@ -731,7 +765,8 @@ func executeSymlink(macro Macro, ctx *MacroContext) (string, error) {
 		Generated: true,
 	})
 
-	return fmt.Sprintf("ln -sf %s %s", target, link), nil
+	symOK := getSymOK()
+	return fmt.Sprintf("ln -sf %s %s && echo \"  %s  installed symlink %s -> %s\"", target, link, symOK, link, target), nil
 }
 
 // executeCreateUser creates a system user. On Termux and macOS, useradd is not available, so this is a no-op.
@@ -776,11 +811,26 @@ func executeDownload(macro Macro, ctx *MacroContext) (string, error) {
 	if !isAllowedURL(url) {
 		return "", fmt.Errorf("disallowed URL host/scheme for DOWNLOAD: %s", url)
 	}
+
+	file, err := resolveDownloadPath(macro.Args, ctx)
+	if err != nil {
+		return "", err
+	}
+
+	if err := prepareDownloadDirectory(file); err != nil {
+		return "", err
+	}
+
+	return performDownload(url, file)
+}
+
+// resolveDownloadPath resolves the download path from macro arguments
+func resolveDownloadPath(args []string, ctx *MacroContext) (string, error) {
 	file := ""
-	if len(macro.Args) > 1 {
-		file = macro.Args[1]
+	if len(args) > 1 {
+		file = args[1]
 	} else {
-		file = filepath.Base(url)
+		file = filepath.Base(args[0])
 	}
 
 	if err := validateSafePath(file); err != nil {
@@ -801,13 +851,21 @@ func executeDownload(macro Macro, ctx *MacroContext) (string, error) {
 		}
 	}
 
-	// Create directory if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(file), 0755); err != nil {
-		return "", fmt.Errorf("failed to create directory: %w", err)
-	}
+	return file, nil
+}
 
-	// Download the file
-	resp, err := http.Get(url)
+// prepareDownloadDirectory creates the directory for the download file
+func prepareDownloadDirectory(file string) error {
+	if err := os.MkdirAll(filepath.Dir(file), 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+	return nil
+}
+
+// performDownload executes the HTTP download with progress tracking
+func performDownload(url, file string) (string, error) {
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("failed to download %s: %w", url, err)
 	}
@@ -820,146 +878,202 @@ func executeDownload(macro Macro, ctx *MacroContext) (string, error) {
 	// Get content length for progress tracking
 	contentLength := resp.ContentLength
 	if contentLength <= 0 {
-		// If content length is unknown, fall back to simple download
-		out, err := os.Create(file)
-		if err != nil {
-			return "", fmt.Errorf("failed to create file %s: %w", file, err)
-		}
-		defer out.Close()
-
-		if _, err := io.Copy(out, resp.Body); err != nil {
-			return "", fmt.Errorf("failed to write file %s: %w", file, err)
-		}
-		return "", nil
+		return downloadSimple(resp.Body, file)
 	}
 
-	// Create the file
+	return downloadWithProgress(resp.Body, file, contentLength)
+}
+
+// downloadSimple performs a download without progress tracking
+func downloadSimple(body io.Reader, file string) (string, error) {
 	out, err := os.Create(file)
 	if err != nil {
 		return "", fmt.Errorf("failed to create file %s: %w", file, err)
 	}
 	defer out.Close()
 
-	// Progress tracking with display
+	if _, err := io.Copy(out, body); err != nil {
+		return "", fmt.Errorf("failed to write file %s: %w", file, err)
+	}
+	return "", nil
+}
+
+// downloadWithProgress performs a download with progress tracking
+func downloadWithProgress(body io.Reader, file string, contentLength int64) (string, error) {
+	out, err := os.Create(file)
+	if err != nil {
+		return "", fmt.Errorf("failed to create file %s: %w", file, err)
+	}
+	defer out.Close()
+
 	displayName := filepath.Base(file)
-	startTime := time.Now()
-	var downloaded int64
-	lastUpdate := startTime
-	termWidth := getTerminalWidth()
+	progress := setupProgressDisplay(contentLength, displayName)
 
-	// Pre-calculate fixed layout elements
-	barWidth := 20
-
-	// Pre-calculate maximum filename length (assuming worst case for right side)
-	// Right side format: "XXX,X XB   XXX,X XB/s 00:00 [####################]  100%"
-	maxRightSideLen := 50 // Estimated maximum right side length
-	maxFilenameLen := termWidth - maxRightSideLen - 1
-	if maxFilenameLen < 3 {
-		maxFilenameLen = 3
-	}
-
-	// Truncate filename once
-	truncatedName := displayName
-	if len(displayName) > maxFilenameLen {
-		truncatedName = displayName[:maxFilenameLen-3] + "..."
-	}
-
-	// Create a progress reader
 	reader := &progressReader{
-		reader: resp.Body,
+		reader: body,
 		total:  contentLength,
 		onProgress: func(bytesRead int) {
-			downloaded += int64(bytesRead)
-			now := time.Now()
-
-			// Update display every 100ms
-			if now.Sub(lastUpdate) < 100*time.Millisecond && downloaded < contentLength {
-				return
-			}
-			lastUpdate = now
-
-			// Calculate progress
-			percent := float64(downloaded) / float64(contentLength) * 100
-			elapsed := now.Sub(startTime).Seconds()
-
-			// Calculate speed
-			var speed float64
-			if elapsed > 0 {
-				speed = float64(downloaded) / elapsed
-			}
-
-			// Calculate remaining time
-			var remaining float64
-			if speed > 0 {
-				remaining = float64(contentLength-downloaded) / speed
-			}
-
-			// Format sizes using strings.Builder for efficiency
-			var sb strings.Builder
-
-			// Add downloaded size
-			formatSize(&sb, downloaded)
-			sb.WriteString("   ")
-
-			// Add speed
-			formatSize(&sb, int64(speed))
-			sb.WriteString("/s ")
-
-			// Add time
-			formatTime(&sb, remaining)
-
-			// Build progress bar
-			filled := int(percent / 100 * float64(barWidth))
-			sb.WriteString(" [")
-			for i := 0; i < filled; i++ {
-				sb.WriteByte('#')
-			}
-			for i := filled; i < barWidth; i++ {
-				sb.WriteByte('-')
-			}
-			sb.WriteString("]  ")
-
-			// Add percentage
-			sb.WriteString(fmt.Sprintf("%.0f%%", percent))
-
-			// Display progress with filename on left, stats on right
-			fmt.Printf("\r%s %-*s", truncatedName, termWidth-len(truncatedName)-1, sb.String())
+			progress.update(bytesRead)
 		},
 	}
 
-	// Copy with progress tracking
 	if _, err := io.Copy(out, reader); err != nil {
 		return "", fmt.Errorf("failed to write file %s: %w", file, err)
 	}
 
-	// Print final newline
 	fmt.Println()
-
-	// Return empty string since download is done in Go
 	return "", nil
+}
+
+// progressDisplay manages the download progress display
+type progressDisplay struct {
+	startTime     time.Time
+	downloaded    int64
+	lastUpdate    time.Time
+	contentLength int64
+	barWidth      int
+	nameColWidth  int
+	truncatedName string
+}
+
+// setupProgressDisplay initializes the progress display
+func setupProgressDisplay(contentLength int64, displayName string) *progressDisplay {
+	startTime := time.Now()
+	termWidth := getTerminalWidth()
+
+	const barWidth = 20
+	// Total fixed width of non-name components (sizeStr 10, speedStr 12, timeStr 5, bar 22, percent 4, spacers 8) = 61 chars.
+	// Leave a 2-character right margin to guarantee line length stays strictly less than termWidth and never auto-wraps.
+	targetMaxLen := termWidth - 2
+	nameColWidth := targetMaxLen - 61
+	if nameColWidth < 3 {
+		nameColWidth = 3
+	}
+
+	truncatedName := displayName
+	if len(displayName) > nameColWidth {
+		if nameColWidth > 3 {
+			truncatedName = displayName[:nameColWidth-3] + "..."
+		} else {
+			truncatedName = displayName[:nameColWidth]
+		}
+	}
+
+	return &progressDisplay{
+		startTime:     startTime,
+		lastUpdate:    startTime,
+		contentLength: contentLength,
+		barWidth:      barWidth,
+		nameColWidth:  nameColWidth,
+		truncatedName: truncatedName,
+	}
+}
+
+// update updates the progress display
+func (p *progressDisplay) update(bytesRead int) {
+	p.downloaded += int64(bytesRead)
+	now := time.Now()
+
+	if !p.shouldUpdate(now) {
+		return
+	}
+	p.lastUpdate = now
+
+	stats := p.calculateStats(now)
+	p.renderProgress(stats)
+}
+
+// shouldUpdate determines if the display should be updated
+func (p *progressDisplay) shouldUpdate(now time.Time) bool {
+	return now.Sub(p.lastUpdate) >= 50*time.Millisecond || p.downloaded >= p.contentLength
+}
+
+// progressStats holds calculated progress statistics
+type progressStats struct {
+	percent   float64
+	speed     float64
+	remaining float64
+}
+
+// calculateStats computes progress statistics
+func (p *progressDisplay) calculateStats(now time.Time) progressStats {
+	percent := float64(p.downloaded) / float64(p.contentLength) * 100
+	elapsed := now.Sub(p.startTime).Seconds()
+
+	var speed float64
+	if elapsed > 0 {
+		speed = float64(p.downloaded) / elapsed
+	}
+
+	var remaining float64
+	if speed > 0 {
+		remaining = float64(p.contentLength-p.downloaded) / speed
+	}
+
+	return progressStats{
+		percent:   percent,
+		speed:     speed,
+		remaining: remaining,
+	}
+}
+
+// renderProgress displays the progress bar and statistics
+func (p *progressDisplay) renderProgress(stats progressStats) {
+	var sizeSB strings.Builder
+	formatSize(&sizeSB, p.downloaded)
+	sizeStr := fmt.Sprintf("%10s", sizeSB.String())
+
+	var speedSB strings.Builder
+	formatSize(&speedSB, int64(stats.speed))
+	speedStr := fmt.Sprintf("%12s", speedSB.String()+"/s")
+
+	var timeSB strings.Builder
+	formatTime(&timeSB, stats.remaining)
+
+	percent := stats.percent
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+
+	filled := int(percent / 100 * float64(p.barWidth))
+	if filled > p.barWidth {
+		filled = p.barWidth
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	bar := strings.Repeat("#", filled) + strings.Repeat("-", p.barWidth-filled)
+
+	// Print with carriage return and clear the rest of the line, then flush
+	fmt.Fprintf(os.Stdout, "\r%-*s  %s  %s  %s [%s] %3.0f%%\033[K",
+		p.nameColWidth, p.truncatedName, sizeStr, speedStr, timeSB.String(), bar, percent)
 }
 
 // progressReader wraps a reader to track download progress
 type progressReader struct {
 	reader     io.Reader
 	total      int64
-	read       int64
 	onProgress func(int)
 }
 
 func (pr *progressReader) Read(p []byte) (n int, err error) {
 	n, err = pr.reader.Read(p)
-	if n > 0 {
-		pr.read += int64(n)
-		if pr.onProgress != nil {
-			pr.onProgress(n)
-		}
+	if n > 0 && pr.onProgress != nil {
+		pr.onProgress(n)
 	}
 	return
 }
 
 // formatSize formats bytes to a strings.Builder for efficiency
 func formatSize(sb *strings.Builder, bytes int64) {
+	if bytes <= 0 {
+		sb.WriteString("0 B")
+		return
+	}
+
 	const unit = 1024
 
 	if bytes < unit {
@@ -1011,6 +1125,9 @@ func formatTime(sb *strings.Builder, seconds float64) {
 	if seconds < 0 {
 		seconds = 0
 	}
+	if seconds > 5999 { // cap at 99m 59s to preserve 5-char width (99:59)
+		seconds = 5999
+	}
 	mins := int(seconds / 60)
 	secs := int(seconds) % 60
 	sb.WriteString(fmt.Sprintf("%02d:%02d", mins, secs))
@@ -1028,17 +1145,31 @@ func getTerminalWidth() int {
 
 	ws := &winsize{}
 
-	// Define TIOCGWINSZ for different platforms
-	const TIOCGWINSZ = 0x5413 // Linux
+	var tiocgwinsz uintptr = 0x5413 // Linux
+	if runtime.GOOS == "darwin" {
+		tiocgwinsz = 0x40087468 // macOS
+	}
 
+	// Try stdout first, then stdin
+	fd := uintptr(syscall.Stdout)
 	retCode, _, _ := syscall.Syscall(
 		syscall.SYS_IOCTL,
-		uintptr(syscall.Stdin),
-		uintptr(TIOCGWINSZ),
+		fd,
+		tiocgwinsz,
 		uintptr(unsafe.Pointer(ws)),
 	)
 
-	if int(retCode) == -1 {
+	if int(retCode) == -1 || ws.Col == 0 {
+		fd = uintptr(syscall.Stdin)
+		retCode, _, _ = syscall.Syscall(
+			syscall.SYS_IOCTL,
+			fd,
+			tiocgwinsz,
+			uintptr(unsafe.Pointer(ws)),
+		)
+	}
+
+	if int(retCode) == -1 || ws.Col == 0 {
 		// Fallback to stty if ioctl fails
 		if cmd := exec.Command("stty", "size"); cmd != nil {
 			cmd.Stdin = os.Stdin
@@ -1046,7 +1177,7 @@ func getTerminalWidth() int {
 				// stty size returns "rows cols"
 				parts := strings.Split(strings.TrimSpace(string(out)), " ")
 				if len(parts) == 2 {
-					if cols, err := fmt.Sscanf(parts[1], "%d", &ws.Col); err == nil && cols == 1 {
+					if cols, err := fmt.Sscanf(parts[1], "%d", &ws.Col); err == nil && cols == 1 && ws.Col > 0 {
 						return int(ws.Col)
 					}
 				}

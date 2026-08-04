@@ -75,6 +75,8 @@ var DefaultAliases = map[string]string{
 	"cl":  "clean",
 	"ed":  "edit-sources",
 	// subsystems
+	"ex": "extra",
+	"wg": "winget",
 	"fp": "flatpak",
 	"sk": "snap",
 }

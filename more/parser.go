@@ -5,10 +5,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/adrianpriza-ai/alps/priv"
 )
+
+// unknownTokenRe matches any leftover {TOKEN} placeholders (all-caps identifier inside braces)
+// that were not replaced during variable expansion. Used to strip them before shell execution.
+var unknownTokenRe = regexp.MustCompile(`\{[A-Z][A-Z0-9_]*\}`)
 
 // OperationType represents the type of operation being performed
 type OperationType string
@@ -124,91 +129,113 @@ func Filter(lines []string, ctx *MacroContext, op OperationType) (*ExecutionMani
 		AfterEnv:  []string{},
 		ScriptNum: 0,
 	}
-	stripEsc := false
-	if (op == OperationInstall || op == OperationUpgrade) &&
+
+	stripEsc := shouldStripEscalation(op, ctx)
+	expandedLines := expandPlaceholdersGlobally(lines, ctx)
+
+	return processLines(expandedLines, stripEsc, manifest, op)
+}
+
+// shouldStripEscalation determines if privilege escalation should be stripped
+func shouldStripEscalation(op OperationType, ctx *MacroContext) bool {
+	return (op == OperationInstall || op == OperationUpgrade) &&
 		(ctx.Safety == "strict" || ctx.Safety == "") &&
-		!isTermux() && !isMacOS() && !isRoot() {
-		stripEsc = true
-	}
+		!isTermux() && !isMacOS() && !isRoot()
+}
 
-	var currentBuffer []string
-
-	// First, expand all placeholders globally
+// expandPlaceholdersGlobally expands placeholders in all lines
+func expandPlaceholdersGlobally(lines []string, ctx *MacroContext) []string {
 	expandedLines := make([]string, len(lines))
 	for i, line := range lines {
 		expandedLines[i] = expandPlaceholders(line, ctx)
 	}
+	return expandedLines
+}
 
-	// Process line by line
-	for _, line := range expandedLines {
+// processLines processes expanded lines and categorizes them into the manifest
+func processLines(lines []string, stripEsc bool, manifest *ExecutionManifest, op OperationType) (*ExecutionManifest, error) {
+	var currentBuffer []string
+
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 
-		// Check if line starts with a macro
 		macro, _, isMacro := ParseMacro(line)
 
 		if isMacro {
-			// Flush current buffer if it has content
-			if len(currentBuffer) > 0 {
-				scriptPath, err := writeTempScript(currentBuffer, manifest.ScriptNum)
-				if err != nil {
-					return nil, fmt.Errorf("failed to write temp script: %w", err)
-				}
-				// Use the actual shell command, not macro syntax
-				shell := "sh"
-				if _, err := exec.LookPath("bash"); err == nil {
-					shell = "bash"
-				}
-				manifest.BuildEnv = append(manifest.BuildEnv, fmt.Sprintf("%s %s", shell, scriptPath))
-				manifest.ScriptNum++
-				currentBuffer = []string{}
+			if err := flushBuffer(currentBuffer, manifest); err != nil {
+				return nil, err
 			}
+			currentBuffer = []string{}
 
-			// Categorize macro and store raw macro syntax (defer expansion to execution)
-			if BuildEnvMacros[macro.Name] {
-				// Store raw macro syntax in build_env
-				manifest.BuildEnv = append(manifest.BuildEnv, line)
-			} else if AfterEnvMacros[macro.Name] {
-				// Store raw macro syntax in after_env
-				manifest.AfterEnv = append(manifest.AfterEnv, line)
-			} else {
-				// Unknown macro - treat as plain text
-				if stripEsc {
-					line = stripSudo(line)
-				}
-				currentBuffer = append(currentBuffer, line)
-			}
+			categorizeMacro(line, macro, manifest, op)
 		} else {
-			// Plain shell command - strip privilege escalation when it will run
-			// under fakeroot (install/upgrade + strict), otherwise keep as-is.
-			if stripEsc {
-				line = stripSudo(line)
+			processedLine := processShellCommand(line, stripEsc)
+			if processedLine != "" {
+				currentBuffer = append(currentBuffer, processedLine)
 			}
-			currentBuffer = append(currentBuffer, line)
 		}
 	}
 
-	// Flush remaining buffer
-	if len(currentBuffer) > 0 {
-		scriptPath, err := writeTempScript(currentBuffer, manifest.ScriptNum)
-		if err != nil {
-			return nil, fmt.Errorf("failed to write temp script: %w", err)
-		}
-		// Use the actual shell command, not macro syntax
-		shell := "sh"
-		if _, err := exec.LookPath("bash"); err == nil {
-			shell = "bash"
-		}
-		manifest.BuildEnv = append(manifest.BuildEnv, fmt.Sprintf("%s %s", shell, scriptPath))
-		manifest.ScriptNum++
+	if err := flushBuffer(currentBuffer, manifest); err != nil {
+		return nil, err
 	}
 
 	return manifest, nil
 }
 
-// expandPlaceholders expands all placeholder tokens in a line
+// flushBuffer writes buffered commands to a temp script and adds to manifest
+func flushBuffer(buffer []string, manifest *ExecutionManifest) error {
+	if len(buffer) == 0 {
+		return nil
+	}
+
+	scriptPath, err := writeTempScript(buffer, manifest.ScriptNum)
+	if err != nil {
+		return fmt.Errorf("failed to write temp script: %w", err)
+	}
+
+	shell := detectShell()
+	manifest.BuildEnv = append(manifest.BuildEnv, fmt.Sprintf("%s %s", shell, scriptPath))
+	manifest.ScriptNum++
+	return nil
+}
+
+// detectShell finds the best available shell
+func detectShell() string {
+	if _, err := exec.LookPath("bash"); err == nil {
+		return "bash"
+	}
+	return "sh"
+}
+
+// categorizeMacro adds a macro to the appropriate manifest section
+func categorizeMacro(line string, macro Macro, manifest *ExecutionManifest, op OperationType) {
+	if (op == OperationRemove || op == OperationPurge) && isInstallOnlyMacro(macro.Name) {
+		return // Skip install/creation macros during remove or purge
+	}
+	if BuildEnvMacros[macro.Name] {
+		manifest.BuildEnv = append(manifest.BuildEnv, line)
+	} else if AfterEnvMacros[macro.Name] {
+		manifest.AfterEnv = append(manifest.AfterEnv, line)
+	}
+	// Unknown macros are silently ignored
+}
+
+// processShellCommand processes a plain shell command
+func processShellCommand(line string, stripEsc bool) string {
+	line = unknownTokenRe.ReplaceAllString(line, "")
+	if stripEsc {
+		line = stripSudo(line)
+	}
+	return line
+}
+
+// expandPlaceholders expands known placeholder tokens in a line.
+// It intentionally does NOT strip unknown {TOKEN} patterns so that
+// macro prefixes like {DOWNLOAD} survive to be parsed by ParseMacro.
 func expandPlaceholders(line string, ctx *MacroContext) string {
 	line = strings.ReplaceAll(line, "{ARCH}", ctx.Arch)
 	line = strings.ReplaceAll(line, "{VERSION}", ctx.Version)
@@ -315,65 +342,108 @@ func ExecuteManifest(manifest *ExecutionManifest, e *Entry, op OperationType, ct
 	defer os.Chdir(originalDir) // Always restore original directory
 
 	// Execute build_env first
-	if len(manifest.BuildEnv) > 0 {
-		fmt.Printf("  executing build_env (%d commands)...\n", len(manifest.BuildEnv))
-		for _, cmd := range manifest.BuildEnv {
-			// Expand macros before execution
-			expanded, err := ExpandMacros([]string{cmd}, ctx)
-			if err != nil {
-				return fmt.Errorf("failed to expand build_env macro: %w", err)
-			}
-			if len(expanded) > 0 && expanded[0] != "" {
-				cmd = expanded[0]
-			} else {
-				// Skip empty commands (macros that execute in Go)
-				continue
-			}
-
-			// Wraps build_env and after_env with fakeroot for install/upgrade operations, removing permissions and purge system files.
-			// On macOS, fakeroot is not available, so this is skipped.
-			if (op == OperationInstall || op == OperationUpgrade) &&
-				(ctx.Safety == "strict" || ctx.Safety == "") && !isTermux() && !isMacOS() && !isRoot() {
-				if err := requireFakeroot(); err != nil {
-					return err
-				}
-				if hasFakeroot() && !isAlreadyFakeroot(cmd) {
-					cmd = stripSudo(cmd)
-					cmd = fmt.Sprintf("fakeroot -- %s", cmd)
-				}
-			}
-
-			if err := executeCommand(cmd, false); err != nil {
-				return fmt.Errorf("build_env command failed: %w", err)
-			}
-		}
-		fmt.Printf("  build_env completed successfully\n")
+	if err := executeBuildEnv(manifest.BuildEnv, op, ctx); err != nil {
+		return err
 	}
 
 	// Only execute after_env if build_env succeeded
-	if len(manifest.AfterEnv) > 0 {
-		fmt.Printf("  executing after_env (%d commands)...\n", len(manifest.AfterEnv))
-		for _, cmd := range manifest.AfterEnv {
-			// Expand macros before execution
-			expanded, err := ExpandMacros([]string{cmd}, ctx)
-			if err != nil {
-				return fmt.Errorf("failed to expand after_env macro: %w", err)
-			}
-			if len(expanded) > 0 && expanded[0] != "" {
-				cmd = expanded[0]
-			} else {
-				// Skip empty commands (macros that execute in Go)
-				continue
-			}
-
-			if err := executeCommand(cmd, afterEnvSudo); err != nil {
-				return fmt.Errorf("after_env command failed: %w", err)
-			}
-		}
-		fmt.Printf("  after_env completed successfully\n")
+	if err := executeAfterEnv(manifest.AfterEnv, afterEnvSudo, ctx, op); err != nil {
+		return err
 	}
 
 	return nil
+}
+
+// executeBuildEnv executes all build_env commands with proper privilege handling
+func executeBuildEnv(commands []string, op OperationType, ctx *MacroContext) error {
+	if len(commands) == 0 {
+		return nil
+	}
+
+	fmt.Printf("  executing build_env (%d commands)...\n", len(commands))
+	for _, cmd := range commands {
+		expanded, err := expandAndWrapCommand(cmd, op, ctx)
+		if err != nil {
+			return err
+		}
+		if expanded == "" {
+			continue
+		}
+
+		if err := executeCommand(expanded, false); err != nil {
+			return fmt.Errorf("build_env command failed: %w", err)
+		}
+	}
+	fmt.Printf("  build_env completed successfully\n")
+	return nil
+}
+
+// executeAfterEnv executes all after_env commands with proper privilege handling
+func executeAfterEnv(commands []string, useSudo bool, ctx *MacroContext, op OperationType) error {
+	// Filter out install/creation macros during remove or purge operations.
+	// This is a safety net in case categorizeMacro let them through.
+	if op == OperationRemove || op == OperationPurge {
+		filtered := commands[:0]
+		for _, cmd := range commands {
+			macro, _, isMacro := ParseMacro(strings.TrimSpace(cmd))
+			if isMacro && isInstallOnlyMacro(macro.Name) {
+				continue
+			}
+			filtered = append(filtered, cmd)
+		}
+		commands = filtered
+	}
+
+	if len(commands) == 0 {
+		return nil
+	}
+
+	fmt.Printf("  executing after_env (%d commands)...\n", len(commands))
+	for _, cmd := range commands {
+		expanded, err := ExpandMacros([]string{cmd}, ctx)
+		if err != nil {
+			return fmt.Errorf("failed to expand after_env macro: %w", err)
+		}
+		if len(expanded) > 0 && expanded[0] != "" {
+			cmd = expanded[0]
+		} else {
+			continue
+		}
+
+		if err := executeCommand(cmd, useSudo); err != nil {
+			return fmt.Errorf("after_env command failed: %w", err)
+		}
+	}
+	fmt.Printf("  after_env completed successfully\n")
+	return nil
+}
+
+// expandAndWrapCommand expands macros and wraps command with fakeroot if needed
+func expandAndWrapCommand(cmd string, op OperationType, ctx *MacroContext) (string, error) {
+	expanded, err := ExpandMacros([]string{cmd}, ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to expand build_env macro: %w", err)
+	}
+	if len(expanded) == 0 || expanded[0] == "" {
+		return "", nil // Skip empty commands (macros that execute in Go)
+	}
+
+	result := expanded[0]
+
+	// Wraps build_env and after_env with fakeroot for install/upgrade operations, removing permissions and purge system files.
+	// On macOS, fakeroot is not available, so this is skipped.
+	if (op == OperationInstall || op == OperationUpgrade) &&
+		(ctx.Safety == "strict" || ctx.Safety == "") && !isTermux() && !isMacOS() && !isRoot() {
+		if err := requireFakeroot(); err != nil {
+			return "", err
+		}
+		if hasFakeroot() && !isAlreadyFakeroot(result) {
+			result = stripSudo(result)
+			result = fmt.Sprintf("fakeroot -- %s", result)
+		}
+	}
+
+	return result, nil
 }
 
 // executeCommand executes a single command with optional sudo

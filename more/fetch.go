@@ -338,26 +338,23 @@ func isAllowedURL(rawURL string) bool {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())
-	allowedDomains := []string{
+	allowedHosts := []string{
 		"github.com",
-		".github.com",
-		"githubusercontent.com",
-		".githubusercontent.com",
-		"github.io",
-		".github.io",
-		"gitlab.com",
-		".gitlab.com",
+		"raw.githubusercontent.com",
 		"codeberg.org",
-		".codeberg.org",
-		"codeberg.page",
+		"gitlab.com",
+	}
+	allowedSuffixes := []string{
+		".github.io",
 		".codeberg.page",
 	}
-	for _, domain := range allowedDomains {
-		if strings.HasPrefix(domain, ".") {
-			if strings.HasSuffix(host, domain) {
-				return true
-			}
-		} else if host == domain {
+	for _, h := range allowedHosts {
+		if host == h {
+			return true
+		}
+	}
+	for _, s := range allowedSuffixes {
+		if strings.HasSuffix(host, s) {
 			return true
 		}
 	}

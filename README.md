@@ -15,7 +15,7 @@
 
 ---
 
-ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and `apk` with built-in AUR, Flatpak, and Snap support, a custom cross-distro script repo (alps-more), fully customizable output styling, and a unified command interface across distros — including Linux, macOS, Termux on Android and WSL on Windows.
+ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and `apk` with built-in AUR, Snap, Flatpak, and Winget support, a custom cross-distro script repo (alps-more), fully customizable output styling, and a unified command interface across distros — including Linux, macOS, Termux on Android and WSL on Windows.
 
 > **One tool. Every distro. Your style.**
 
@@ -25,10 +25,10 @@ ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and
 |-|-|
 | **Multi-distro** | Auto-detects `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, or `apk` |
 | **Termux support** | Full support on Android — no sudo, native `$PREFIX` paths |
-|| **macOS support** | Full support with Homebrew integration; macOS-specific paths and behaviors |
+| **macOS support** | Full support with Homebrew integration; macOS-specific paths and behaviors |
 | **WSL support** | Works on WSL; alps-more entries can target `os = wsl` |
 | **Built-in AUR** | Full recursive dep resolution, PKGBUILD review, yay fallback |
-| **Snap & Flatpak** | First-class subcommands; snap auto-offered on Ubuntu/Debian |
+| **Extra packages** | Unified Snap, Flatpak, and Winget support with consistent interface |
 | **alps-more** | Cross-distro script repo with version tracking, mirror failover, and remote installs from GitHub/GitLab |
 | **Customizable** | Colors, symbols, header, aliases — all via config file |
 | **Smart completion** | fish, bash, zsh — distro-aware, AUR name cache, live package completion |
@@ -107,10 +107,10 @@ Completion is environment-aware — AUR subcommands only appear on Arch, snap on
 
 | Flag | Description | Supported Subsystems |
 |-|-|-|
-| `-n, --dry-run` | Preview actions without making changes | All (repo, aur, flatpak, snap, apt, pacman, dnf, zypper, apk) |
+| `-n, --dry-run` | Preview actions without making changes | All (repo, aur, extra, apt, pacman, dnf, zypper, apk) |
 | `-y, --noconfirm` | Skip confirmation prompts | Main package managers only (apt, pacman, dnf, zypper, apk) |
 
-**Important**: For safety, `-y` is **intentionally NOT supported** for secondary package managers (`aur`, `repo`, `flatpak`, `snap`) and fallback paths. These operations always require explicit user confirmation.
+**Important**: For safety, `-y` is **intentionally NOT supported** for secondary package managers (`aur`, `repo`, `extra`) and fallback paths. These operations always require explicit user confirmation.
 
 ## Usage
 
@@ -134,8 +134,7 @@ alps <command> [args]
 | `clean` | Clean all cached packages |
 | `repo <subcommand>` | Manage alps-more packages |
 | `aur <subcommand>` | AUR management (Arch only) |
-| `flatpak <subcommand>` | Flatpak management |
-| `snap <subcommand>` | Snap management (Ubuntu/Debian) |
+| `extra <subcommand>` | Extra package management (snap/flatpak/winget) |
 | `completion <shell>` | Generate shell completion |
 | `config-show` | Show active config and paths |
 | `aliases` | Show active aliases |
@@ -157,6 +156,7 @@ Unknown commands produce a clear error instead of being passed silently to the b
 | `ug` | upgrade | `ac` | autoclean |
 | `fug` | full-upgrade | `cl` | clean |
 | `fp` | flatpak | `sk` | snap |
+| `ex` | extra | `wg` | winget |
 
 **Subcommand-only** (work inside any subsystem that has a matching subcommand):
 
@@ -167,7 +167,9 @@ Unknown commands produce a clear error instead of being passed silently to the b
 | `abs` | fetch-abs | aur only |
 
 ```bash
+alps ex ins firefox       # extra install firefox (auto-detects backend)
 alps fp ins firefox       # flatpak install firefox
+alps sk ins firefox       # snap install firefox
 alps aur se neovim-git    # aur search neovim-git
 alps repo ins ollama      # alps-more install ollama
 alps aur bl ./mypkg       # aur build-local ./mypkg
@@ -245,25 +247,27 @@ alps aur build-local [dir]      # build from a local PKGBUILD directory
 alps aur fetch-abs <pkg>        # fetch official PKGBUILD (asp or Arch GitLab)
 ```
 
-## Flatpak & Snap
+## Extra Packages (Snap, Flatpak, Winget)
 
 ```bash
-# Flatpak
-alps flatpak install <pkg>
-alps flatpak search <query>
-alps flatpak update
-alps flatpak remove <pkg>
-alps flatpak list
+# Use unified extra command (auto-detects available backend)
+alps extra install <pkg>
+alps extra search <query>
+alps extra update
+alps extra remove <pkg>
+alps extra list
+alps extra show <pkg>
+alps extra purge <pkg>
+alps extra clean
+alps extra autoremove
 
-# Snap (Ubuntu/Debian)
-alps snap install <pkg>
-alps snap search <query>
-alps snap update
-alps snap remove <pkg>
-alps snap list
+# Or use specific backend directly
+alps snap install <pkg>     # Snap (Ubuntu/Debian)
+alps flatpak install <pkg>  # Flatpak
+alps winget install <pkg>   # Winget (WSL)
 ```
 
-Snap is available on Debian/Ubuntu and auto-offered as a fallback when apt can't find a package.
+Snap is available on Debian/Ubuntu and auto-offered as a fallback when apt can't find a package. Winget is available on WSL for Windows package management.
 
 ## alps-more
 
@@ -318,7 +322,7 @@ alps repo clean                           # remove build cache (~/.cache/alps/mo
 
 - Build dir: `~/.cache/alps/more/<package>/`
 - State file: `/var/lib/alps/installed.json` (Termux: `$PREFIX/var/lib/alps/installed.json`, macOS: `~/Library/Application Support/alps/installed.json`)
-- Repo cache: `/var/cache/alps/more/main.txt` (Termux: `$PREFIX/var/cache/alps/more/main.txt` macOS: `~/Library/Caches/alps/more/main.txt`)
+- Repo cache: `/var/cache/alps/more/main.txt` ((Termux: `$PREFIX/var/cache/alps/more/main.txt macOS: `~/Library/Caches/alps/more/main.txt`)
 - Mirrors: [GitHub Pages](https://github.com/adrianpiza-ai/alps-more) and [Codeberg](https://codeberg.org/moreland/alps-more)
 
 ### Key Features

@@ -12,11 +12,10 @@ import (
 	"github.com/adrianpriza-ai/alps/aur"
 	"github.com/adrianpriza-ai/alps/completion"
 	"github.com/adrianpriza-ai/alps/config"
-	"github.com/adrianpriza-ai/alps/flatpak"
+	"github.com/adrianpriza-ai/alps/extra"
 	"github.com/adrianpriza-ai/alps/more"
 	"github.com/adrianpriza-ai/alps/pack"
 	"github.com/adrianpriza-ai/alps/priv"
-	"github.com/adrianpriza-ai/alps/snap"
 	"github.com/adrianpriza-ai/alps/ui"
 )
 
@@ -55,6 +54,10 @@ func main() {
 		runRepo(args, cfg)
 	case "aur":
 		runAUR(args, cfg)
+	case "extra":
+		runExtra(args, cfg)
+	case "winget":
+		runWinget(args, cfg)
 	case "flatpak":
 		runFlatpak(args, cfg)
 	case "snap":
@@ -75,6 +78,10 @@ func dispatchResolved(resolved string, args []string, cfg *config.Config) {
 		runRepo(args, cfg)
 	case "aur":
 		runAUR(args, cfg)
+	case "extra":
+		runExtra(args, cfg)
+	case "winget":
+		runWinget(args, cfg)
 	case "flatpak":
 		runFlatpak(args, cfg)
 	case "snap":
@@ -88,7 +95,7 @@ var hardCommands = map[string]bool{
 	"help": true, "--help": true, "-h": true,
 	"version": true, "--version": true,
 	"aliases": true, "config-show": true, "completion": true,
-	"repo": true, "aur": true, "flatpak": true, "snap": true,
+	"repo": true, "aur": true, "extra": true, "winget": true, "flatpak": true, "snap": true,
 	"install": true, "remove": true, "purge": true,
 	"update": true, "upgrade": true, "full-upgrade": true,
 	"search": true, "show": true, "list": true,
@@ -119,11 +126,24 @@ var validSubCmds = map[string]map[string]bool{
 		"update": true, "list": true, "install": true,
 		"remove": true, "purge": true, "search": true, "upgrade": true, "clean": true,
 	},
+	"extra": {
+		"install": true, "remove": true, "purge": true, "search": true,
+		"show": true, "list": true, "update": true, "upgrade": true,
+		"autoremove": true, "clean": true,
+	},
+	"winget": {
+		"install": true, "remove": true, "purge": true, "search": true,
+		"show": true, "list": true, "update": true, "upgrade": true,
+	},
 	"flatpak": {
-		"install": true, "remove": true, "search": true, "list": true, "update": true,
+		"install": true, "remove": true, "purge": true, "search": true,
+		"show": true, "list": true, "update": true, "upgrade": true,
+		"autoremove": true, "clean": true,
 	},
 	"snap": {
-		"install": true, "remove": true, "search": true, "list": true, "update": true,
+		"install": true, "remove": true, "purge": true, "search": true,
+		"show": true, "list": true, "update": true, "upgrade": true,
+		"autoremove": true, "clean": true,
 	},
 }
 
@@ -704,16 +724,6 @@ func runAURUpgrade(dryRun bool, cfg *config.Config) {
 
 	ui.Msgf(cfg, ui.LevelInfo, "Checking %d AUR package(s) for updates...", len(installed))
 
-	names := make([]string, 0, len(installed))
-	for name := range installed {
-		names = append(names, name)
-	}
-	latest, err := aur.InfoBatch(names)
-	if err != nil {
-		ui.Msgf(cfg, ui.LevelError, "failed to check for AUR updates: %v", err)
-		return
-	}
-
 	pacConf, _ := aur.ReadPacmanConf()
 	ignoreSet := make(map[string]bool)
 	if pacConf != nil {
@@ -722,18 +732,31 @@ func runAURUpgrade(dryRun bool, cfg *config.Config) {
 		}
 	}
 
+	names := make([]string, 0, len(installed))
+	for name := range installed {
+		if ignoreSet[name] {
+			fmt.Printf("  %s  %s: skipping ignored package\n",
+				cfg.Style.SymArrow, name)
+			continue
+		}
+		names = append(names, name)
+	}
+	latest, err := aur.InfoBatch(names)
+	if err != nil {
+		ui.Msgf(cfg, ui.LevelError, "failed to check for AUR updates: %v", err)
+		return
+	}
+
 	var outdated []aur.Package
 	for name, installedVer := range installed {
+		if ignoreSet[name] {
+			continue
+		}
 		pkg, ok := latest[name]
 		if !ok {
 			continue
 		}
 		if pkg.Version != installedVer {
-			if ignoreSet[name] {
-				fmt.Printf("  %s  %s: ignoring package upgrade (%s => %s)\n",
-					cfg.Style.SymArrow, pkg.Name, installedVer, pkg.Version)
-				continue
-			}
 			outdated = append(outdated, *pkg)
 			fmt.Printf("  %s%s%s  %s%s%s → %s%s%s\n",
 				cfg.Style.ColorPrimary, pkg.Name, cfg.Style.ColorReset,
@@ -1455,13 +1478,13 @@ func runRepo(args []string, cfg *config.Config) {
 func runFlatpak(args []string, cfg *config.Config) {
 	ui.PrintHeader(cfg)
 
-	if !flatpak.IsAvailable() {
+	if !extra.IsAvailable("flatpak") {
 		ui.Msg(cfg, ui.LevelError, "flatpak is not installed")
 		os.Exit(1)
 	}
 
 	if len(args) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps flatpak <install|remove|search|list|update> [args]")
+		ui.Msg(cfg, ui.LevelError, "Usage: alps flatpak <install|remove|purge|search|show|list|update|upgrade|autoremove|clean> [args]")
 		os.Exit(1)
 	}
 
@@ -1474,81 +1497,153 @@ func runFlatpak(args []string, cfg *config.Config) {
 	rest := args[1:]
 	pkgs, restFlags := pack.ParseFlagsExt(rest)
 	dryRun := restFlags.DryRun
-	// -y / noConfirm intentionally NOT supported for flatpak.
 
 	switch subcmd {
 	case "install":
-		flatpakInstall(pkgs, dryRun, cfg)
+		extraBackendInstall("flatpak", pkgs, dryRun, cfg)
 	case "remove":
-		flatpakRemove(pkgs, dryRun, cfg)
+		extraBackendRemove("flatpak", pkgs, dryRun, cfg)
+	case "purge":
+		extraBackendPurge("flatpak", pkgs, dryRun, cfg)
 	case "search":
-		flatpakSearch(rest, pkgs, cfg)
+		extraBackendSearch("flatpak", rest, pkgs, cfg)
+	case "show":
+		extraBackendShow("flatpak", pkgs, cfg)
 	case "list":
-		flatpakList(cfg)
+		extraBackendList("flatpak", cfg)
 	case "update":
-		flatpakUpdate(dryRun, cfg)
+		extraBackendUpdate("flatpak", dryRun, cfg)
+	case "upgrade":
+		extraBackendUpgrade("flatpak", dryRun, cfg)
+	case "autoremove":
+		extraBackendAutoremove("flatpak", dryRun, cfg)
+	case "clean":
+		extraBackendClean("flatpak", dryRun, cfg)
 	default:
 		ui.Msgf(cfg, ui.LevelError, "Unknown flatpak subcommand: %s", subcmd)
 		os.Exit(1)
 	}
 }
 
-func flatpakInstall(pkgs []string, dryRun bool, cfg *config.Config) {
+func extraBackendInstall(backendName string, pkgs []string, dryRun bool, cfg *config.Config) {
 	if len(pkgs) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps flatpak install <package>")
+		ui.Msgf(cfg, ui.LevelError, "Usage: alps %s install <package>", backendName)
 		os.Exit(1)
 	}
 	if dryRun {
-		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would install flatpak package(s): %s", strings.Join(pkgs, " "))
+		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would install %s package(s): %s", backendName, strings.Join(pkgs, " "))
 		return
 	}
-	if err := flatpak.Install(pkgs, false); err != nil {
+	if err := extra.Install(backendName, pkgs, false); err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
 	}
 	ui.Msg(cfg, ui.LevelOK, "Done.")
 }
 
-func flatpakRemove(pkgs []string, dryRun bool, cfg *config.Config) {
+func extraBackendRemove(backendName string, pkgs []string, dryRun bool, cfg *config.Config) {
 	if len(pkgs) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps flatpak remove <package>")
+		ui.Msgf(cfg, ui.LevelError, "Usage: alps %s remove <package>", backendName)
 		os.Exit(1)
 	}
 	if dryRun {
-		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would remove flatpak package: %s", pkgs[0])
+		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would remove %s package: %s", backendName, pkgs[0])
 		return
 	}
-	if err := flatpak.Remove(pkgs[0], false); err != nil {
+	if err := extra.Remove(backendName, pkgs[0]); err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
 	}
 	ui.Msg(cfg, ui.LevelOK, "Done.")
 }
 
-func flatpakSearch(rest, pkgs []string, cfg *config.Config) {
+func extraBackendPurge(backendName string, pkgs []string, dryRun bool, cfg *config.Config) {
+	if len(pkgs) == 0 {
+		ui.Msgf(cfg, ui.LevelError, "Usage: alps %s purge <package>", backendName)
+		os.Exit(1)
+	}
+	if dryRun {
+		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would purge %s package: %s", backendName, pkgs[0])
+		return
+	}
+	if err := extra.Purge(backendName, pkgs[0]); err != nil {
+		ui.Msgf(cfg, ui.LevelError, "%v", err)
+		os.Exit(1)
+	}
+	ui.Msg(cfg, ui.LevelOK, "Done.")
+}
+
+func extraBackendSearch(backendName string, rest, pkgs []string, cfg *config.Config) {
 	if len(rest) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps flatpak search <query>")
+		ui.Msgf(cfg, ui.LevelError, "Usage: alps %s search <query>", backendName)
 		os.Exit(1)
 	}
-	if err := flatpak.Search(strings.Join(pkgs, " ")); err != nil {
+	if err := extra.Search(backendName, strings.Join(pkgs, " ")); err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
 	}
 }
 
-func flatpakList(cfg *config.Config) {
-	if err := flatpak.List(); err != nil {
+func extraBackendShow(backendName string, pkgs []string, cfg *config.Config) {
+	if len(pkgs) == 0 {
+		ui.Msgf(cfg, ui.LevelError, "Usage: alps %s show <package>", backendName)
+		os.Exit(1)
+	}
+	if err := extra.Show(backendName, pkgs[0]); err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
 	}
 }
 
-func flatpakUpdate(dryRun bool, cfg *config.Config) {
+func extraBackendList(backendName string, cfg *config.Config) {
+	if err := extra.List(backendName); err != nil {
+		ui.Msgf(cfg, ui.LevelError, "%v", err)
+		os.Exit(1)
+	}
+}
+
+func extraBackendUpdate(backendName string, dryRun bool, cfg *config.Config) {
 	if dryRun {
-		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would update all flatpak packages")
+		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would update all %s packages", backendName)
 		return
 	}
-	if err := flatpak.Update(false); err != nil {
+	if err := extra.Update(backendName); err != nil {
+		ui.Msgf(cfg, ui.LevelError, "%v", err)
+		os.Exit(1)
+	}
+	ui.Msg(cfg, ui.LevelOK, "Done.")
+}
+
+func extraBackendUpgrade(backendName string, dryRun bool, cfg *config.Config) {
+	if dryRun {
+		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would upgrade all %s packages", backendName)
+		return
+	}
+	if err := extra.Upgrade(backendName); err != nil {
+		ui.Msgf(cfg, ui.LevelError, "%v", err)
+		os.Exit(1)
+	}
+	ui.Msg(cfg, ui.LevelOK, "Done.")
+}
+
+func extraBackendAutoremove(backendName string, dryRun bool, cfg *config.Config) {
+	if dryRun {
+		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would autoremove unused %s packages", backendName)
+		return
+	}
+	if err := extra.Autoremove(backendName); err != nil {
+		ui.Msgf(cfg, ui.LevelError, "%v", err)
+		os.Exit(1)
+	}
+	ui.Msg(cfg, ui.LevelOK, "Done.")
+}
+
+func extraBackendClean(backendName string, dryRun bool, cfg *config.Config) {
+	if dryRun {
+		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would clean %s package cache", backendName)
+		return
+	}
+	if err := extra.Clean(backendName); err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
 	}
@@ -1558,13 +1653,13 @@ func flatpakUpdate(dryRun bool, cfg *config.Config) {
 func runSnap(args []string, cfg *config.Config) {
 	ui.PrintHeader(cfg)
 
-	if !snap.IsAvailable() {
+	if !extra.IsAvailable("snap") {
 		ui.Msg(cfg, ui.LevelError, "snap is not available (not installed or blocked)")
 		os.Exit(1)
 	}
 
 	if len(args) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps snap <install|remove|search|list|update> [args]")
+		ui.Msg(cfg, ui.LevelError, "Usage: alps snap <install|remove|purge|search|show|list|update|upgrade|autoremove|clean> [args]")
 		os.Exit(1)
 	}
 
@@ -1577,85 +1672,132 @@ func runSnap(args []string, cfg *config.Config) {
 	rest := args[1:]
 	pkgs, restFlags := pack.ParseFlagsExt(rest)
 	dryRun := restFlags.DryRun
-	// -y / noConfirm intentionally NOT supported for snap operations.
 
 	switch subcmd {
 	case "install":
-		snapInstall(pkgs, dryRun, cfg)
+		extraBackendInstall("snap", pkgs, dryRun, cfg)
 	case "remove":
-		snapRemove(pkgs, dryRun, cfg)
+		extraBackendRemove("snap", pkgs, dryRun, cfg)
+	case "purge":
+		extraBackendPurge("snap", pkgs, dryRun, cfg)
 	case "search":
-		snapSearch(rest, pkgs, cfg)
+		extraBackendSearch("snap", rest, pkgs, cfg)
+	case "show":
+		extraBackendShow("snap", pkgs, cfg)
 	case "list":
-		snapList(cfg)
+		extraBackendList("snap", cfg)
 	case "update":
-		snapUpdate(dryRun, cfg)
+		extraBackendUpdate("snap", dryRun, cfg)
+	case "upgrade":
+		extraBackendUpgrade("snap", dryRun, cfg)
+	case "autoremove":
+		extraBackendAutoremove("snap", dryRun, cfg)
+	case "clean":
+		extraBackendClean("snap", dryRun, cfg)
 	default:
 		ui.Msgf(cfg, ui.LevelError, "Unknown snap subcommand: %s", subcmd)
 		os.Exit(1)
 	}
 }
 
-func snapInstall(pkgs []string, dryRun bool, cfg *config.Config) {
-	if len(pkgs) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps snap install <package>")
+func runExtra(args []string, cfg *config.Config) {
+	ui.PrintHeader(cfg)
+
+	// Detect available extra backend
+	backend := extra.Detect()
+	if backend == nil {
+		ui.Msg(cfg, ui.LevelError, "No supported extra package manager found (snap/flatpak/winget)")
 		os.Exit(1)
 	}
-	if dryRun {
-		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would install snap package(s): %s", strings.Join(pkgs, " "))
-		return
+
+	backendName := backend.Name
+
+	if len(args) == 0 {
+		ui.Msgf(cfg, ui.LevelError, "Usage: alps extra <install|remove|purge|search|show|list|update|upgrade|autoremove|clean> [args]")
+		os.Exit(1)
 	}
-	if err := snap.Install(pkgs, false); err != nil {
+
+	rawSubcmd := args[0]
+	subcmd, err := resolveSubCmd("extra", rawSubcmd, cfg)
+	if err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
 	}
-	ui.Msg(cfg, ui.LevelOK, "Done.")
+	rest := args[1:]
+	pkgs, restFlags := pack.ParseFlagsExt(rest)
+	dryRun := restFlags.DryRun
+
+	switch subcmd {
+	case "install":
+		extraBackendInstall(backendName, pkgs, dryRun, cfg)
+	case "remove":
+		extraBackendRemove(backendName, pkgs, dryRun, cfg)
+	case "purge":
+		extraBackendPurge(backendName, pkgs, dryRun, cfg)
+	case "search":
+		extraBackendSearch(backendName, rest, pkgs, cfg)
+	case "show":
+		extraBackendShow(backendName, pkgs, cfg)
+	case "list":
+		extraBackendList(backendName, cfg)
+	case "update":
+		extraBackendUpdate(backendName, dryRun, cfg)
+	case "upgrade":
+		extraBackendUpgrade(backendName, dryRun, cfg)
+	case "autoremove":
+		extraBackendAutoremove(backendName, dryRun, cfg)
+	case "clean":
+		extraBackendClean(backendName, dryRun, cfg)
+	default:
+		ui.Msgf(cfg, ui.LevelError, "Unknown extra subcommand: %s", subcmd)
+		os.Exit(1)
+	}
 }
 
-func snapRemove(pkgs []string, dryRun bool, cfg *config.Config) {
-	if len(pkgs) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps snap remove <package>")
-		os.Exit(1)
-	}
-	if dryRun {
-		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would remove snap package: %s", pkgs[0])
-		return
-	}
-	if err := snap.Remove(pkgs[0]); err != nil {
-		ui.Msgf(cfg, ui.LevelError, "%v", err)
-		os.Exit(1)
-	}
-	ui.Msg(cfg, ui.LevelOK, "Done.")
-}
+func runWinget(args []string, cfg *config.Config) {
+	ui.PrintHeader(cfg)
 
-func snapSearch(rest, pkgs []string, cfg *config.Config) {
-	if len(rest) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps snap search <query>")
+	if !extra.IsAvailable("winget") {
+		ui.Msg(cfg, ui.LevelError, "winget is not available (WSL only)")
 		os.Exit(1)
 	}
-	if err := snap.Search(strings.Join(pkgs, " ")); err != nil {
-		ui.Msgf(cfg, ui.LevelError, "%v", err)
-		os.Exit(1)
-	}
-}
 
-func snapList(cfg *config.Config) {
-	if err := snap.List(); err != nil {
-		ui.Msgf(cfg, ui.LevelError, "%v", err)
+	if len(args) == 0 {
+		ui.Msg(cfg, ui.LevelError, "Usage: alps winget <install|remove|purge|search|show|list|update|upgrade> [args]")
 		os.Exit(1)
 	}
-}
 
-func snapUpdate(dryRun bool, cfg *config.Config) {
-	if dryRun {
-		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would refresh all snap packages")
-		return
-	}
-	if err := snap.Update(); err != nil {
+	rawSubcmd := args[0]
+	subcmd, err := resolveSubCmd("winget", rawSubcmd, cfg)
+	if err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
 	}
-	ui.Msg(cfg, ui.LevelOK, "Done.")
+	rest := args[1:]
+	pkgs, restFlags := pack.ParseFlagsExt(rest)
+	dryRun := restFlags.DryRun
+
+	switch subcmd {
+	case "install":
+		extraBackendInstall("winget", pkgs, dryRun, cfg)
+	case "remove":
+		extraBackendRemove("winget", pkgs, dryRun, cfg)
+	case "purge":
+		extraBackendPurge("winget", pkgs, dryRun, cfg)
+	case "search":
+		extraBackendSearch("winget", rest, pkgs, cfg)
+	case "show":
+		extraBackendShow("winget", pkgs, cfg)
+	case "list":
+		extraBackendList("winget", cfg)
+	case "update":
+		extraBackendUpdate("winget", dryRun, cfg)
+	case "upgrade":
+		extraBackendUpgrade("winget", dryRun, cfg)
+	default:
+		ui.Msgf(cfg, ui.LevelError, "Unknown winget subcommand: %s", subcmd)
+		os.Exit(1)
+	}
 }
 
 func runAptWithSnapFallback(args []string, dryRun bool, cfg *config.Config) {
@@ -1737,7 +1879,7 @@ func runAptWithSnapFallback(args []string, dryRun bool, cfg *config.Config) {
 		}
 	}
 
-	if len(notFound) > 0 && snap.IsAvailable() {
+	if len(notFound) > 0 && extra.IsAvailable("snap") {
 		fmt.Println()
 		ui.Msgf(cfg, ui.LevelWarn, "Not found in apt: %s", strings.Join(notFound, " "))
 		ui.Msgf(cfg, ui.LevelInfo, "Try snap for %s%s%s?",
@@ -1746,7 +1888,7 @@ func runAptWithSnapFallback(args []string, dryRun bool, cfg *config.Config) {
 		if dryRun {
 			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would prompt to install snap package(s): %s", strings.Join(notFound, " "))
 		} else if ui.Confirm() {
-			if err := snap.Install(notFound, false); err != nil {
+			if err := extra.Install("snap", notFound, false); err != nil {
 				ui.Msgf(cfg, ui.LevelError, "%v", err)
 			} else {
 				ui.Msg(cfg, ui.LevelOK, "Done.")
@@ -1769,10 +1911,10 @@ func runAptSearch(args []string, cfg *config.Config) {
 
 	type snapDone struct{ err error }
 	snapCh := make(chan snapDone, 1)
-	snapEnabled := snap.IsAvailable()
+	snapEnabled := extra.IsAvailable("snap")
 	if snapEnabled {
 		go func() {
-			snapCh <- snapDone{snap.Search(query)}
+			snapCh <- snapDone{extra.Search("snap", query)}
 		}()
 	}
 

@@ -28,6 +28,7 @@ desc = My command-line tool
 version = 1.0.0
 arch = x86_64, aarch64
 os = linux, debian, ubuntu
+deps = curl/wget  # requires curl OR wget
 safety = strict  # default mode
 
 cmd_begin
@@ -52,7 +53,7 @@ version = 1.0.0
 arch = x86_64, aarch64, armv7l, i686
 os = linux, debian, ubuntu, arch, fedora, alpine, termux, wsl
 servers = https://my-mirror.example.com/
-deps = curl, git
+deps = curl/wget, git  # requires curl OR wget, and git
 safety = strict  # strict (default) or free
 
 cmd_begin
@@ -89,9 +90,41 @@ purge_end
 | `author` | Text | Package author/maintainer |
 | `version` | Semantic version | Version string for upgrades |
 | `servers` | URLs | Mirror servers for `{BASH_RUN}` |
-| `deps` | Binary names | Required system dependencies |
+| `deps` | Binary names with `/` for OR | Required system dependencies (e.g., `curl/wget, git`) |
 | `upgrade_begin`/`upgrade_end` | Commands | Custom upgrade commands |
 | `purge_begin`/`purge_end` | Commands | Config/data cleanup commands |
+
+---
+
+## Dependency OR Syntax
+
+The `deps` field supports an OR operator using `/` to specify alternative dependencies.
+
+**Syntax:**
+- `deps = curl, git` - requires both curl AND git
+- `deps = curl/wget, git` - requires curl OR wget (at least one), AND git
+- `deps = curl/wget, git/svn` - requires curl OR wget, AND git OR svn
+
+**Validation:**
+- Each dependency group separated by commas is AND'd together
+- Within a group, alternatives separated by `/` are OR'd together
+- At least one alternative from each OR group must be present
+- Backward compatible: existing comma-only syntax continues to work
+
+**Examples:**
+```ini
+# Simple AND
+deps = curl, git
+
+# OR for download tools
+deps = curl/wget
+
+# Mixed AND/OR
+deps = curl/wget, git
+
+# Multiple OR groups
+deps = curl/wget, git/svn, make
+```
 
 ---
 
