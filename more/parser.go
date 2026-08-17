@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/adrianpriza-ai/alps/internal/runner"
+	"github.com/adrianpriza-ai/alps/runner"
 )
 
 // unknownTokenRe matches any leftover {TOKEN} placeholders (all-caps identifier inside braces)

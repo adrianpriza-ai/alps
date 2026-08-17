@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/adrianpriza-ai/alps/backend"
 	"github.com/adrianpriza-ai/alps/config"
-	"github.com/adrianpriza-ai/alps/internal/backend"
 	"github.com/adrianpriza-ai/alps/ui"
 )
 

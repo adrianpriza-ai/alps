@@ -1,21 +1,21 @@
-package brew
+package dnf
 
 import (
 	"fmt"
 
+	"github.com/adrianpriza-ai/alps/backend"
 	"github.com/adrianpriza-ai/alps/config"
-	"github.com/adrianpriza-ai/alps/internal/backend"
 )
 
-// Backend implements the backend.Backend interface for brew
+// Backend implements the backend.Backend interface for dnf
 type Backend struct {
 	*backend.BaseBackend
 }
 
-// New creates a new brew backend
+// New creates a new dnf backend
 func New() *Backend {
 	return &Backend{
-		BaseBackend: backend.NewBaseBackend("brew", "brew"),
+		BaseBackend: backend.NewBaseBackend("dnf", "dnf"),
 	}
 }
 

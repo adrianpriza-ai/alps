@@ -1,21 +1,21 @@
-package apk
+package zypper
 
 import (
 	"fmt"
 
+	"github.com/adrianpriza-ai/alps/backend"
 	"github.com/adrianpriza-ai/alps/config"
-	"github.com/adrianpriza-ai/alps/internal/backend"
 )
 
-// Backend implements the backend.Backend interface for apk
+// Backend implements the backend.Backend interface for zypper
 type Backend struct {
 	*backend.BaseBackend
 }
 
-// New creates a new apk backend
+// New creates a new zypper backend
 func New() *Backend {
 	return &Backend{
-		BaseBackend: backend.NewBaseBackend("apk", "apk"),
+		BaseBackend: backend.NewBaseBackend("zypper", "zypper"),
 	}
 }
 

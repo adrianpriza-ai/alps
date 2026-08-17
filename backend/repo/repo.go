@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/adrianpriza-ai/alps/cli"
 	"github.com/adrianpriza-ai/alps/config"
-	"github.com/adrianpriza-ai/alps/internal/cli"
 	"github.com/adrianpriza-ai/alps/more"
 	"github.com/adrianpriza-ai/alps/ui"
 )

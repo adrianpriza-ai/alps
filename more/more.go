@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/adrianpriza-ai/alps/config"
-	"github.com/adrianpriza-ai/alps/internal/runner"
 	"github.com/adrianpriza-ai/alps/priv"
+	"github.com/adrianpriza-ai/alps/runner"
 )
 
 const scriptDownloadTimeout = 5 * time.Minute

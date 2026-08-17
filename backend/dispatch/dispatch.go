@@ -1,8 +1,8 @@
 package dispatch
 
 import (
+	"github.com/adrianpriza-ai/alps/cli"
 	"github.com/adrianpriza-ai/alps/config"
-	"github.com/adrianpriza-ai/alps/internal/cli"
 )
 
 // Backend represents a package manager backend

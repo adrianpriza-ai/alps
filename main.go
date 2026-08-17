@@ -10,15 +10,15 @@ import (
 	"strings"
 
 	"github.com/adrianpriza-ai/alps/aur"
+	"github.com/adrianpriza-ai/alps/backend/aurbackend"
+	"github.com/adrianpriza-ai/alps/backend/repo"
+	"github.com/adrianpriza-ai/alps/cli"
 	"github.com/adrianpriza-ai/alps/completion"
 	"github.com/adrianpriza-ai/alps/config"
 	"github.com/adrianpriza-ai/alps/extra"
-	"github.com/adrianpriza-ai/alps/internal/backend/aurbackend"
-	"github.com/adrianpriza-ai/alps/internal/backend/repo"
-	"github.com/adrianpriza-ai/alps/internal/cli"
-	"github.com/adrianpriza-ai/alps/internal/runner"
 	"github.com/adrianpriza-ai/alps/pack"
 	"github.com/adrianpriza-ai/alps/priv"
+	"github.com/adrianpriza-ai/alps/runner"
 	"github.com/adrianpriza-ai/alps/ui"
 )
 

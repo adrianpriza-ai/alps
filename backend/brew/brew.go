@@ -1,37 +1,26 @@
-package pacman
+package brew
 
 import (
 	"fmt"
-	"strings"
 
+	"github.com/adrianpriza-ai/alps/backend"
 	"github.com/adrianpriza-ai/alps/config"
-	"github.com/adrianpriza-ai/alps/internal/backend"
-	"github.com/adrianpriza-ai/alps/ui"
 )
 
-// Backend implements the backend.Backend interface for pacman
+// Backend implements the backend.Backend interface for brew
 type Backend struct {
 	*backend.BaseBackend
 }
 
-// New creates a new pacman backend
+// New creates a new brew backend
 func New() *Backend {
 	return &Backend{
-		BaseBackend: backend.NewBaseBackend("pacman", "pacman"),
+		BaseBackend: backend.NewBaseBackend("brew", "brew"),
 	}
 }
 
 func (b *Backend) Install(pkgs []string, dryRun bool, cfg *config.Config) error {
-	if len(pkgs) == 0 {
-		return fmt.Errorf("package name required")
-	}
-
-	if dryRun {
-		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would install %s package(s): %s", b.Name(), strings.Join(pkgs, " "))
-		return nil
-	}
-
-	return fmt.Errorf("not yet implemented - needs runner integration")
+	return fmt.Errorf("not yet implemented")
 }
 
 func (b *Backend) Remove(pkgs []string, dryRun bool, cfg *config.Config) error {

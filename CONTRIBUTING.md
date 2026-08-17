@@ -10,7 +10,7 @@ cd alps
 make build
 ```
 
-> **Requirements:** Go 1.25.13+ (Go 1.26 used for release builds)
+> **Requirements:** Go 1.25.13+ (release builds use the version pinned in `go.mod`)
 > Install Go with your package manager:
 > - Arch: `sudo pacman -S go`
 > - Debian/Ubuntu: `sudo apt install golang-go`
@@ -26,12 +26,14 @@ alps/
 ├── config/         # config loading and parsing
 ├── ui/             # output, header, colors
 ├── aur/            # AUR helper (yay + makepkg, dep resolution)
-├── snap/           # snap support
-├── flatpak/        # flatpak support
+├── extra/          # snap, flatpak, winget support
+├── backend/        # backend selection/routing + native package managers
 ├── more/           # alps-more script repo
+├── moreplanner/    # alps-more planning, paths, and cache management
 ├── pack/           # package manager commands
 ├── priv/           # privilege escalation (sudo/su/root)
-├── internal/       # internal packages (runner, etc.)
+├── cli/            # CLI parsing and aliases
+├── runner/         # process and privilege execution
 └── completion/     # shell completion generator
 ```
 

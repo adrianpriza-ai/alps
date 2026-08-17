@@ -1,21 +1,21 @@
-package dnf
+package apk
 
 import (
 	"fmt"
 
+	"github.com/adrianpriza-ai/alps/backend"
 	"github.com/adrianpriza-ai/alps/config"
-	"github.com/adrianpriza-ai/alps/internal/backend"
 )
 
-// Backend implements the backend.Backend interface for dnf
+// Backend implements the backend.Backend interface for apk
 type Backend struct {
 	*backend.BaseBackend
 }
 
-// New creates a new dnf backend
+// New creates a new apk backend
 func New() *Backend {
 	return &Backend{
-		BaseBackend: backend.NewBaseBackend("dnf", "dnf"),
+		BaseBackend: backend.NewBaseBackend("apk", "apk"),
 	}
 }
 
