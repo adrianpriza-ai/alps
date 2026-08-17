@@ -79,7 +79,7 @@ When adding new functionality:
 
 ## Security Considerations
 
-ALPS handles package installation and remote script execution, so security is paramount:
+ALPS handles package installation and remote script execution, so we take security seriously:
 
 - **Manifest authentication**: All official manifests are authenticated with SHA-256 checksums
 - **HTTPS-only**: All remote content downloads require HTTPS and approved hosts

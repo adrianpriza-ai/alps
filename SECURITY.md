@@ -14,7 +14,7 @@ Include:
 - Potential impact
 - Any possible fixes or mitigations (if known)
 
-All reports will be reviewed and handled as quickly as possible.
+All reports will be reviewed promptly.
 
 ## Supported Versions
 
