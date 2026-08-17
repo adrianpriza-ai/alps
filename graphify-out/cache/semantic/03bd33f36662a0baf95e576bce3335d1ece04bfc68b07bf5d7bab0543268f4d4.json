@@ -1,1 +1,0 @@
-{"nodes": [{"id": "readme", "label": "ALPS README", "file_type": "document", "source_file": "README.md"}], "edges": [{"source": "readme", "target": "alpsmore_guide", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "README.md"}], "hyperedges": []}
