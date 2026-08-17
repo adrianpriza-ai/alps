@@ -55,6 +55,7 @@ os = linux, debian, ubuntu, arch, fedora, alpine, termux, wsl
 servers = https://my-mirror.example.com/
 deps = curl/wget, git  # requires curl OR wget, and git
 safety = strict  # strict (default) or free
+sha256sums = a1b2c3d4e5f6...64-char-hash, another64charhash...
 
 cmd_begin
   # install commands
@@ -91,6 +92,7 @@ purge_end
 | `version` | Semantic version | Version string for upgrades |
 | `servers` | URLs | Mirror servers for `{BASH_RUN}` |
 | `deps` | Binary names with `/` for OR | Required system dependencies (e.g., `curl/wget, git`) |
+| `sha256sums` | 64-char hex hashes | SHA-256 checksums for downloads (comma-separated) |
 | `upgrade_begin`/`upgrade_end` | Commands | Custom upgrade commands |
 | `purge_begin`/`purge_end` | Commands | Config/data cleanup commands |
 
@@ -189,6 +191,7 @@ cmd_end
 - File operations execute immediately
 - **Requires manual `remove_begin`/`remove_end`** blocks
 - For complex packages requiring custom behavior
+- **Downloads without `sha256sums` are allowed** in free mode (strict mode refuses them); the install prompt warns that the package runs at reduced safety
 
 ---
 
@@ -212,8 +215,8 @@ Execute during the build phase, before installation. In strict mode, these run u
 
 | Macro | Syntax | Behavior |
 |-|-|-|
-| `{DOWNLOAD}` | `{DOWNLOAD} URL [FILE]` | Download file to build directory using Go's HTTP client |
-| `{BASH_RUN}` | `{BASH_RUN} /path/to/script [args]` | Download (if URL) and execute shell script via `bash` |
+| `{DOWNLOAD}` | `{DOWNLOAD} URL [FILE]` | Download file to build directory using Go's HTTP client (uses entry-level sha256sums) |
+| `{BASH_RUN}` | `{BASH_RUN} URL [args]` | Download and execute shell script via `bash` (uses entry-level sha256sums) |
 | `{SH}` | `{SH} PATH` | Execute script with `bash` (or `sh` as fallback) |
 | `{EXTRACT}` | `{EXTRACT} ARCHIVE` | Extract archive (`.tar.gz`, `.tar.xz`, `.tar.bz2`, `.zip`) |
 
@@ -241,9 +244,92 @@ Execute after the build phase completes, using `sudo` for real system access (sk
 **Notes:**
 - Service/user macros are no-ops on Termux (no systemd/useradd).
 - `{CURL_RUN}` is **deprecated** (replaced by `{BASH_RUN}`).
+- **Security**: SHA-256 verification is handled at entry level via `sha256sums`
+- **Security**: All downloads are HTTPS-only with size limits and host whitelisting
 
+
+## SHA-256 Checksums
+
+ALPSMORE uses PKGBUILD-style SHA-256 checksums at the entry level.
+
+### Format
+```ini
+[package-name]
+sha256sums = a1b2c3d4e5f6...64-char-hash, another64charhash...
+
+cmd_begin
+  {DOWNLOAD} https://example.com/file1.tar.gz
+  {DOWNLOAD} https://example.com/file2.tar.gz
+  {BASH_RUN} https://example.com/install.sh
+cmd_end
+```
+
+### How It Works
+- The `sha256sums` field contains comma-separated 64-character SHA-256 hashes
+- Downloads are verified in order: first hash for first download, second hash for second download, etc.
+- Applies to both `{DOWNLOAD}` and `{BASH_RUN}` macros
+- **Strict mode (default): checksums are required.** Any entry that downloads remote content MUST list exactly one digest per download. A `{DOWNLOAD}` or `{BASH_RUN}` without a matching `sha256sums` entry is rejected before anything is fetched or executed, and a digest mismatch fails the installation.
+- **Free mode: checksums are optional.** If a digest is listed it is still verified, but downloads without a matching `sha256sums` entry are allowed; the install confirmation shows a reduced-safety warning.
+
+### Generating Checksums
+```bash
+# Generate SHA-256 checksums for your files
+sha256sum file1.tar.gz file2.tar.gz install.sh
+# Output format:
+# a1b2c3d4e5f6...  file1.tar.gz
+# another64charhash...  file2.tar.gz
+# yetanotherhash...  install.sh
+```
+
+Extract the 64-character hashes and add them to your `sha256sums` field in the same order as downloads appear in your cmd_begin block.
+
+---
 
 ## Complete Examples
+
+### Example 0: Using BASH_RUN with SHA-256 Verification
+
+```ini
+[secure-tool]
+desc = Tool with remote script installation
+version = 1.0.0
+arch = x86_64, aarch64
+os = linux
+safety = strict
+sha256sums = a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef12345678
+
+cmd_begin
+  {BASH_RUN} https://example.com/install.sh
+cmd_end
+```
+
+**SHA-256 Digest Generation:**
+```bash
+# Generate SHA-256 digest for your script
+sha256sum install.sh
+# Output: a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef12345678  install.sh
+# Add the 64-character hex digest to the sha256sums field
+```
+
+### Example 0.1: Multiple Downloads with SHA-256 Verification
+
+```ini
+[multi-download-tool]
+desc = Tool with multiple file downloads
+version = 1.0.0
+arch = x86_64, aarch64
+os = linux
+safety = strict
+sha256sums = a1b2c3d4e5f6...64-char-hash, another64charhash..., yetanother64charhash...
+
+cmd_begin
+  {DOWNLOAD} https://example.com/file1.tar.gz
+  {DOWNLOAD} https://example.com/file2.tar.gz
+  {BASH_RUN} https://example.com/install.sh
+cmd_end
+```
+
+**Note:** The sha256sums are applied in order - first hash for first download, second hash for second download, etc.
 
 ### Example 1: Strict Mode (Recommended)
 ```ini
@@ -384,6 +470,14 @@ When using structured macros (`{INSTALL_BIN}`, `{INSTALL_LIB}`, etc.), ALPS auto
 - **Full install preview**: Before execution
 - **Snapshot saved**: To `installed.json` for remove/purge even if repo disappears
 - **Owned items tracking**: Safe removal without dangerous commands
+- **Security-hardened downloads:**
+  - HTTPS-only requirement for all remote content
+  - SHA-256 digest verification for all script downloads
+  - Response size limits (10MB for manifests, 100MB for scripts)
+  - Atomic cache writes to prevent partial corruption
+  - Explicit host whitelist (no broad suffix matching)
+  - Display of generated scripts before execution
+  - No mutable branch fallbacks (explicit branch required)
 
 ---
 
@@ -404,8 +498,8 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 
 **Option 2:** Self-host on GitHub/GitLab
 - Place `ALPSMORE` at repo root
-- Users install: `alps repo install github.com/you/repo`
-- ALPS tries HEAD → main → master branches
+- Users install: `alps repo install github.com/you/repo@branch` (branch required)
+- **Security**: Branch specification is now required (no mutable HEAD/main/master fallbacks)
 
 **Checklist:**
 - [ ] `arch` + `os` fields defined

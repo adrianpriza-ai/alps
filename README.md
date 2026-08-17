@@ -8,7 +8,7 @@
 
   [![Release](https://img.shields.io/github/v/release/adrianpriza-ai/alps?include_prereleases&style=flat&color=red)](https://github.com/adrianpriza-ai/alps/releases)
   [![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
-  [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev)
+  [![Go](https://img.shields.io/badge/Go-1.25.13+-00ADD8?style=flat&logo=go)](https://go.dev)
   [![Build](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml/badge.svg)](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml)
   
 </div>
@@ -16,8 +16,6 @@
 ---
 
 ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and `apk` with built-in AUR, Snap, Flatpak, and Winget support, a custom cross-distro script repo (alps-more), fully customizable output styling, and a unified command interface across distros — including Linux, macOS, Termux on Android and WSL on Windows.
-
-> **One tool. Every distro. Your style.**
 
 ## Features
 
@@ -30,6 +28,7 @@ ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and
 | **Built-in AUR** | Full recursive dep resolution, PKGBUILD review, yay fallback |
 | **Extra packages** | Unified Snap, Flatpak, and Winget support with consistent interface |
 | **alps-more** | Cross-distro script repo with version tracking, mirror failover, and remote installs from GitHub/GitLab |
+| **Security-hardened** | HTTPS-only downloads, SHA-256 verification, signed APT repositories, response size limits |
 | **Customizable** | Colors, symbols, header, aliases — all via config file |
 | **Smart completion** | fish, bash, zsh — distro-aware, AUR name cache, live package completion |
 | **Build isolation** | Per-package build directories (`~/.cache/alps/more/<pkg>/`) |
@@ -59,7 +58,7 @@ git clone https://github.com/adrianpriza-ai/alps
 cd alps && make install
 ```
 
-Requires Go 1.22+
+Requires Go 1.25.13+
 
 ### Pre-built binaries
 
@@ -337,6 +336,14 @@ alps repo clean                           # remove build cache (~/.cache/alps/mo
 - Platform checks prevent mismatched installs
 - `deps` validated via `exec.LookPath`
 - Install preview + explicit confirmation required (no `-y` for repo installs)
+- **Security-hardened downloads:**
+  - HTTPS-only requirement for all remote content
+  - SHA-256 digest verification for all script downloads
+  - Response size limits (10MB for manifests, 100MB for scripts)
+  - Signed APT repository with GPG key verification
+  - Atomic cache writes to prevent partial corruption
+  - Explicit host whitelist (no broad suffix matching)
+  - Display of generated scripts before execution
 
 ### Full Authoring Guide
 
