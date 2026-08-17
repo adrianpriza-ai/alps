@@ -1,6 +1,7 @@
 package more
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -113,6 +114,8 @@ type MacroContext struct {
 	OS             string              // Operating system (linux, darwin, etc.)
 	Distro         string              // Linux distribution ID (ubuntu, debian, etc.)
 	Safety         string              // "strict" or "free"
+	SHA256Sums     []string            // SHA-256 checksums for downloads
+	SHA256Index    int                 // Current index for SHA256 sum assignment
 	Op             OperationType       // current operation (install/upgrade/remove/purge)
 	InstalledPaths []InstalledPath     // Track installed files for auto-uninstall (internal)
 	DeferredOps    []DeferredOperation // Deferred file operations
@@ -135,6 +138,8 @@ func NewMacroContext(e *Entry, server string) *MacroContext {
 			OS:             os,
 			Distro:         distro,
 			Safety:         "",
+			SHA256Sums:     []string{},
+			SHA256Index:    0,
 			InstalledPaths: []InstalledPath{},
 			BuildDir:       "",
 			DistroVersion:  distroVer,
@@ -148,6 +153,8 @@ func NewMacroContext(e *Entry, server string) *MacroContext {
 		OS:             os,
 		Distro:         distro,
 		Safety:         e.Safety,
+		SHA256Sums:     e.SHA256Sums,
+		SHA256Index:    0,
 		InstalledPaths: []InstalledPath{},
 		BuildDir:       "",
 		DistroVersion:  distroVer,
@@ -821,7 +828,7 @@ func executeDownload(macro Macro, ctx *MacroContext) (string, error) {
 		return "", err
 	}
 
-	return performDownload(url, file)
+	return performDownload(url, file, ctx)
 }
 
 // resolveDownloadPath resolves the download path from macro arguments
@@ -863,7 +870,7 @@ func prepareDownloadDirectory(file string) error {
 }
 
 // performDownload executes the HTTP download with progress tracking
-func performDownload(url, file string) (string, error) {
+func performDownload(url, file string, ctx *MacroContext) (string, error) {
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -878,28 +885,102 @@ func performDownload(url, file string) (string, error) {
 	// Get content length for progress tracking
 	contentLength := resp.ContentLength
 	if contentLength <= 0 {
-		return downloadSimple(resp.Body, file)
+		return downloadSimple(resp.Body, file, ctx)
 	}
 
-	return downloadWithProgress(resp.Body, file, contentLength)
+	return downloadWithProgress(resp.Body, file, contentLength, ctx)
+}
+
+// requireNextSha256 returns the expected SHA-256 digest for the next download
+// in the entry, consuming one entry from the sha256sums list.
+//
+// Security: downloads are a code-execution trust boundary. In strict mode
+// (the default) a manifest that triggers a download MUST provide a matching
+// sha256sums entry, otherwise we refuse to fetch anything. In free mode the
+// user has opted out of guardrails, so missing digests are allowed; the
+// reduced-safety notice is shown at install confirmation time.
+func requireNextSha256(ctx *MacroContext, what string) (string, error) {
+	if len(ctx.SHA256Sums) > 0 && ctx.SHA256Index < len(ctx.SHA256Sums) {
+		expected := ctx.SHA256Sums[ctx.SHA256Index]
+		ctx.SHA256Index++ // Increment index for next download
+		if isValidSha256(expected) {
+			return expected, nil
+		}
+	}
+	return sha256Missing(ctx, what)
+}
+
+// sha256Missing handles a download with no usable digest. In strict mode this
+// is a hard error (unverified downloads are never fetched or executed). In
+// free mode the download is allowed; the reduced-safety notice is shown at
+// install confirmation time (see the repo backend install preview) rather than
+// per download.
+func sha256Missing(ctx *MacroContext, what string) (string, error) {
+	if ctx.Safety == "free" {
+		return "", nil
+	}
+	switch {
+	case len(ctx.SHA256Sums) == 0:
+		return "", fmt.Errorf("%s requires a sha256sums entry in the manifest — refusing to download unverified content (strict mode)", what)
+	case ctx.SHA256Index >= len(ctx.SHA256Sums):
+		return "", fmt.Errorf("%s is missing a sha256sums entry (download %d of %d) — refusing to download unverified content (strict mode)", what, ctx.SHA256Index+1, len(ctx.SHA256Sums))
+	default:
+		return "", fmt.Errorf("invalid sha256sums entry %q for %s (want exactly 64 hex characters)", ctx.SHA256Sums[ctx.SHA256Index-1], what)
+	}
+}
+
+// isValidSha256 reports whether s is a 64-character hexadecimal SHA-256 digest.
+func isValidSha256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'f') && !(r >= 'A' && r <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 // downloadSimple performs a download without progress tracking
-func downloadSimple(body io.Reader, file string) (string, error) {
+func downloadSimple(body io.Reader, file string, ctx *MacroContext) (string, error) {
 	out, err := os.Create(file)
 	if err != nil {
 		return "", fmt.Errorf("failed to create file %s: %w", file, err)
 	}
 	defer out.Close()
 
-	if _, err := io.Copy(out, body); err != nil {
+	// Read all bytes to compute SHA256
+	bodyBytes, err := io.ReadAll(body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read download: %w", err)
+	}
+
+	// Compute SHA256 of downloaded content
+	hash := sha256.Sum256(bodyBytes)
+	computedHash := fmt.Sprintf("%x", hash)
+
+	// The manifest must declare a digest for every download.
+	expectedHash, err := requireNextSha256(ctx, filepath.Base(file))
+	if err != nil {
+		return "", err
+	}
+
+	// Free mode may opt out of digest verification (expectedHash == "").
+	if expectedHash != "" && computedHash != expectedHash {
+		_ = os.Remove(file)
+		return "", fmt.Errorf("SHA256 mismatch for %s: expected %s, got %s", file, expectedHash, computedHash)
+	}
+
+	// Write the file
+	if _, err := out.Write(bodyBytes); err != nil {
 		return "", fmt.Errorf("failed to write file %s: %w", file, err)
 	}
 	return "", nil
 }
 
 // downloadWithProgress performs a download with progress tracking
-func downloadWithProgress(body io.Reader, file string, contentLength int64) (string, error) {
+func downloadWithProgress(body io.Reader, file string, contentLength int64, ctx *MacroContext) (string, error) {
 	out, err := os.Create(file)
 	if err != nil {
 		return "", fmt.Errorf("failed to create file %s: %w", file, err)
@@ -909,8 +990,12 @@ func downloadWithProgress(body io.Reader, file string, contentLength int64) (str
 	displayName := filepath.Base(file)
 	progress := setupProgressDisplay(contentLength, displayName)
 
+	// Use a tee reader to compute SHA256 while downloading
+	hasher := sha256.New()
+	teeReader := io.TeeReader(body, hasher)
+
 	reader := &progressReader{
-		reader: body,
+		reader: teeReader,
 		total:  contentLength,
 		onProgress: func(bytesRead int) {
 			progress.update(bytesRead)
@@ -922,6 +1007,23 @@ func downloadWithProgress(body io.Reader, file string, contentLength int64) (str
 	}
 
 	fmt.Println()
+
+	// Compute SHA256 of downloaded content
+	computedHash := fmt.Sprintf("%x", hasher.Sum(nil))
+
+	// The manifest must declare a digest for every download.
+	expectedHash, err := requireNextSha256(ctx, displayName)
+	if err != nil {
+		_ = os.Remove(file)
+		return "", err
+	}
+
+	// Free mode may opt out of digest verification (expectedHash == "").
+	if expectedHash != "" && computedHash != expectedHash {
+		_ = os.Remove(file)
+		return "", fmt.Errorf("SHA256 mismatch for %s: expected %s, got %s", file, expectedHash, computedHash)
+	}
+
 	return "", nil
 }
 
@@ -1207,6 +1309,29 @@ func executeBashRun(macro Macro, ctx *MacroContext) (string, error) {
 		if !isAllowedURL(script) {
 			return "", fmt.Errorf("disallowed URL host/scheme for BASH_RUN: %s", script)
 		}
+
+		// The manifest must declare a digest for every downloaded script; resolve
+		// it before fetching so unverifiable content is never downloaded.
+		expectedHash, err := requireNextSha256(ctx, filepath.Base(script))
+		if err != nil {
+			return "", err
+		}
+
+		// Download with size limit and security checks via the hardened fetcher.
+		bodyBytes, err := downloadScriptWithLimit(script, maxScriptSize)
+		if err != nil {
+			return "", fmt.Errorf("failed to download %s: %w", script, err)
+		}
+
+		// Compute SHA256 of downloaded content
+		hash := sha256.Sum256(bodyBytes)
+		computedHash := fmt.Sprintf("%x", hash)
+
+		// Free mode may opt out of digest verification (expectedHash == "").
+		if expectedHash != "" && computedHash != expectedHash {
+			return "", fmt.Errorf("SHA256 mismatch for %s: expected %s, got %s", script, expectedHash, computedHash)
+		}
+
 		localScript := filepath.Join(ctx.BuildDir, filepath.Base(script))
 
 		// Create directory if it doesn't exist
@@ -1214,32 +1339,9 @@ func executeBashRun(macro Macro, ctx *MacroContext) (string, error) {
 			return "", fmt.Errorf("failed to create directory: %w", err)
 		}
 
-		// Download the script
-		resp, err := http.Get(script)
-		if err != nil {
-			return "", fmt.Errorf("failed to download %s: %w", script, err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("failed to download %s: HTTP %d", script, resp.StatusCode)
-		}
-
-		// Create the file
-		out, err := os.Create(localScript)
-		if err != nil {
-			return "", fmt.Errorf("failed to create file %s: %w", localScript, err)
-		}
-		defer out.Close()
-
-		// Copy the response body to the file
-		if _, err := io.Copy(out, resp.Body); err != nil {
+		// Write the file (0755 makes the script executable)
+		if err := os.WriteFile(localScript, bodyBytes, 0755); err != nil {
 			return "", fmt.Errorf("failed to write file %s: %w", localScript, err)
-		}
-
-		// Make the script executable
-		if err := os.Chmod(localScript, 0755); err != nil {
-			return "", fmt.Errorf("failed to make script executable: %w", err)
 		}
 
 		// Return command to execute the script

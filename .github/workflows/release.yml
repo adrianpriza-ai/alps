@@ -107,7 +107,7 @@ jobs:
             ./alps-linux-amd64 completion bash > pkg/usr/share/bash-completion/completions/alps
             ./alps-linux-amd64 completion zsh > pkg/usr/share/zsh/site-functions/_alps
             
-            echo "deb [trusted=yes] https://adrianpriza-ai.github.io/alps-apt stable main" \
+            echo "deb [signed-by=/usr/share/keyrings/alps-archive-keyring.gpg] https://adrianpriza-ai.github.io/alps-apt stable main" \
               > pkg/etc/apt/sources.list.d/alps.list
               
             DEBARCH=$ARCH
@@ -124,6 +124,15 @@ jobs:
             echo "Description: Advanced Linux Package System" >> pkg/DEBIAN/control
             
             echo '#!/bin/sh' > pkg/DEBIAN/postinst
+            echo 'set -e' >> pkg/DEBIAN/postinst
+            echo '' >> pkg/DEBIAN/postinst
+            echo '# Install the ALPS archive GPG key' >> pkg/DEBIAN/postinst
+            echo 'if [ ! -f /usr/share/keyrings/alps-archive-keyring.gpg ]; then' >> pkg/DEBIAN/postinst
+            echo '  mkdir -p /usr/share/keyrings' >> pkg/DEBIAN/postinst
+            echo '  curl -fsSL https://adrianpriza-ai.github.io/alps-apt/alps-archive-keyring.gpg -o /usr/share/keyrings/alps-archive-keyring.gpg' >> pkg/DEBIAN/postinst
+            echo 'fi' >> pkg/DEBIAN/postinst
+            echo '' >> pkg/DEBIAN/postinst
+            echo '# Update package list' >> pkg/DEBIAN/postinst
             echo 'apt update || true' >> pkg/DEBIAN/postinst
             echo 'exit 0' >> pkg/DEBIAN/postinst
             chmod 755 pkg/DEBIAN/postinst
@@ -156,9 +165,9 @@ jobs:
       - name: Update APT repository
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
-          
+
           cd repo
-          
+
           mkdir -p pool/main/amd64
           mkdir -p pool/main/arm64
           mkdir -p pool/main/armhf
@@ -166,23 +175,23 @@ jobs:
           mkdir -p dists/stable/main/binary-arm64
           mkdir -p dists/stable/main/binary-armhf
           mkdir -p dists/stable/main/binary-all
-          
+
           cp ../alps_${TAG#v}_amd64.deb  pool/main/amd64/
           cp ../alps_${TAG#v}_arm64.deb  pool/main/arm64/
           cp ../alps_${TAG#v}_armhf.deb  pool/main/armhf/
-          
+
           dpkg-scanpackages --multiversion pool/main/amd64 > dists/stable/main/binary-amd64/Packages
           gzip -kf dists/stable/main/binary-amd64/Packages
-          
+
           dpkg-scanpackages --multiversion pool/main/arm64 > dists/stable/main/binary-arm64/Packages
           gzip -kf dists/stable/main/binary-arm64/Packages
-          
+
           dpkg-scanpackages --multiversion pool/main/armhf > dists/stable/main/binary-armhf/Packages
           gzip -kf dists/stable/main/binary-armhf/Packages
-          
+
           touch dists/stable/main/binary-all/Packages
           gzip -kf dists/stable/main/binary-all/Packages
-          
+
           echo "APT::FTPArchive::Release {" > apt.conf
           echo "  Origin \"ALPS\";" >> apt.conf
           echo "  Label \"ALPS\";" >> apt.conf
@@ -192,11 +201,24 @@ jobs:
           echo "  Components \"main\";" >> apt.conf
           echo "  Description \"ALPS APT Repository\";" >> apt.conf
           echo "};" >> apt.conf
-          
+
           apt-ftparchive \
             -c apt.conf \
             release dists/stable \
             > dists/stable/Release
+
+          # Security: Generate signed InRelease file (requires GPG key setup)
+          # This step requires a GPG key to be configured as a secret
+          if [ -n "${{ secrets.APT_GPG_PRIVATE_KEY }}" ]; then
+            echo "${{ secrets.APT_GPG_PRIVATE_KEY }}" | gpg --import --batch --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}"
+            gpg --batch --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --detach-sign --armor --output dists/stable/Release.gpg dists/stable/Release
+            gpg --batch --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --clearsign --output dists/stable/InRelease dists/stable/Release
+            # Export public key for distribution
+            gpg --batch --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --armor --export --output alps-archive-keyring.gpg
+          else
+            echo "Warning: APT_GPG_PRIVATE_KEY not set, skipping repository signing"
+            echo "Repository will be unsigned - this is not recommended for production"
+          fi
 
       - name: Push APT repository
         run: |

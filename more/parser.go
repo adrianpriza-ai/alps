@@ -1,6 +1,7 @@
 package more
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/adrianpriza-ai/alps/priv"
+	"github.com/adrianpriza-ai/alps/internal/runner"
 )
 
 // unknownTokenRe matches any leftover {TOKEN} placeholders (all-caps identifier inside braces)
@@ -245,17 +246,23 @@ func expandPlaceholders(line string, ctx *MacroContext) string {
 	return line
 }
 
-// writeTempScript writes a temporary script file and returns its path
-func writeTempScript(lines []string, num int) (string, error) {
-	tmpDir := os.TempDir()
-	scriptPath := filepath.Join(tmpDir, fmt.Sprintf(".alps_run%d.sh", num))
-
+// writeTempScript writes a temporary script file and returns its path.
+// Security: uses a unique name per script with restrictive owner-only
+// permissions instead of a fixed, predictable path in the shared temp dir.
+func writeTempScript(lines []string, _ int) (string, error) {
 	content := "set -e\n" + strings.Join(lines, "\n")
-	if err := os.WriteFile(scriptPath, []byte(content), 0755); err != nil {
+	f, err := os.CreateTemp(os.TempDir(), ".alps_run_*.sh")
+	if err != nil {
 		return "", err
 	}
-
-	return scriptPath, nil
+	defer f.Close()
+	if err := f.Chmod(0700); err != nil {
+		return "", err
+	}
+	if _, err := f.WriteString(content); err != nil {
+		return "", err
+	}
+	return f.Name(), nil
 }
 
 // WriteManifest writes the execution manifest to .alps_runner.txt in the temp
@@ -447,20 +454,14 @@ func expandAndWrapCommand(cmd string, op OperationType, ctx *MacroContext) (stri
 }
 
 // executeCommand executes a single command with optional sudo
+// Uses the new runner for consistent command execution
 func executeCommand(cmd string, useSudo bool) error {
-	var execCmd *exec.Cmd
+	r := runner.NewDefaultRunner(false)
+	shellCmd := runner.BuildShellCommand(cmd)
 	if useSudo && !isTermux() {
-		var err error
-		execCmd, err = priv.Command("sh", "-c", cmd)
-		if err != nil {
-			return err
-		}
-	} else {
-		execCmd = exec.Command("sh", "-c", cmd)
+		shellCmd = shellCmd.WithPrivilege()
 	}
-	execCmd.Stdout = os.Stdout
-	execCmd.Stderr = os.Stderr
-	return execCmd.Run()
+	return r.Run(context.Background(), shellCmd)
 }
 
 // isAlreadyFakeroot returns true if the command already starts with fakeroot

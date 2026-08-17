@@ -2,18 +2,21 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/adrianpriza-ai/alps/aur"
 	"github.com/adrianpriza-ai/alps/completion"
 	"github.com/adrianpriza-ai/alps/config"
 	"github.com/adrianpriza-ai/alps/extra"
-	"github.com/adrianpriza-ai/alps/more"
+	"github.com/adrianpriza-ai/alps/internal/backend/aurbackend"
+	"github.com/adrianpriza-ai/alps/internal/backend/repo"
+	"github.com/adrianpriza-ai/alps/internal/cli"
+	"github.com/adrianpriza-ai/alps/internal/runner"
 	"github.com/adrianpriza-ai/alps/pack"
 	"github.com/adrianpriza-ai/alps/priv"
 	"github.com/adrianpriza-ai/alps/ui"
@@ -63,7 +66,7 @@ func main() {
 	case "snap":
 		runSnap(args, cfg)
 	default:
-		resolved, err := resolveCmd(cmd, cfg)
+		resolved, err := cli.ResolveCmd(cmd, cfg)
 		if err != nil {
 			ui.Msgf(cfg, ui.LevelError, "%v", err)
 			os.Exit(1)
@@ -89,118 +92,6 @@ func dispatchResolved(resolved string, args []string, cfg *config.Config) {
 	default:
 		runPkg(resolved, args, cfg)
 	}
-}
-
-var hardCommands = map[string]bool{
-	"help": true, "--help": true, "-h": true,
-	"version": true, "--version": true,
-	"aliases": true, "config-show": true, "completion": true,
-	"repo": true, "aur": true, "extra": true, "winget": true, "flatpak": true, "snap": true,
-	"install": true, "remove": true, "purge": true,
-	"update": true, "upgrade": true, "full-upgrade": true,
-	"search": true, "show": true, "list": true,
-	"autoremove": true, "autoclean": true, "clean": true,
-	"edit-sources": true,
-}
-
-func resolveCmd(cmd string, cfg *config.Config) (string, error) {
-	if hardCommands[cmd] {
-		return cmd, nil
-	}
-	if v, ok := cfg.ConfigAliases[cmd]; ok {
-		return v, nil
-	}
-	if v, ok := config.DefaultAliases[cmd]; ok {
-		return v, nil
-	}
-	return "", fmt.Errorf("unknown command %q — run 'alps help' for available commands", cmd)
-}
-
-var validSubCmds = map[string]map[string]bool{
-	"aur": {
-		"install": true, "search": true, "list": true,
-		"remove": true, "clean": true, "build-local": true, "fetch-abs": true,
-		"update": true, "upgrade": true,
-	},
-	"repo": {
-		"update": true, "list": true, "install": true,
-		"remove": true, "purge": true, "search": true, "upgrade": true, "clean": true,
-	},
-	"extra": {
-		"install": true, "remove": true, "purge": true, "search": true,
-		"show": true, "list": true, "update": true, "upgrade": true,
-		"autoremove": true, "clean": true,
-	},
-	"winget": {
-		"install": true, "remove": true, "purge": true, "search": true,
-		"show": true, "list": true, "update": true, "upgrade": true,
-	},
-	"flatpak": {
-		"install": true, "remove": true, "purge": true, "search": true,
-		"show": true, "list": true, "update": true, "upgrade": true,
-		"autoremove": true, "clean": true,
-	},
-	"snap": {
-		"install": true, "remove": true, "purge": true, "search": true,
-		"show": true, "list": true, "update": true, "upgrade": true,
-		"autoremove": true, "clean": true,
-	},
-}
-
-func resolveSubCmd(system, subcmd string, cfg *config.Config) (string, error) {
-	valid := validSubCmds[system]
-
-	if valid[subcmd] {
-		return subcmd, nil
-	}
-	if v, ok := cfg.ConfigAliases[subcmd]; ok {
-		if valid[v] {
-			return v, nil
-		}
-	}
-	if v, ok := config.DefaultAliases[subcmd]; ok {
-		if valid[v] {
-			return v, nil
-		}
-	}
-	if v, ok := config.DefaultSubCmdAliases[subcmd]; ok {
-		if valid[v] {
-			return v, nil
-		}
-	}
-
-	names := make([]string, 0, len(valid))
-	for k := range valid {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-	return "", fmt.Errorf("unknown %s subcommand %q\n  valid: %s", system, subcmd, strings.Join(names, ", "))
-}
-
-// resolveListAction resolves repo list sub-actions using 3-tier alias chain.
-func resolveListAction(action string, cfg *config.Config) string {
-	// Tier 1: exact match
-	if action == "install" || action == "remove" {
-		return action
-	}
-	// Tier 2: config alias
-	if v, ok := cfg.ConfigAliases[action]; ok {
-		if v == "install" || v == "remove" {
-			return v
-		}
-	}
-	// Tier 3: default aliases
-	if v, ok := config.DefaultAliases[action]; ok {
-		if v == "install" || v == "remove" {
-			return v
-		}
-	}
-	if v, ok := config.DefaultSubCmdAliases[action]; ok {
-		if v == "install" || v == "remove" {
-			return v
-		}
-	}
-	return ""
 }
 
 func detectBackend() string {
@@ -378,26 +269,14 @@ func runWithBackendFlagsExt(cmdArgs []string, args []string, cfg *config.Config,
 		}
 	}
 
-	var cmd *exec.Cmd
-	if sudo && !f.DryRun {
-		var err error
-		cmd, err = priv.Command(append([]string{cmdArgs[0]}, fullArgs...)...)
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			return false
-		}
-	} else {
-		cmd = exec.Command(cmdArgs[0], fullArgs...) // #nosec G702
+	// Use the new runner for consistent command execution
+	r := runner.NewDefaultRunner(f.DryRun)
+	cmd := runner.BuildCommand(cmdArgs[0], fullArgs...)
+	if sudo {
+		cmd = cmd.WithPrivilege()
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
 
-	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			ui.Msgf(cfg, ui.LevelError, "%s exited with code %d", backend, exitErr.ExitCode())
-			return false
-		}
+	if err := r.Run(context.Background(), cmd); err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		return false
 	}
@@ -538,7 +417,12 @@ func runPacmanUpgrade(subcmd string, args []string, flags pack.Flags, cfg *confi
 		return
 	}
 
-	runAURUpgrade(flags.DryRun, cfg)
+	// Use the new AUR backend for upgrade
+	aurBackend := aurbackend.New(cfg)
+	if err := aurBackend.Upgrade(nil, flags.DryRun); err != nil {
+		// Non-fatal error - main upgrade succeeded, AUR upgrade failed
+		ui.Msgf(cfg, ui.LevelWarn, "AUR upgrade skipped: %v", err)
+	}
 }
 
 func runPacmanWithAURFallback(args []string, dryRun bool, cfg *config.Config) {
@@ -711,89 +595,6 @@ func runPacmanSearch(args []string, cfg *config.Config) {
 	appendAURNamesCache(res.pkgs)
 }
 
-func runAURUpgrade(dryRun bool, cfg *config.Config) {
-	installed, err := aur.GetInstalledAUR()
-	if err != nil {
-		ui.Msgf(cfg, ui.LevelError, "failed to list AUR packages: %v", err)
-		return
-	}
-	if len(installed) == 0 {
-		ui.Msg(cfg, ui.LevelInfo, "No AUR packages installed.")
-		return
-	}
-
-	ui.Msgf(cfg, ui.LevelInfo, "Checking %d AUR package(s) for updates...", len(installed))
-
-	pacConf, _ := aur.ReadPacmanConf()
-	ignoreSet := make(map[string]bool)
-	if pacConf != nil {
-		for _, pkg := range pacConf.IgnorePkg {
-			ignoreSet[pkg] = true
-		}
-	}
-
-	names := make([]string, 0, len(installed))
-	for name := range installed {
-		if ignoreSet[name] {
-			fmt.Printf("  %s  %s: skipping ignored package\n",
-				cfg.Style.SymArrow, name)
-			continue
-		}
-		names = append(names, name)
-	}
-	latest, err := aur.InfoBatch(names)
-	if err != nil {
-		ui.Msgf(cfg, ui.LevelError, "failed to check for AUR updates: %v", err)
-		return
-	}
-
-	var outdated []aur.Package
-	for name, installedVer := range installed {
-		if ignoreSet[name] {
-			continue
-		}
-		pkg, ok := latest[name]
-		if !ok {
-			continue
-		}
-		if pkg.Version != installedVer {
-			outdated = append(outdated, *pkg)
-			fmt.Printf("  %s%s%s  %s%s%s → %s%s%s\n",
-				cfg.Style.ColorPrimary, pkg.Name, cfg.Style.ColorReset,
-				cfg.Style.ColorDim, installedVer, cfg.Style.ColorReset,
-				cfg.Style.ColorSuccess, pkg.Version, cfg.Style.ColorReset)
-		}
-	}
-
-	if len(outdated) == 0 {
-		ui.Msg(cfg, ui.LevelOK, "All AUR packages are up to date.")
-		return
-	}
-
-	fmt.Println()
-	ui.Msgf(cfg, ui.LevelInfo, "%d AUR package(s) to upgrade.", len(outdated))
-	fmt.Println()
-
-	var toUpgrade []string
-	for _, pkg := range outdated {
-		if dryRun {
-			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would upgrade AUR package %s", pkg.Name)
-		} else {
-			toUpgrade = append(toUpgrade, pkg.Name)
-		}
-	}
-
-	if dryRun || len(toUpgrade) == 0 {
-		return
-	}
-
-	if err := aur.Install(toUpgrade, false); err != nil {
-		ui.Msgf(cfg, ui.LevelError, "AUR upgrade failed: %v", err)
-	} else {
-		ui.Msg(cfg, ui.LevelOK, "AUR upgrade complete.")
-	}
-}
-
 func isArch() bool {
 	_, err := exec.LookPath("pacman")
 	return err == nil
@@ -813,7 +614,7 @@ func runAUR(args []string, cfg *config.Config) {
 	}
 
 	rawSubcmd := args[0]
-	subcmd, err := resolveSubCmd("aur", rawSubcmd, cfg)
+	subcmd, err := cli.ResolveSubCmd("aur", rawSubcmd, cfg)
 	if err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
@@ -826,6 +627,9 @@ func runAUR(args []string, cfg *config.Config) {
 		os.Exit(1)
 	}
 
+	// Use the new AUR backend
+	backend := aurbackend.New(cfg)
+
 	switch subcmd {
 	case "install", "update", "upgrade":
 		if len(pkgs) == 0 {
@@ -834,7 +638,9 @@ func runAUR(args []string, cfg *config.Config) {
 				os.Exit(1)
 			} else {
 				// No packages provided for update/upgrade: upgrade all outdated AUR packages.
-				runAURUpgrade(dryRun, cfg)
+				if err := backend.Upgrade(pkgs, dryRun); err != nil {
+					os.Exit(1)
+				}
 				return
 			}
 		}
@@ -850,12 +656,9 @@ func runAUR(args []string, cfg *config.Config) {
 			}
 			return
 		}
-		// noConfirm intentionally omitted — user must confirm AUR installs.
-		if err := aur.Install(pkgs, false); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
+		if err := backend.Install(pkgs, dryRun); err != nil {
 			os.Exit(1)
 		}
-		ui.Msg(cfg, ui.LevelOK, "Done.")
 
 	case "search":
 		if len(rest) == 0 {
@@ -866,70 +669,20 @@ func runAUR(args []string, cfg *config.Config) {
 		if query == "" {
 			query = strings.Join(rest, " ")
 		}
-		ui.Msgf(cfg, ui.LevelInfo, "Searching '%s' in AUR...", query)
-		fmt.Println()
-		results, err := aur.SearchNarrow(query)
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
+		if err := backend.Search(query); err != nil {
 			os.Exit(1)
 		}
-		if len(results) == 0 {
-			ui.Msg(cfg, ui.LevelWarn, "No results found in AUR")
-			return
-		}
-		for i, p := range results {
-			aur.PrintSearchResult(i+1, p, "aur")
-		}
-		fmt.Println()
+		// Still need to update AUR names cache for completion
+		results, _ := aur.SearchNarrow(query)
 		appendAURNamesCache(results)
 
 	case "list":
-		installed, err := aur.ListInstalledAUR()
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
+		if err := backend.List(); err != nil {
 			os.Exit(1)
 		}
-		if len(installed) == 0 {
-			ui.Msg(cfg, ui.LevelInfo, "No AUR packages installed.")
-			return
-		}
-		fmt.Println()
-		for name, ver := range installed {
-			fmt.Printf("  %s%s%s  %s%s%s\n",
-				cfg.Style.ColorPrimary, name, cfg.Style.ColorReset,
-				cfg.Style.ColorDim, ver, cfg.Style.ColorReset)
-		}
-		fmt.Println()
 
 	case "remove":
-		if len(pkgs) == 0 {
-			ui.Msg(cfg, ui.LevelError, "Usage: alps aur remove <package> [packages...]")
-			os.Exit(1)
-		}
-
-		if dryRun {
-			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would remove AUR package(s): %s", strings.Join(pkgs, " "))
-			return
-		}
-		ui.Msgf(cfg, ui.LevelWarn, "Remove AUR package(s) %s%s%s?",
-			cfg.Style.ColorBold, strings.Join(pkgs, " "), cfg.Style.ColorReset+cfg.Style.ColorWarning)
-		fmt.Print(cfg.Style.ColorReset)
-		fmt.Println()
-		if !ui.Confirm() {
-			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
-			return
-		}
-
-		var hasErrors bool
-		for _, pkgName := range pkgs {
-			if err := aur.Remove(pkgName, false); err != nil {
-				ui.Msgf(cfg, ui.LevelError, "failed to remove %s: %v", pkgName, err)
-				hasErrors = true
-			} else {
-				ui.Msg(cfg, ui.LevelOK, pkgName+" removed.")
-			}
-		}
-		if hasErrors {
+		if err := backend.Remove(pkgs, dryRun); err != nil {
 			os.Exit(1)
 		}
 
@@ -938,61 +691,23 @@ func runAUR(args []string, cfg *config.Config) {
 		if len(pkgs) > 0 {
 			dir = pkgs[0]
 		}
-		if dryRun {
-			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would build PKGBUILD in %s", dir)
-			return
-		}
-		ui.Msgf(cfg, ui.LevelInfo, "Building local PKGBUILD in %s%s%s...",
-			cfg.Style.ColorBold, dir, cfg.Style.ColorReset+cfg.Style.ColorInfo)
-		fmt.Print(cfg.Style.ColorReset)
-		fmt.Println()
-		if err := aur.BuildLocal(dir, false); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
+		if err := backend.BuildLocal(dir, dryRun); err != nil {
 			os.Exit(1)
 		}
-		ui.Msg(cfg, ui.LevelOK, "Done.")
 
 	case "fetch-abs":
-		if len(pkgs) == 0 {
-			ui.Msg(cfg, ui.LevelError, "Usage: alps aur fetch-abs <package>")
+		pkgName := ""
+		if len(pkgs) > 0 {
+			pkgName = pkgs[0]
+		}
+		if err := backend.FetchABS(pkgName); err != nil {
 			os.Exit(1)
 		}
-		pkgName := pkgs[0]
-		ui.Msgf(cfg, ui.LevelInfo, "Fetching PKGBUILD for %s%s%s from ABS...",
-			cfg.Style.ColorBold, pkgName, cfg.Style.ColorReset+cfg.Style.ColorInfo)
-		fmt.Print(cfg.Style.ColorReset)
-		fmt.Println()
-		dir, err := aur.FetchABS(pkgName)
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-		ui.Msgf(cfg, ui.LevelOK, "PKGBUILD saved to: %s", dir)
 
 	case "clean":
-		cacheRoot, err := aur.AURCacheRoot()
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
+		if err := backend.Clean(dryRun); err != nil {
 			os.Exit(1)
 		}
-		if _, err := os.Stat(cacheRoot); os.IsNotExist(err) {
-			ui.Msg(cfg, ui.LevelInfo, "No AUR cache found.")
-			return
-		}
-		if dryRun {
-			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would remove AUR build cache at %s", cacheRoot)
-			return
-		}
-		ui.Msgf(cfg, ui.LevelInfo, "Remove AUR build cache? (%s)", cacheRoot)
-		if !ui.Confirm() {
-			ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
-			return
-		}
-		if err := aur.CleanCache(""); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-		ui.Msg(cfg, ui.LevelOK, "Cache removed.")
 
 	default:
 		ui.Msgf(cfg, ui.LevelError, "Unknown aur subcommand: %s", subcmd)
@@ -1015,415 +730,6 @@ func appendAURNamesCache(pkgs []aur.Package) {
 	}
 }
 
-// printRepoInstallPreview shows install preview for alps-more and GitHub entries.
-func printRepoInstallPreview(entry *more.Entry, source string, cfg *config.Config) {
-	ui.Msgf(cfg, ui.LevelInfo, "Install %s%s%s from %s?",
-		cfg.Style.ColorBold, entry.Name, cfg.Style.ColorReset+cfg.Style.ColorInfo, source)
-	if entry.Desc != "" {
-		fmt.Printf("  %s%s%s\n", cfg.Style.ColorDim, entry.Desc, cfg.Style.ColorReset)
-	}
-	if entry.Author != "" {
-		fmt.Printf("  %sauthor: %s%s\n", cfg.Style.ColorDim, entry.Author, cfg.Style.ColorReset)
-	}
-	if entry.Version != "" {
-		fmt.Printf("  %sversion: %s%s\n", cfg.Style.ColorDim, entry.Version, cfg.Style.ColorReset)
-	}
-	fmt.Println()
-
-	fmt.Printf("  %sinstall:%s\n", cfg.Style.ColorBold, cfg.Style.ColorReset)
-	for _, line := range entry.CmdLines {
-		fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
-	}
-
-	fmt.Println()
-
-	fmt.Print(cfg.Style.ColorReset)
-	fmt.Println()
-}
-
-func runRepoUpdate(dryRun bool, cfg *config.Config) {
-	if dryRun {
-		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would fetch and cache repo updates")
-		return
-	}
-	if err := more.FetchAndCache(cfg); err != nil {
-		ui.Msg(cfg, ui.LevelError, err.Error())
-		os.Exit(1)
-	}
-	ui.Msg(cfg, ui.LevelOK, "repo cache updated")
-
-	summary, err := more.CheckUpdates(cfg)
-	if err != nil {
-		ui.Msg(cfg, ui.LevelWarn, fmt.Sprintf("could not check for updates: %v", err))
-		return
-	}
-	if summary == nil {
-		return
-	}
-	if len(summary.Upgradeable) == 0 && len(summary.Stale) == 0 {
-		ui.Msg(cfg, ui.LevelOK, "all installed packages are up to date")
-		return
-	}
-	if len(summary.Upgradeable) > 0 {
-		ui.Msgf(cfg, ui.LevelInfo,
-			"%d package(s) have updates available — run 'alps repo upgrade' to apply",
-			len(summary.Upgradeable))
-		for _, pkg := range summary.Upgradeable {
-			fmt.Printf("       %s\n", pkg)
-		}
-	}
-	if len(summary.Stale) > 0 {
-		ui.Msgf(cfg, ui.LevelWarn,
-			"%d package(s) no longer in repo — run 'alps repo remove <pkg>' to clean up",
-			len(summary.Stale))
-		for _, name := range summary.Stale {
-			fmt.Printf("       %s\n", name)
-		}
-	}
-}
-
-func runRepoList(rest []string, cfg *config.Config) {
-	// Sub-actions: install → ListInstalled, remove → ListStale
-	if len(rest) > 0 {
-		action := resolveListAction(rest[0], cfg)
-		switch action {
-		case "install":
-			fmt.Println()
-			if err := more.ListInstalled(cfg); err != nil {
-				ui.Msgf(cfg, ui.LevelError, "%v", err)
-				os.Exit(1)
-			}
-			fmt.Println()
-			return
-		case "remove":
-			fmt.Println()
-			if err := more.ListStale(cfg); err != nil {
-				ui.Msgf(cfg, ui.LevelError, "%v", err)
-				os.Exit(1)
-			}
-			fmt.Println()
-			return
-		}
-		// Fall through to full list
-	}
-
-	entries, err := more.List(cfg)
-	if err != nil {
-		ui.Msgf(cfg, ui.LevelError, "%v", err)
-		os.Exit(1)
-	}
-	if len(entries) == 0 {
-		ui.Msg(cfg, ui.LevelWarn, "No packages in repo.")
-		return
-	}
-	installed, _ := more.ReadInstalled()
-	fmt.Println()
-	for _, e := range entries {
-		installedVer := ""
-		if rec, ok := installed[e.Name]; ok {
-			installedVer = rec.Version
-			if installedVer == "" {
-				installedVer = "installed"
-			}
-			if strings.HasPrefix(rec.Source, "github:") {
-				installedVer += " [github]"
-			}
-		}
-		ui.PrintRepoEntry(cfg, e.Name, e.Version, e.Desc, e.Arch, installedVer)
-	}
-	fmt.Println()
-}
-
-func fetchRepoEntry(pkgName string, cfg *config.Config) (*more.Entry, *more.RemoteRef, error) {
-	var remoteRef *more.RemoteRef
-	var err error
-
-	if more.IsRemoteURL(pkgName) {
-		remoteRef, err = more.ParseRemoteURL(pkgName)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
-	if remoteRef != nil {
-		fmt.Println()
-		ui.Msgf(cfg, ui.LevelInfo, "fetching ALPSMORE from %s...", remoteRef.DisplayURL())
-		fmt.Println()
-
-		var resolved more.RemoteRef
-		entry, resolved, err := more.FetchALPSMORERemote(*remoteRef)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		source := resolved.Source()
-		// Official alps-more takes priority
-		if official, findErr := more.Find(entry.Name, cfg); findErr == nil {
-			ui.Msgf(cfg, ui.LevelInfo, "%q found in official alps-more repo — using that instead.", official.Name)
-			fmt.Println()
-			entry = official
-		} else {
-			entry.Source = source
-		}
-		remoteRef = &resolved
-		return entry, remoteRef, nil
-	}
-
-	entry, err := more.Find(pkgName, cfg)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return entry, nil, nil
-}
-
-func runRepoInstall(pkgs []string, dryRun bool, cfg *config.Config) {
-	if len(pkgs) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps repo install <package> [packages...]")
-		os.Exit(1)
-	}
-
-	var hasErrors bool
-	for _, pkgName := range pkgs {
-		entry, remoteRef, err := fetchRepoEntry(pkgName, cfg)
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			hasErrors = true
-			continue
-		}
-
-		if err := more.Validate(entry); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			hasErrors = true
-			continue
-		}
-
-		sourceStr := "alps-more"
-		if remoteRef != nil && entry.Source != "" {
-			sourceStr = remoteRef.DisplayURL()
-		}
-		printRepoInstallPreview(entry, sourceStr, cfg)
-
-		if dryRun {
-			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would install %s", entry.Name)
-			continue
-		}
-		if !ui.Confirm() {
-			ui.Msg(cfg, ui.LevelWarn, "Cancelled for "+entry.Name)
-			continue
-		}
-
-		fmt.Println()
-		if err := more.Install(entry, cfg); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "failed to install %s: %v", entry.Name, err)
-			hasErrors = true
-		} else {
-			ui.Msg(cfg, ui.LevelOK, entry.Name+" installed.")
-		}
-	}
-	if hasErrors {
-		os.Exit(1)
-	}
-}
-
-func runRepoRemove(pkgs []string, dryRun bool, cfg *config.Config) {
-	if len(pkgs) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps repo remove <package> [packages...]")
-		os.Exit(1)
-	}
-
-	var hasErrors bool
-	for _, pkgName := range pkgs {
-		entry, stale, err := more.RemovalEntry(pkgName, cfg)
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			hasErrors = true
-			continue
-		}
-
-		// Validate package is installed before confirmation
-		_, isInstalled := more.GetInstalled(pkgName)
-		if !isInstalled {
-			ui.Msgf(cfg, ui.LevelError, "package %q is not installed via alps-more", pkgName)
-			hasErrors = true
-			continue
-		}
-
-		ui.Msgf(cfg, ui.LevelInfo, "Remove %s%s%s from alps-more?",
-			cfg.Style.ColorBold, entry.Name, cfg.Style.ColorReset+cfg.Style.ColorInfo)
-		if stale {
-			ui.Msg(cfg, ui.LevelWarn, "package is no longer in repo; using saved uninstall commands")
-		}
-		fmt.Println()
-		for _, line := range entry.RemoveLines {
-			fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
-		}
-		fmt.Print(cfg.Style.ColorReset)
-		fmt.Println()
-		if dryRun {
-			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would remove %s", entry.Name)
-			continue
-		}
-		if !ui.Confirm() {
-			ui.Msg(cfg, ui.LevelWarn, "Cancelled for "+entry.Name)
-			continue
-		}
-
-		fmt.Println()
-		if err := more.Remove(entry, cfg); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "failed to remove %s: %v", entry.Name, err)
-			hasErrors = true
-		} else {
-			ui.Msg(cfg, ui.LevelOK, entry.Name+" removed.")
-		}
-	}
-	if hasErrors {
-		os.Exit(1)
-	}
-}
-
-func runRepoPurge(pkgs []string, dryRun bool, cfg *config.Config) {
-	if len(pkgs) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps repo purge <package> [packages...]")
-		os.Exit(1)
-	}
-
-	var hasErrors bool
-	for _, pkgName := range pkgs {
-		entry, stale, err := more.RemovalEntry(pkgName, cfg)
-		if err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			hasErrors = true
-			continue
-		}
-
-		// Validate package is installed before confirmation
-		_, isInstalled := more.GetInstalled(pkgName)
-		if !isInstalled {
-			ui.Msgf(cfg, ui.LevelError, "package %q is not installed via alps-more", pkgName)
-			hasErrors = true
-			continue
-		}
-
-		ui.Msgf(cfg, ui.LevelWarn, "Purge %s%s%s? This removes the package AND its config/data files.",
-			cfg.Style.ColorBold, entry.Name, cfg.Style.ColorReset+cfg.Style.ColorWarning)
-		if stale {
-			ui.Msg(cfg, ui.LevelWarn, "package is no longer in repo; using saved uninstall commands")
-		}
-		fmt.Println()
-
-		if len(entry.RemoveLines) > 0 {
-			fmt.Printf("  %sremove:%s\n", cfg.Style.ColorBold, cfg.Style.ColorReset)
-			for _, line := range entry.RemoveLines {
-				fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
-			}
-			fmt.Println()
-		}
-		if len(entry.PurgeLines) > 0 {
-			fmt.Printf("  %spurge:%s\n", cfg.Style.ColorBold, cfg.Style.ColorReset)
-			for _, line := range entry.PurgeLines {
-				fmt.Printf("  %s$ %s%s\n", cfg.Style.ColorDim, line, cfg.Style.ColorReset)
-			}
-		} else {
-			fmt.Printf("  %s%s  no purge_cmd defined — only remove will run%s\n",
-				cfg.Style.ColorDim, cfg.Style.SymWarn, cfg.Style.ColorReset)
-		}
-
-		fmt.Print(cfg.Style.ColorReset)
-		fmt.Println()
-		if dryRun {
-			ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would purge %s", entry.Name)
-			continue
-		}
-		if !ui.Confirm() {
-			ui.Msg(cfg, ui.LevelWarn, "Cancelled for "+entry.Name)
-			continue
-		}
-
-		fmt.Println()
-		if err := more.Purge(pkgName, cfg); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "failed to purge %s: %v", entry.Name, err)
-			hasErrors = true
-		} else {
-			ui.Msg(cfg, ui.LevelOK, entry.Name+" purged.")
-		}
-	}
-	if hasErrors {
-		os.Exit(1)
-	}
-}
-
-func runRepoSearch(pkgs []string, rest []string, cfg *config.Config) {
-	if len(pkgs) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps repo search <query>")
-		os.Exit(1)
-	}
-	query := strings.Join(pkgs, " ")
-	if query == "" {
-		query = strings.Join(rest, " ")
-	}
-	results, err := more.Search(query, cfg)
-	if err != nil {
-		ui.Msgf(cfg, ui.LevelError, "%v", err)
-		os.Exit(1)
-	}
-	if len(results) == 0 {
-		ui.Msgf(cfg, ui.LevelWarn, "No results for '%s' in alps-more.", query)
-		return
-	}
-	fmt.Println()
-	for _, e := range results {
-		ui.PrintRepoSearchResult(cfg, e.Name, e.Version, e.Desc)
-	}
-	fmt.Println()
-}
-
-func runRepoUpgrade(rest []string, cfg *config.Config) {
-	if len(rest) == 0 {
-		ui.Msg(cfg, ui.LevelInfo, "Checking alps-more packages for updates...")
-		fmt.Println()
-		if err := more.UpgradeAll(cfg); err != nil {
-			ui.Msgf(cfg, ui.LevelError, "%v", err)
-			os.Exit(1)
-		}
-	} else {
-		var hasErrors bool
-		for _, pkgName := range rest {
-			if err := more.Upgrade(pkgName, cfg); err != nil {
-				ui.Msgf(cfg, ui.LevelError, "failed to upgrade %s: %v", pkgName, err)
-				hasErrors = true
-			} else {
-				ui.Msg(cfg, ui.LevelOK, pkgName+" upgraded.")
-			}
-		}
-		if hasErrors {
-			os.Exit(1)
-		}
-	}
-}
-
-func runRepoClean(dryRun bool, cfg *config.Config) {
-	cacheDir := more.CacheDir()
-	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
-		ui.Msg(cfg, ui.LevelInfo, "No repo cache found.")
-		return
-	}
-	if dryRun {
-		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: would remove repo cache at %s", cacheDir)
-		return
-	}
-	ui.Msgf(cfg, ui.LevelInfo, "Remove repo cache? (%s)", cacheDir)
-	if !ui.Confirm() {
-		ui.Msg(cfg, ui.LevelWarn, "Cancelled.")
-		return
-	}
-	if err := more.CleanCache(); err != nil {
-		ui.Msgf(cfg, ui.LevelError, "%v", err)
-		os.Exit(1)
-	}
-	ui.Msg(cfg, ui.LevelOK, "Done.")
-}
-
 func runRepo(args []string, cfg *config.Config) {
 	ui.PrintHeader(cfg)
 
@@ -1433,7 +739,7 @@ func runRepo(args []string, cfg *config.Config) {
 	}
 
 	rawSubcmd := args[0]
-	subcmd, err := resolveSubCmd("repo", rawSubcmd, cfg)
+	subcmd, err := cli.ResolveSubCmd("repo", rawSubcmd, cfg)
 	if err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
@@ -1443,31 +749,54 @@ func runRepo(args []string, cfg *config.Config) {
 	dryRun := restFlags.DryRun
 	// -y is intentionally NOT supported for repo operations.
 
+	// Use the new repo backend
+	backend := repo.New(cfg)
+
 	switch subcmd {
 
 	case "update":
-		runRepoUpdate(dryRun, cfg)
+		if err := backend.Update(dryRun); err != nil {
+			os.Exit(1)
+		}
 
 	case "list":
-		runRepoList(rest, cfg)
+		if err := backend.List(rest); err != nil {
+			os.Exit(1)
+		}
 
 	case "install":
-		runRepoInstall(pkgs, dryRun, cfg)
+		if err := backend.Install(pkgs, dryRun); err != nil {
+			os.Exit(1)
+		}
 
 	case "remove":
-		runRepoRemove(pkgs, dryRun, cfg)
+		if err := backend.Remove(pkgs, dryRun); err != nil {
+			os.Exit(1)
+		}
 
 	case "purge":
-		runRepoPurge(pkgs, dryRun, cfg)
+		if err := backend.Purge(pkgs, dryRun); err != nil {
+			os.Exit(1)
+		}
 
 	case "search":
-		runRepoSearch(pkgs, rest, cfg)
+		query := strings.Join(pkgs, " ")
+		if query == "" {
+			query = strings.Join(rest, " ")
+		}
+		if err := backend.Search(query); err != nil {
+			os.Exit(1)
+		}
 
 	case "upgrade":
-		runRepoUpgrade(rest, cfg)
+		if err := backend.Upgrade(rest); err != nil {
+			os.Exit(1)
+		}
 
 	case "clean":
-		runRepoClean(dryRun, cfg)
+		if err := backend.Clean(dryRun); err != nil {
+			os.Exit(1)
+		}
 
 	default:
 		ui.Msgf(cfg, ui.LevelError, "Unknown repo subcommand: %s", subcmd)
@@ -1489,7 +818,7 @@ func runFlatpak(args []string, cfg *config.Config) {
 	}
 
 	rawSubcmd := args[0]
-	subcmd, err := resolveSubCmd("flatpak", rawSubcmd, cfg)
+	subcmd, err := cli.ResolveSubCmd("flatpak", rawSubcmd, cfg)
 	if err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
@@ -1664,7 +993,7 @@ func runSnap(args []string, cfg *config.Config) {
 	}
 
 	rawSubcmd := args[0]
-	subcmd, err := resolveSubCmd("snap", rawSubcmd, cfg)
+	subcmd, err := cli.ResolveSubCmd("snap", rawSubcmd, cfg)
 	if err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
@@ -1718,7 +1047,7 @@ func runExtra(args []string, cfg *config.Config) {
 	}
 
 	rawSubcmd := args[0]
-	subcmd, err := resolveSubCmd("extra", rawSubcmd, cfg)
+	subcmd, err := cli.ResolveSubCmd("extra", rawSubcmd, cfg)
 	if err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)
@@ -1768,7 +1097,7 @@ func runWinget(args []string, cfg *config.Config) {
 	}
 
 	rawSubcmd := args[0]
-	subcmd, err := resolveSubCmd("winget", rawSubcmd, cfg)
+	subcmd, err := cli.ResolveSubCmd("winget", rawSubcmd, cfg)
 	if err != nil {
 		ui.Msgf(cfg, ui.LevelError, "%v", err)
 		os.Exit(1)

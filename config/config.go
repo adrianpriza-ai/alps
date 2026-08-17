@@ -86,6 +86,8 @@ var DefaultSubCmdAliases = map[string]string{
 	"bl":  "build-local",
 	"fa":  "fetch-abs",
 	"abs": "fetch-abs",
+	"add": "install",
+	"del": "remove",
 }
 
 func globalConfigPath() string { return "/etc/alps/config" }

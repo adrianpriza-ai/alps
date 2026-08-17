@@ -21,13 +21,20 @@ const (
 	defaultLibDir   = "/var/lib/alps"
 	expireDays      = 90
 
-	primaryURL  = "https://adrianpriza-ai.github.io/alps-more/main.txt"
-	fallbackURL = "https://moreland.codeberg.page/alps-more/main.txt"
+	// Security: Pin to specific release version instead of mutable branches
+	// These should be updated to specific release tags/commits during releases
+	primaryURL  = "https://adrianpriza-ai.github.io/alps-more/v1/main.txt"
+	fallbackURL = "https://moreland.codeberg.page/alps-more/v1/main.txt"
 
 	downloadTimeout = 15 * time.Second
 	serverTimeout   = 5 * time.Second
 	maxRetries      = 3
 	retryDelay      = 2 * time.Second
+
+	// Security: maximum response size for manifest downloads (10MB)
+	maxManifestSize = 10 * 1024 * 1024
+	// Security: maximum response size for script downloads (100MB)
+	maxScriptSize = 100 * 1024 * 1024
 )
 
 // defaultServers are the official alps-more mirrors.
@@ -36,8 +43,8 @@ var defaultServers = []string{
 	"https://moreland.codeberg.page/alps-more/",
 }
 
-// defaultBranches are tried when no branch is specified.
-var defaultBranches = []string{"HEAD", "main", "master"}
+// Security: Removed branch fallbacks - require explicit branch specification
+// to prevent reliance on mutable references like HEAD, main, master
 
 // isMacOS checks if running on macOS.
 func isMacOS() bool {
@@ -117,17 +124,52 @@ func ensureLibDir() error {
 	return cmd.Run()
 }
 
-// writeCacheFile writes data to a cache path.
+// writeCacheFile writes data to a cache path atomically.
+// Security: Write to temporary file, fsync, then atomic rename to prevent partial writes.
 func writeCacheFile(path string, data []byte) error {
+	tmpPath := path + ".tmp"
+
+	var writeErr error
 	if isTermux() || runtime.GOOS == "darwin" {
 		// Termux and macOS use user directories, no sudo needed
-		return os.WriteFile(path, data, 0644)
+		writeErr = os.WriteFile(tmpPath, data, 0644)
+		if writeErr == nil {
+			// Ensure data is written to disk before rename
+			file, err := os.Open(tmpPath)
+			if err == nil {
+				_ = file.Sync()
+				file.Close()
+			}
+			writeErr = os.Rename(tmpPath, path)
+		}
+	} else {
+		// For systems requiring sudo, we need to handle atomic writes carefully
+		// Write to temp file first, then move atomically
+		cmd := exec.Command("sudo", "tee", tmpPath)
+		cmd.Stdin = bytes.NewReader(data)
+		cmd.Stdout = io.Discard
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+		// Ensure the data is durable before the atomic rename (fsync works on
+		// read-only fds on Linux, and the tmp file is 0644 so we can open it).
+		if f, err := os.Open(tmpPath); err == nil {
+			_ = f.Sync()
+			_ = f.Close()
+		}
+		// Atomic rename using sudo mv
+		cmd = exec.Command("sudo", "mv", tmpPath, path)
+		cmd.Stdout = io.Discard
+		cmd.Stderr = os.Stderr
+		writeErr = cmd.Run()
 	}
-	cmd := exec.Command("sudo", "tee", path)
-	cmd.Stdin = bytes.NewReader(data)
-	cmd.Stdout = io.Discard
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+
+	// Clean up temp file if something went wrong
+	if writeErr != nil {
+		_ = os.Remove(tmpPath)
+	}
+	return writeErr
 }
 
 // CacheStatus returns cache existence and expiration.
@@ -286,7 +328,11 @@ func CleanCache() error {
 
 // CleanPackageCache removes a specific package's build cache directory.
 // Pattern: ~/.cache/alps/more/<package-name>/
+// Security: the package name is validated to prevent path traversal.
 func CleanPackageCache(pkgName string) error {
+	if err := validatePkgNameComponent(pkgName); err != nil {
+		return fmt.Errorf("invalid package name %q: %w", pkgName, err)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("cannot determine home directory: %w", err)
@@ -334,27 +380,22 @@ func isAllowedURL(rawURL string) bool {
 	if err != nil {
 		return false
 	}
-	if u.Scheme != "https" && u.Scheme != "http" {
+	// Security: Require HTTPS only
+	if u.Scheme != "https" {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())
+	// Security: Explicit approved hosts only (no broad suffixes)
 	allowedHosts := []string{
 		"github.com",
 		"raw.githubusercontent.com",
 		"codeberg.org",
 		"gitlab.com",
-	}
-	allowedSuffixes := []string{
-		".github.io",
-		".codeberg.page",
+		"adrianpriza-ai.github.io",
+		"moreland.codeberg.page",
 	}
 	for _, h := range allowedHosts {
 		if host == h {
-			return true
-		}
-	}
-	for _, s := range allowedSuffixes {
-		if strings.HasSuffix(host, s) {
 			return true
 		}
 	}
@@ -362,6 +403,10 @@ func isAllowedURL(rawURL string) bool {
 }
 
 func downloadOnce(rawURL string) ([]byte, error) {
+	return downloadOnceWithSizeLimit(rawURL, maxManifestSize)
+}
+
+func downloadOnceWithSizeLimit(rawURL string, maxSize int64) ([]byte, error) {
 	if !isAllowedURL(rawURL) {
 		return nil, fmt.Errorf("disallowed download URL host/scheme: %s", rawURL)
 	}
@@ -375,12 +420,19 @@ func downloadOnce(rawURL string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, rawURL)
 	}
-	body, err := io.ReadAll(resp.Body)
+
+	// Security: Limit response size to prevent denial of service
+	limitedReader := io.LimitReader(resp.Body, maxSize)
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, err
 	}
 	if len(body) == 0 {
 		return nil, fmt.Errorf("empty response from %s", rawURL)
+	}
+	// Check if we hit the size limit
+	if int64(len(body)) >= maxSize {
+		return nil, fmt.Errorf("response too large from %s (exceeds %d bytes)", rawURL, maxSize)
 	}
 	return body, nil
 }
@@ -413,45 +465,38 @@ func remoteRawURL(ref RemoteRef, branch string) string {
 }
 
 func branchesForRef(ref RemoteRef) []string {
-	if ref.Branch != "" {
-		return []string{ref.Branch}
+	// Security: Require explicit branch specification - no fallbacks
+	if ref.Branch == "" {
+		return nil
 	}
-	return defaultBranches
+	return []string{ref.Branch}
 }
 
 func fetchRemoteRef(ref RemoteRef) (*Entry, RemoteRef, error) {
-	attempts := []RemoteRef{ref}
-
+	// Security: Require explicit branch specification
 	if ref.Branch == "" {
-		segments := strings.Split(ref.RepoPath, "/")
-		if len(segments) >= 3 {
-			branchGuess := RemoteRef{
-				Provider: ref.Provider,
-				Host:     ref.Host,
-				RepoPath: strings.Join(segments[:len(segments)-1], "/"),
-				Branch:   segments[len(segments)-1],
-			}
-			attempts = append(attempts, branchGuess)
-		}
+		return nil, ref, fmt.Errorf("branch must be specified for remote references (format: provider:repo/branch or provider:repo@branch)")
 	}
 
 	resolved := ref
+	branches := branchesForRef(ref)
+	if len(branches) == 0 {
+		return nil, ref, fmt.Errorf("no valid branches found for %s", ref.DisplayURL())
+	}
+
 	var lastErr error
-	for _, attempt := range attempts {
-		for _, branch := range branchesForRef(attempt) {
-			url := remoteRawURL(attempt, branch)
-			data, err := downloadOnce(url)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			e, err := parseALPSMORE(data, attempt.RepoPath)
-			if err != nil {
-				return nil, resolved, err
-			}
-			resolved = attempt
-			return e, resolved, nil
+	for _, branch := range branches {
+		url := remoteRawURL(ref, branch)
+		data, err := downloadOnce(url)
+		if err != nil {
+			lastErr = err
+			continue
 		}
+		e, err := parseALPSMORE(data, ref.RepoPath)
+		if err != nil {
+			return nil, resolved, err
+		}
+		return e, resolved, nil
 	}
 	return nil, resolved, fmt.Errorf("could not fetch ALPSMORE from %s: %w", ref.DisplayURL(), lastErr)
 }

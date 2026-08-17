@@ -3,6 +3,8 @@ package more
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/adrianpriza-ai/alps/config"
+	"github.com/adrianpriza-ai/alps/internal/runner"
 	"github.com/adrianpriza-ai/alps/priv"
 )
 
@@ -31,6 +34,7 @@ type Entry struct {
 	Deps         []string
 	Servers      []string
 	Safety       string
+	SHA256Sums   []string
 	CmdLines     []string
 	RemoveLines  []string
 	UpgradeLines []string
@@ -169,6 +173,8 @@ func parseKeyValue(line string, e *Entry) {
 		} else {
 			e.Safety = "strict" // default
 		}
+	case "sha256sums":
+		e.SHA256Sums = splitTrim(val)
 	}
 }
 
@@ -617,46 +623,31 @@ func isRoot() bool {
 
 // removeFileWithSudo removes a file with optional sudo
 func removeFileWithSudo(path string, useSudo bool) error {
-	if isTermux() || isMacOS() || !useSudo {
-		cmd := exec.Command("rm", "-f", path)
-		return cmd.Run()
+	r := runner.NewDefaultRunner(false)
+	cmd := runner.BuildCommand("rm", "-f", path)
+	if useSudo && !(isTermux() || isMacOS()) {
+		cmd = cmd.WithPrivilege()
 	}
-
-	// Use priv for elevated privileges
-	cmd, err := priv.Command("rm", "-f", path)
-	if err != nil {
-		return err
-	}
-	return cmd.Run()
+	return r.Run(context.Background(), cmd)
 }
 
 // removeSymlinkWithSudo removes a symlink with optional sudo
 func removeSymlinkWithSudo(path string, useSudo bool) error {
-	if isTermux() || isMacOS() || !useSudo {
-		cmd := exec.Command("rm", "-f", path)
-		return cmd.Run()
+	r := runner.NewDefaultRunner(false)
+	cmd := runner.BuildCommand("rm", "-f", path)
+	if useSudo && !(isTermux() || isMacOS()) {
+		cmd = cmd.WithPrivilege()
 	}
-
-	// Use priv for elevated privileges
-	cmd, err := priv.Command("rm", "-f", path)
-	if err != nil {
-		return err
-	}
-	return cmd.Run()
+	return r.Run(context.Background(), cmd)
 }
 
 func removeFile(path string) error {
-	if isTermux() || isMacOS() {
-		cmd := exec.Command("rm", "-f", path)
-		return cmd.Run()
+	r := runner.NewDefaultRunner(false)
+	cmd := runner.BuildCommand("rm", "-f", path)
+	if !(isTermux() || isMacOS()) {
+		cmd = cmd.WithPrivilege()
 	}
-
-	// Use priv for elevated privileges on non-Termux/non-macOS systems
-	cmd, err := priv.Command("rm", "-f", path)
-	if err != nil {
-		return err
-	}
-	return cmd.Run()
+	return r.Run(context.Background(), cmd)
 }
 
 func removeDir(path string) error {
@@ -668,17 +659,12 @@ func removeDir(path string) error {
 }
 
 func removeSymlink(path string) error {
-	if isTermux() || isMacOS() {
-		cmd := exec.Command("rm", "-f", path)
-		return cmd.Run()
+	r := runner.NewDefaultRunner(false)
+	cmd := runner.BuildCommand("rm", "-f", path)
+	if !(isTermux() || isMacOS()) {
+		cmd = cmd.WithPrivilege()
 	}
-
-	// Use priv for elevated privileges on non-Termux/non-macOS systems
-	cmd, err := priv.Command("rm", "-f", path)
-	if err != nil {
-		return err
-	}
-	return cmd.Run()
+	return r.Run(context.Background(), cmd)
 }
 
 func removeService(service string) error {
@@ -686,21 +672,15 @@ func removeService(service string) error {
 		return nil
 	}
 
+	r := runner.NewDefaultRunner(false)
+
 	// Stop the service
-	stopCmd, err := priv.Command("systemctl", "stop", service)
-	if err == nil {
-		stopCmd.Stdout = nil
-		stopCmd.Stderr = nil
-		_ = stopCmd.Run()
-	}
+	stopCmd := runner.BuildCommand("systemctl", "stop", service).WithPrivilege()
+	_ = r.Run(context.Background(), stopCmd)
 
 	// Disable the service
-	disableCmd, err := priv.Command("systemctl", "disable", service)
-	if err == nil {
-		disableCmd.Stdout = nil
-		disableCmd.Stderr = nil
-		_ = disableCmd.Run()
-	}
+	disableCmd := runner.BuildCommand("systemctl", "disable", service).WithPrivilege()
+	_ = r.Run(context.Background(), disableCmd)
 
 	// Remove the service file
 	serviceFile := "/etc/systemd/system/" + service
@@ -712,10 +692,10 @@ func removeService(service string) error {
 }
 
 func removeUser(username string) error {
-	cmd := exec.Command("userdel", username)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	_ = cmd.Run()
+	r := runner.NewDefaultRunner(false)
+	cmd := runner.BuildCommand("userdel", username).WithPrivilege()
+	// Ignore errors, user may not exist
+	_ = r.Run(context.Background(), cmd)
 	return nil
 }
 
@@ -748,6 +728,20 @@ func RemovalEntry(name string, cfg *config.Config) (*Entry, bool, error) {
 	}, true, nil
 }
 
+// WarnReducedSafety prints a warning when the entry runs in free mode, so a
+// maintainer silently switching a package from strict to free never goes
+// unnoticed at install or upgrade time. It is a no-op for strict-mode entries.
+func WarnReducedSafety(e *Entry, rec InstalledRecord, cfg *config.Config) {
+	if e == nil || e.Safety != "free" {
+		return
+	}
+	msg := "This package/script runs at reduced safety (safety=free): commands are not validated and downloads are not SHA-256 verified."
+	if rec.Safety == "strict" {
+		msg = "Safety mode changed from strict to free — this package/script now runs at reduced safety: commands are not validated and downloads are not SHA-256 verified."
+	}
+	fmt.Printf("  %s%s%s  %s\n", cfg.Style.ColorWarning, cfg.Style.SymWarn, cfg.Style.ColorReset, msg)
+}
+
 // Upgrade upgrades a single package by name.
 // Handles both alps-more and GitHub-sourced packages.
 func Upgrade(name string, cfg *config.Config) error {
@@ -769,6 +763,7 @@ func Upgrade(name string, cfg *config.Config) error {
 
 	if e.Version == "" || rec.Version == "" {
 		fmt.Printf("  %s  %s: no version info, reinstalling...\n", cfg.Style.SymInfo, name)
+		WarnReducedSafety(e, rec, cfg)
 		return runInstall(e, cfg)
 	}
 
@@ -778,6 +773,7 @@ func Upgrade(name string, cfg *config.Config) error {
 	}
 
 	fmt.Printf("  %s  %s: %s -> %s\n", cfg.Style.SymArrow, name, rec.Version, e.Version)
+	WarnReducedSafety(e, rec, cfg)
 
 	return runUpgrade(e, cfg)
 }
@@ -806,6 +802,7 @@ func UpgradeFromSource(name, source string, cfg *config.Config) error {
 
 	if e.Version == "" || rec.Version == "" {
 		fmt.Printf("  %s  %s: no version info, reinstalling...\n", cfg.Style.SymInfo, name)
+		WarnReducedSafety(e, rec, cfg)
 		return runInstall(e, cfg)
 	}
 	if e.Version == rec.Version {
@@ -814,6 +811,7 @@ func UpgradeFromSource(name, source string, cfg *config.Config) error {
 	}
 
 	fmt.Printf("  %s  %s: %s -> %s\n", cfg.Style.SymArrow, name, rec.Version, e.Version)
+	WarnReducedSafety(e, rec, cfg)
 
 	return runUpgrade(e, cfg)
 }
@@ -1330,7 +1328,12 @@ func needsMirror(e *Entry) bool {
 
 // getBuildDir returns the per-package build directory.
 // Pattern: ~/.cache/alps/more/<package-name>/
+// Security: the package name is validated so a crafted name (e.g. "../evil")
+// cannot escape the build cache root via path traversal.
 func getBuildDir(pkgName string) (string, error) {
+	if err := validatePkgNameComponent(pkgName); err != nil {
+		return "", fmt.Errorf("invalid package name %q: %w", pkgName, err)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine home directory: %w", err)
@@ -1340,6 +1343,30 @@ func getBuildDir(pkgName string) (string, error) {
 		return "", fmt.Errorf("cannot create build directory %s: %w", dir, err)
 	}
 	return dir, nil
+}
+
+// validatePkgNameComponent rejects package names that could escape the build
+// cache root or otherwise break the expected directory layout.
+func validatePkgNameComponent(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty package name")
+	}
+	if strings.Contains(name, "..") || strings.Contains(name, "/") || strings.Contains(name, `\`) {
+		return fmt.Errorf("package name must not contain path separators or traversal sequences")
+	}
+	if strings.HasPrefix(name, ".") {
+		return fmt.Errorf("package name must not start with a dot")
+	}
+	if len(name) > 255 {
+		return fmt.Errorf("package name too long")
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') &&
+			r != '-' && r != '_' && r != '+' && r != '.' {
+			return fmt.Errorf("invalid character %q in package name", r)
+		}
+	}
+	return nil
 }
 
 // cleanupTempFiles removes temporary files created during package operations.
@@ -1380,7 +1407,10 @@ func expandVars(line, server, pkgDir, pkgVersion string) string {
 
 // handleBashRun processes {BASH_RUN} macro (downloads and executes scripts).
 // Supports full URLs and relative paths. See ALPSMORE.md for details.
-func handleBashRun(line, server, pkgDir string) (string, error) {
+// Security: downloaded scripts MUST match an entry-level sha256sums digest
+// before they are written or executed; unverified downloads are rejected.
+// Usage: {BASH_RUN} url [args...]
+func handleBashRun(line, server, pkgDir string, ctx *MacroContext) (string, error) {
 	// Extract the path after {BASH_RUN}
 	idx := strings.Index(line, "{BASH_RUN}")
 	if idx < 0 {
@@ -1389,52 +1419,92 @@ func handleBashRun(line, server, pkgDir string) (string, error) {
 
 	after := line[idx+len("{BASH_RUN}"):]
 	parts := strings.Fields(strings.TrimSpace(after))
-	if len(parts) == 0 {
-		return "", fmt.Errorf("{BASH_RUN} requires a script path (URL or relative path)")
+	if len(parts) < 1 {
+		return "", fmt.Errorf("{BASH_RUN} requires script URL: {BASH_RUN} url [args...]")
 	}
 
-	scriptPath := parts[0]
+	scriptURL := parts[0]
 	scriptArgs := ""
 	if len(parts) > 1 {
 		scriptArgs = " " + strings.Join(parts[1:], " ")
 	}
 
 	// Use full URL as-is, otherwise prepend server for relative paths
-	scriptURL := scriptPath
-	if !strings.HasPrefix(scriptPath, "http://") && !strings.HasPrefix(scriptPath, "https://") {
+	finalURL := scriptURL
+	if !strings.HasPrefix(scriptURL, "http://") && !strings.HasPrefix(scriptURL, "https://") {
 		if server == "" {
 			return "", fmt.Errorf("{BASH_RUN} relative path requires a server to be configured")
 		}
-		scriptURL = server + scriptPath
+		finalURL = server + scriptURL
 	}
 
-	if !isAllowedURL(scriptURL) {
-		return "", fmt.Errorf("disallowed URL host/scheme for {BASH_RUN}: %s", scriptURL)
+	if !isAllowedURL(finalURL) {
+		return "", fmt.Errorf("disallowed URL host/scheme for {BASH_RUN}: %s", finalURL)
 	}
 
-	client := &http.Client{Timeout: scriptDownloadTimeout}
-	resp, err := client.Get(scriptURL)
+	// Security: every downloaded script must be declared in sha256sums, and the
+	// digest is resolved before anything is fetched so unverifiable content is
+	// never downloaded in the first place.
+	if ctx == nil {
+		return "", fmt.Errorf("{BASH_RUN} requires macro context for digest verification")
+	}
+	expectedHash, err := requireNextSha256(ctx, scriptURL)
 	if err != nil {
-		return "", fmt.Errorf("failed to download script from %s: %w", scriptURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to download script: HTTP %d from %s", resp.StatusCode, scriptURL)
+		return "", err
 	}
 
-	scriptData, err := io.ReadAll(resp.Body)
+	scriptData, err := downloadScriptWithLimit(finalURL, maxScriptSize)
 	if err != nil {
-		return "", fmt.Errorf("failed to read script from %s: %w", scriptURL, err)
+		return "", fmt.Errorf("failed to download script from %s: %w", finalURL, err)
 	}
 
-	tmpFile := filepath.Join(pkgDir, ".alps_script.sh")
-	if err := os.WriteFile(tmpFile, scriptData, 0755); err != nil {
+	computedHash := fmt.Sprintf("%x", sha256.Sum256(scriptData))
+	// Free mode may opt out of digest verification (expectedHash == "").
+	if expectedHash != "" && computedHash != expectedHash {
+		return "", fmt.Errorf("SHA256 mismatch for %s: expected %s, got %s", finalURL, expectedHash, computedHash)
+	}
+
+	// Write script with restrictive permissions
+	tmpFile := filepath.Join(pkgDir, fmt.Sprintf(".alps_script_%x.sh", sha256.Sum256([]byte(finalURL))))
+	if err := os.WriteFile(tmpFile, scriptData, 0700); err != nil {
 		return "", fmt.Errorf("failed to write temp script to %s: %w", tmpFile, err)
 	}
 
 	prefix := line[:idx]
 	return strings.TrimSpace(prefix + "bash " + tmpFile + scriptArgs), nil
+}
+
+// downloadScriptWithLimit downloads a script with size limit and security checks.
+// This is a local version of downloadOnceWithSizeLimit for script downloads.
+func downloadScriptWithLimit(url string, maxSize int64) ([]byte, error) {
+	if !isAllowedURL(url) {
+		return nil, fmt.Errorf("disallowed download URL host/scheme: %s", url)
+	}
+	client := &http.Client{Timeout: scriptDownloadTimeout}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+	}
+
+	// Security: Limit response size to prevent denial of service
+	limitedReader := io.LimitReader(resp.Body, maxSize)
+	body, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) == 0 {
+		return nil, fmt.Errorf("empty response from %s", url)
+	}
+	// Check if we hit the size limit
+	if int64(len(body)) >= maxSize {
+		return nil, fmt.Errorf("response too large from %s (exceeds %d bytes)", url, maxSize)
+	}
+	return body, nil
 }
 
 // runLines executes commands in package build directory with macro expansion.
@@ -1500,14 +1570,38 @@ func runLinesWithContextMacro(pkgName string, lines []string, server string, pkg
 
 // runScript writes a script to a temp file in pkgDir and executes it,
 // wrapping in fakeroot when appropriate. The temp file is removed afterward.
+// Security: Displays the generated script before execution for transparency.
 func runScript(script, pkgDir string, entry *Entry, ctx *MacroContext) error {
-	tmpFile := filepath.Join(pkgDir, ".alps_run.sh")
-	if err := os.WriteFile(tmpFile, []byte(script), 0755); err != nil {
-		return fmt.Errorf("cannot write build script to %s: %w", tmpFile, err)
+	// Security: Display the script that will be executed
+	fmt.Printf("  Executing the following script:\n")
+	fmt.Printf("  ---\n")
+	for _, line := range strings.Split(script, "\n") {
+		fmt.Printf("  %s\n", line)
 	}
-	defer os.Remove(tmpFile)
+	fmt.Printf("  ---\n")
 
-	cmd := buildScriptCmd(tmpFile, pkgDir, entry, ctx)
+	// Security: use a unique temporary file with restrictive (owner-only)
+	// permissions instead of a fixed, predictable name in the build directory.
+	tmpFile, err := os.CreateTemp(pkgDir, ".alps_run_*.sh")
+	if err != nil {
+		return fmt.Errorf("cannot create build script in %s: %w", pkgDir, err)
+	}
+	tmpName := tmpFile.Name()
+	defer os.Remove(tmpName)
+
+	if err := tmpFile.Chmod(0700); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("cannot chmod build script: %w", err)
+	}
+	if _, err := tmpFile.WriteString(script); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("cannot write build script: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("cannot close build script: %w", err)
+	}
+
+	cmd := buildScriptCmd(tmpName, pkgDir, entry, ctx)
 	return cmd.Run()
 }
 
@@ -1538,7 +1632,7 @@ func buildScriptCmd(scriptPath, pkgDir string, entry *Entry, ctx *MacroContext) 
 // Returns (skip, expandedLine, error). skip=true means the caller should continue to the next line.
 func processLineMacros(line, server, pkgDir string, ctx *MacroContext) (skip bool, out string, err error) {
 	// Handle legacy macros
-	if skip, result, err := handleLegacyMacros(line, server, pkgDir); err != nil || skip {
+	if skip, result, err := handleLegacyMacros(line, server, pkgDir, ctx); err != nil || skip {
 		return skip, result, err
 	}
 
@@ -1548,10 +1642,10 @@ func processLineMacros(line, server, pkgDir string, ctx *MacroContext) (skip boo
 
 // handleLegacyMacros handles {BASH_RUN} macros.
 // Note: {DOWNLOAD} is now handled by the structured macro system in macros.go
-func handleLegacyMacros(line, server, pkgDir string) (skip bool, out string, err error) {
+func handleLegacyMacros(line, server, pkgDir string, ctx *MacroContext) (skip bool, out string, err error) {
 	// Handle {BASH_RUN} macro
 	if strings.Contains(line, "{BASH_RUN}") {
-		line, err = handleBashRun(line, server, pkgDir)
+		line, err = handleBashRun(line, server, pkgDir, ctx)
 		if err != nil {
 			return false, "", fmt.Errorf("{BASH_RUN} failed: %w", err)
 		}

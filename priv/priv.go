@@ -9,6 +9,26 @@ import (
 	"strings"
 )
 
+// PrivilegeMethod represents the privilege escalation method.
+type PrivilegeMethod string
+
+const (
+	MethodNone   PrivilegeMethod = "none"
+	MethodSudo   PrivilegeMethod = "sudo"
+	MethodDoas   PrivilegeMethod = "doas"
+	MethodPkexec PrivilegeMethod = "pkexec"
+	MethodSu     PrivilegeMethod = "su"
+)
+
+// PrivilegeDecision represents a structured privilege escalation decision.
+type PrivilegeDecision struct {
+	Method     PrivilegeMethod // The escalation method to use
+	Exec       string          // The executable to run
+	Args       []string        // Arguments to the executable
+	Reason     string          // Why this method was chosen
+	Privileged bool            // Whether privilege escalation is required
+}
+
 // isTermux checks if running in Termux.
 func isTermux() bool {
 	return os.Getenv("TERMUX_VERSION") != "" ||
@@ -64,42 +84,86 @@ func IsInGroup(groupName string) bool {
 	return false
 }
 
-// Command returns a command with privilege escalation.
-func Command(args ...string) (*exec.Cmd, error) {
+// DecidePrivilege returns a structured privilege escalation decision.
+// This provides transparency into which method is chosen and why.
+func DecidePrivilege(args ...string) (*PrivilegeDecision, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("no command provided")
 	}
 
 	// Termux owns its prefix — no escalation needed
 	if isTermux() {
-		return exec.Command(args[0], args[1:]...), nil
+		return &PrivilegeDecision{
+			Method:     MethodNone,
+			Exec:       args[0],
+			Args:       args[1:],
+			Reason:     "Termux owns its prefix, no escalation needed",
+			Privileged: false,
+		}, nil
 	}
 
-	// macOS uses user directories for most operations, no escalation needed for cache/lib
-	// But system directories still need sudo
+	// macOS uses user directories for most operations
 	if isMacOS() {
-		// On macOS, we still allow sudo for system operations
-		// The caller should determine if escalation is needed
+		if HasSudo() {
+			return &PrivilegeDecision{
+				Method:     MethodSudo,
+				Exec:       "sudo",
+				Args:       args,
+				Reason:     "macOS with sudo available",
+				Privileged: true,
+			}, nil
+		}
+		return &PrivilegeDecision{
+			Method:     MethodNone,
+			Exec:       args[0],
+			Args:       args[1:],
+			Reason:     "macOS without sudo, user directory operation",
+			Privileged: false,
+		}, nil
 	}
 
 	// Already root — run directly
 	if IsRoot() {
-		return exec.Command(args[0], args[1:]...), nil
+		return &PrivilegeDecision{
+			Method:     MethodNone,
+			Exec:       args[0],
+			Args:       args[1:],
+			Reason:     "Already running as root",
+			Privileged: false,
+		}, nil
 	}
 
-	// sudo available
+	// sudo available (preferred method)
 	if HasSudo() {
-		return exec.Command("sudo", args...), nil
+		return &PrivilegeDecision{
+			Method:     MethodSudo,
+			Exec:       "sudo",
+			Args:       args,
+			Reason:     "sudo available (preferred method)",
+			Privileged: true,
+		}, nil
 	}
 
 	// doas available (OpenBSD/Linux alternative)
 	if HasDoas() {
-		return exec.Command("doas", args...), nil
+		return &PrivilegeDecision{
+			Method:     MethodDoas,
+			Exec:       "doas",
+			Args:       args,
+			Reason:     "doas available (alternative to sudo)",
+			Privileged: true,
+		}, nil
 	}
 
 	// pkexec available (PolicyKit)
 	if HasPkexec() {
-		return exec.Command("pkexec", args...), nil
+		return &PrivilegeDecision{
+			Method:     MethodPkexec,
+			Exec:       "pkexec",
+			Args:       args,
+			Reason:     "pkexec available (PolicyKit)",
+			Privileged: true,
+		}, nil
 	}
 
 	// su fallback — shell-escape each arg safely to prevent injection.
@@ -108,10 +172,31 @@ func Command(args ...string) (*exec.Cmd, error) {
 		for i, a := range args {
 			escaped[i] = shellEscape(a)
 		}
-		return exec.Command("su", "-c", strings.Join(escaped, " ")), nil
+		return &PrivilegeDecision{
+			Method:     MethodSu,
+			Exec:       "su",
+			Args:       []string{"-c", strings.Join(escaped, " ")},
+			Reason:     "su fallback (legacy compatibility)",
+			Privileged: true,
+		}, nil
 	}
 
 	return nil, fmt.Errorf("no privilege escalation available (no sudo, doas, pkexec, or su)")
+}
+
+// Command returns a command with privilege escalation (legacy interface).
+// Kept for backward compatibility. New code should use DecidePrivilege.
+func Command(args ...string) (*exec.Cmd, error) {
+	decision, err := DecidePrivilege(args...)
+	if err != nil {
+		return nil, err
+	}
+
+	if decision.Method == MethodNone {
+		return exec.Command(decision.Exec, decision.Args...), nil
+	}
+
+	return exec.Command(decision.Exec, decision.Args...), nil
 }
 
 // Ensure gets a valid privilege token.
@@ -374,9 +459,10 @@ func Invalidate() error {
 
 // shellEscape wraps a string in single quotes for safe use inside a shell,
 // escaping any embedded single quotes (POSIX sh compatible).
+//
+// Every argument is quoted unconditionally so that shell metacharacters that
+// were not on an explicit allowlist (e.g. ';', '|', '&', '`', '(', ')', '*',
+// '?', '~', '#') can never be interpreted by the su -c fallback shell.
 func shellEscape(s string) string {
-	if !strings.ContainsAny(s, `'|\"$\\`+" \t\n") {
-		return s
-	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

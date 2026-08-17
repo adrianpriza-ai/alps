@@ -21,10 +21,27 @@ jobs:
 
       - name: Vet
         run: go vet ./...
-      
+
       - name: Format check
         run: |
           if [ -n "$(gofmt -s -l .)" ]; then
             echo "Code is not formatted. Run: gofmt -s -w ."
             exit 1
           fi
+
+      - name: Test
+        run: go test ./...
+
+      - name: Race detection
+        run: go test -race ./...
+
+      - name: Coverage
+        run: go test -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Coverage report
+        run: go tool cover -func=coverage.out
+
+      - name: Security vulnerability check
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
