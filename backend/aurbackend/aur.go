@@ -215,7 +215,56 @@ func (b *Backend) Clean(dryRun bool) error {
 	return nil
 }
 
-// upgradeAll upgrades all outdated AUR packages
+// buildIgnoreSet reads the pacman config and returns a set of packages the user has marked to ignore.
+func buildIgnoreSet() map[string]bool {
+	pacConf, _ := aur.ReadPacmanConf()
+	ignoreSet := make(map[string]bool)
+	if pacConf != nil {
+		for _, pkg := range pacConf.IgnorePkg {
+			ignoreSet[pkg] = true
+		}
+	}
+	return ignoreSet
+}
+
+// filterNonIgnored returns the names of installed AUR packages that are not in the ignore set,
+// printing a skip message for each ignored one.
+func filterNonIgnored(installed map[string]string, ignoreSet map[string]bool, symArrow string) []string {
+	names := make([]string, 0, len(installed))
+	for name := range installed {
+		if ignoreSet[name] {
+			fmt.Printf("  %s  %s: skipping ignored package\n", symArrow, name)
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// findOutdated compares installed versions against the latest AUR info and returns packages with
+// a newer version available, printing the version comparison for each.
+func findOutdated(installed map[string]string, latest map[string]*aur.Package, ignoreSet map[string]bool, style config.Style) []aur.Package {
+	var outdated []aur.Package
+	for name, installedVer := range installed {
+		if ignoreSet[name] {
+			continue
+		}
+		pkg, ok := latest[name]
+		if !ok {
+			continue
+		}
+		if pkg.Version != installedVer {
+			outdated = append(outdated, *pkg)
+			fmt.Printf("  %s%s%s  %s%s%s → %s%s%s\n",
+				style.ColorPrimary, pkg.Name, style.ColorReset,
+				style.ColorDim, installedVer, style.ColorReset,
+				style.ColorSuccess, pkg.Version, style.ColorReset)
+		}
+	}
+	return outdated
+}
+
+// upgradeAll upgrades all outdated AUR packages.
 func (b *Backend) upgradeAll(dryRun bool) error {
 	installed, err := aur.GetInstalledAUR()
 	if err != nil {
@@ -229,46 +278,16 @@ func (b *Backend) upgradeAll(dryRun bool) error {
 
 	ui.Msgf(b.cfg, ui.LevelInfo, "Checking %d AUR package(s) for updates...", len(installed))
 
-	pacConf, _ := aur.ReadPacmanConf()
-	ignoreSet := make(map[string]bool)
-	if pacConf != nil {
-		for _, pkg := range pacConf.IgnorePkg {
-			ignoreSet[pkg] = true
-		}
-	}
+	ignoreSet := buildIgnoreSet()
+	names := filterNonIgnored(installed, ignoreSet, b.cfg.Style.SymArrow)
 
-	names := make([]string, 0, len(installed))
-	for name := range installed {
-		if ignoreSet[name] {
-			fmt.Printf("  %s  %s: skipping ignored package\n",
-				b.cfg.Style.SymArrow, name)
-			continue
-		}
-		names = append(names, name)
-	}
 	latest, err := aur.InfoBatch(names)
 	if err != nil {
 		ui.Msgf(b.cfg, ui.LevelError, "failed to check for AUR updates: %v", err)
 		return err
 	}
 
-	var outdated []aur.Package
-	for name, installedVer := range installed {
-		if ignoreSet[name] {
-			continue
-		}
-		pkg, ok := latest[name]
-		if !ok {
-			continue
-		}
-		if pkg.Version != installedVer {
-			outdated = append(outdated, *pkg)
-			fmt.Printf("  %s%s%s  %s%s%s → %s%s%s\n",
-				b.cfg.Style.ColorPrimary, pkg.Name, b.cfg.Style.ColorReset,
-				b.cfg.Style.ColorDim, installedVer, b.cfg.Style.ColorReset,
-				b.cfg.Style.ColorSuccess, pkg.Version, b.cfg.Style.ColorReset)
-		}
-	}
+	outdated := findOutdated(installed, latest, ignoreSet, b.cfg.Style)
 
 	if len(outdated) == 0 {
 		ui.Msg(b.cfg, ui.LevelOK, "All AUR packages are up to date.")
@@ -295,8 +314,7 @@ func (b *Backend) upgradeAll(dryRun bool) error {
 	if err := aur.Install(toUpgrade, false); err != nil {
 		ui.Msgf(b.cfg, ui.LevelError, "AUR upgrade failed: %v", err)
 		return err
-	} else {
-		ui.Msg(b.cfg, ui.LevelOK, "AUR upgrade complete.")
 	}
+	ui.Msg(b.cfg, ui.LevelOK, "AUR upgrade complete.")
 	return nil
 }

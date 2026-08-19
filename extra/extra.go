@@ -25,42 +25,19 @@ type Backend struct {
 var registry = map[string]*Backend{} // backend name to Backend
 var detectionOrder = []string{"snap", "flatpak", "winget"}
 
+// extraVerbs maps backend names to verbs that are supported outside of CmdMap.
+// These are commands the backend handles through its own logic rather than
+// a direct command-line mapping.
+var extraVerbs = map[string]map[string]bool{
+	"snap":    {"purge": true, "show": true, "upgrade": true},
+	"flatpak": {"purge": true, "show": true, "upgrade": true, "clean": true},
+	"winget":  {"purge": true, "show": true, "upgrade": true},
+}
+
 // Register adds a backend.
 func Register(b Backend) {
 	cp := b
 	registry[b.Name] = &cp
-}
-
-// Detect returns the first available backend.
-func Detect() *Backend {
-	for _, name := range detectionOrder {
-		b, ok := registry[name]
-		if !ok {
-			continue
-		}
-		if name == "winget" {
-			if isWSL() && isWingetAvailable() {
-				return b
-			}
-			continue
-		}
-		if _, err := exec.LookPath(b.Bin); err == nil {
-			// Special check for snap to ensure it's not blocked
-			if name == "snap" && !isSnapAvailable() {
-				continue
-			}
-			return b
-		}
-	}
-	return nil
-}
-
-// DetectName returns the detected backend name.
-func DetectName() string {
-	if b := Detect(); b != nil {
-		return b.Name
-	}
-	return ""
 }
 
 // isWSL checks if running on Windows Subsystem for Linux.
@@ -113,24 +90,11 @@ func CommandSupported(backendName, verb string) bool {
 	if !found {
 		return false
 	}
-	_, supported := b.CmdMap[verb]
-	if supported {
+	if _, supported := b.CmdMap[verb]; supported {
 		return true
 	}
-	// Handle special cases where commands may not be in CmdMap but are still supported
-	switch backendName {
-	case "snap":
-		if verb == "purge" || verb == "show" || verb == "upgrade" {
-			return true
-		}
-	case "flatpak":
-		if verb == "purge" || verb == "show" || verb == "upgrade" || verb == "clean" {
-			return true
-		}
-	case "winget":
-		if verb == "purge" || verb == "show" || verb == "upgrade" {
-			return true
-		}
+	if extras, ok := extraVerbs[backendName]; ok {
+		return extras[verb]
 	}
 	return false
 }

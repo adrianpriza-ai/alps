@@ -494,81 +494,88 @@ func TestExecuteManifestFakeroot(t *testing.T) {
 	})
 }
 
-// TestMacOS validates macOS-specific behaviour: correct OS detection, platform
-// directories, and no-op for Linux-only macros (systemd services, useradd).
-func TestMacOS(t *testing.T) {
-	// Test with real macOS system only in non-short mode
+// skipUnlessMacOS skips the test if running in short mode or not on macOS.
+func skipUnlessMacOS(t *testing.T) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping real system call test in short mode")
 	}
-
 	if !isMacOS() {
 		t.Skip("skipping macOS-specific tests on non-macOS system")
 	}
+}
 
-	// detectDistro should return "macos"
-	distro, idLike := detectDistro()
-	if distro != "macos" {
-		t.Errorf("expected distro %q on macOS, got %q", "macos", distro)
-	}
-	foundDarwin := false
-	for _, l := range idLike {
-		if l == "darwin" {
-			foundDarwin = true
+// TestMacOS validates macOS-specific behaviour: correct OS detection, platform
+// directories, and no-op for Linux-only macros (systemd services, useradd).
+func TestMacOS(t *testing.T) {
+	skipUnlessMacOS(t)
+
+	t.Run("detectDistro", func(t *testing.T) {
+		distro, idLike := detectDistro()
+		if distro != "macos" {
+			t.Errorf("expected distro %q on macOS, got %q", "macos", distro)
 		}
-	}
-	if !foundDarwin {
-		t.Errorf("expected idLike to contain %q on macOS, got %v", "darwin", idLike)
-	}
-
-	// Cache dir should be inside ~/Library/Caches
-	cacheDir := getCacheDir()
-	if !strings.Contains(cacheDir, "Library/Caches") {
-		t.Errorf("expected cache dir to be under Library/Caches on macOS, got %q", cacheDir)
-	}
-
-	// Lib dir should be inside ~/Library/Application Support
-	libDir := getLibDir()
-	if !strings.Contains(libDir, "Library/Application Support") {
-		t.Errorf("expected lib dir to be under Library/Application Support on macOS, got %q", libDir)
-	}
-
-	// Service macros should be no-ops on macOS
-	ctx := NewMacroContext(&Entry{Name: "test", Safety: "strict"}, "")
-	for _, macroName := range []string{"ENABLE_SERVICE", "DISABLE_SERVICE", "START_SERVICE", "STOP_SERVICE", "RESTART_SERVICE", "INSTALL_SERVICE"} {
-		m := Macro{Name: macroName, Args: []string{"myservice"}}
-		result, err := executeMacro(m, ctx)
-		if err != nil {
-			t.Errorf("%s macro on macOS returned unexpected error: %v", macroName, err)
+		foundDarwin := false
+		for _, l := range idLike {
+			if l == "darwin" {
+				foundDarwin = true
+			}
 		}
-		if result != "" {
-			t.Errorf("%s macro on macOS should return empty string (no-op), got %q", macroName, result)
+		if !foundDarwin {
+			t.Errorf("expected idLike to contain %q on macOS, got %v", "darwin", idLike)
 		}
-	}
+	})
 
-	// User macros should be no-ops on macOS
-	for _, macroName := range []string{"CREATE_USER", "REMOVE_USER"} {
-		m := Macro{Name: macroName, Args: []string{"myuser"}}
-		result, err := executeMacro(m, ctx)
-		if err != nil {
-			t.Errorf("%s macro on macOS returned unexpected error: %v", macroName, err)
+	t.Run("platformDirs", func(t *testing.T) {
+		cacheDir := getCacheDir()
+		if !strings.Contains(cacheDir, "Library/Caches") {
+			t.Errorf("expected cache dir to be under Library/Caches on macOS, got %q", cacheDir)
 		}
-		if result != "" {
-			t.Errorf("%s macro on macOS should return empty string (no-op), got %q", macroName, result)
+		libDir := getLibDir()
+		if !strings.Contains(libDir, "Library/Application Support") {
+			t.Errorf("expected lib dir to be under Library/Application Support on macOS, got %q", libDir)
 		}
-	}
+	})
 
-	// requireFakeroot should not error on macOS (exempt)
-	if err := requireFakeroot(); err != nil {
-		t.Errorf("requireFakeroot() should be a no-op on macOS, got error: %v", err)
-	}
+	t.Run("serviceMacrosNoOp", func(t *testing.T) {
+		ctx := NewMacroContext(&Entry{Name: "test", Safety: "strict"}, "")
+		for _, macroName := range []string{"ENABLE_SERVICE", "DISABLE_SERVICE", "START_SERVICE", "STOP_SERVICE", "RESTART_SERVICE", "INSTALL_SERVICE"} {
+			m := Macro{Name: macroName, Args: []string{"myservice"}}
+			result, err := executeMacro(m, ctx)
+			if err != nil {
+				t.Errorf("%s macro on macOS returned unexpected error: %v", macroName, err)
+			}
+			if result != "" {
+				t.Errorf("%s macro on macOS should return empty string (no-op), got %q", macroName, result)
+			}
+		}
+	})
 
-	// wrapWithFakeroot should not wrap on macOS
-	origCmd := "make install"
-	wrapped := wrapWithFakeroot(origCmd, ctx)
-	if wrapped != origCmd {
-		t.Errorf("wrapWithFakeroot on macOS should not wrap the command; got %q", wrapped)
-	}
+	t.Run("userMacrosNoOp", func(t *testing.T) {
+		ctx := NewMacroContext(&Entry{Name: "test", Safety: "strict"}, "")
+		for _, macroName := range []string{"CREATE_USER", "REMOVE_USER"} {
+			m := Macro{Name: macroName, Args: []string{"myuser"}}
+			result, err := executeMacro(m, ctx)
+			if err != nil {
+				t.Errorf("%s macro on macOS returned unexpected error: %v", macroName, err)
+			}
+			if result != "" {
+				t.Errorf("%s macro on macOS should return empty string (no-op), got %q", macroName, result)
+			}
+		}
+	})
+
+	t.Run("fakerootNoOp", func(t *testing.T) {
+		if err := requireFakeroot(); err != nil {
+			t.Errorf("requireFakeroot() should be a no-op on macOS, got error: %v", err)
+		}
+		ctx := NewMacroContext(&Entry{Name: "test", Safety: "strict"}, "")
+		origCmd := "make install"
+		wrapped := wrapWithFakeroot(origCmd, ctx)
+		if wrapped != origCmd {
+			t.Errorf("wrapWithFakeroot on macOS should not wrap the command; got %q", wrapped)
+		}
+	})
 }
 
 func TestStripSudo(t *testing.T) {

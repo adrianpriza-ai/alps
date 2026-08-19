@@ -22,6 +22,16 @@ type Backend struct {
 var registry = map[string]*Backend{} // backend name to Backend
 var detectionOrder = []string{"apt", "apt-get", "dnf", "pacman", "zypper", "apk", "brew"}
 
+// editSourcesBackends lists backends that support the edit-sources command.
+var editSourcesBackends = map[string]bool{
+	"apt":     true,
+	"apt-get": true,
+	"dnf":     true,
+	"pacman":  true,
+	"zypper":  true,
+	"apk":     true,
+}
+
 // Register adds a backend.
 func Register(b Backend) {
 	cp := b
@@ -82,34 +92,11 @@ func CommandSupported(backendName, verb string) bool {
 	if !found {
 		return false
 	}
-	_, supported := b.CmdMap[verb]
-	if supported {
+	if _, supported := b.CmdMap[verb]; supported {
 		return true
 	}
-	switch backendName {
-	case "pacman":
-		if verb == "edit-sources" {
-			return true
-		}
-	case "apt", "apt-get":
-		if verb == "edit-sources" {
-			return true
-		}
-	case "dnf":
-		if verb == "edit-sources" {
-			return true
-		}
-	case "zypper":
-		if verb == "edit-sources" {
-			return true
-		}
-	case "apk":
-		if verb == "edit-sources" {
-			return true
-		}
-	case "brew":
-		// brew doesn't have traditional edit-sources
-		return false
+	if verb == "edit-sources" {
+		return editSourcesBackends[backendName]
 	}
 	return false
 }

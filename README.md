@@ -15,7 +15,7 @@
 
 ---
 
-ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and `apk` with built-in AUR, Snap, Flatpak, and Winget support, a custom cross-distro script repo (alps-more), fully customizable output styling, and a unified command interface across distros — including Linux, macOS, Termux on Android and WSL on Windows.
+ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and `apk`. It also handles AUR, Snap, Flatpak, and Winget, plus a custom script repo called alps-more. One command interface across distros — Linux, macOS, Termux on Android, WSL on Windows.
 
 ## Features
 
@@ -25,12 +25,12 @@ ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and
 | **Termux support** | Full support on Android — no sudo, native `$PREFIX` paths |
 | **macOS support** | Full support with Homebrew integration; macOS-specific paths and behaviors |
 | **WSL support** | Works on WSL; alps-more entries can target `os = wsl` |
-| **Built-in AUR** | Full recursive dep resolution, PKGBUILD review, yay fallback |
-| **Extra packages** | Unified Snap, Flatpak, and Winget support with consistent interface |
+| **Built-in AUR** | Full recursive dep resolution, PKGBUILD review, yay/paru fallback |
+| **Extra packages** | Snap, Flatpak, and Winget — same command shape across all three |
 | **alps-more** | Cross-distro script repo with version tracking, mirror failover, and remote installs from GitHub/GitLab |
-| **Security-hardened** | HTTPS-only downloads, SHA-256 verification, signed APT repositories, response size limits |
+| **Security** | HTTPS-only downloads, SHA-256 verification, signed APT repositories, response size limits |
 | **Customizable** | Colors, symbols, header, aliases — all via config file |
-| **Smart completion** | fish, bash, zsh — distro-aware, AUR name cache, live package completion |
+| **Completion** | fish, bash, zsh — distro-aware, AUR name cache, live package completion |
 | **Build isolation** | Per-package build directories (`~/.cache/alps/more/<pkg>/`) |
 
 ## Installation
@@ -49,7 +49,7 @@ curl -fsSL https://alps-project.pages.dev/install.sh | sh
 wget -qO- https://alps-project.pages.dev/install.sh | sh
 ```
 
-Auto-detects Termux, Debian/Ubuntu (.deb), Arch Linux (PKGBUILD), Alpine Linux (APKBUILD) or generic Linux (binary). Handles upgrades too — safe to re-run.
+Auto-detects Termux, Debian/Ubuntu (.deb), Arch Linux (PKGBUILD), Alpine Linux (APKBUILD) or generic Linux (binary). Safe to re-run for upgrades.
 
 ### From source
 
@@ -133,7 +133,7 @@ alps <command> [args]
 | `clean` | Clean all cached packages |
 | `repo <subcommand>` | Manage alps-more packages |
 | `aur <subcommand>` | AUR management (Arch only) |
-| `extra <subcommand>` | Extra package management (snap/flatpak/winget) |
+| `snap/flatpak/winget <subcommand>` | Manage that package manager directly |
 | `completion <shell>` | Generate shell completion |
 | `config-show` | Show active config and paths |
 | `aliases` | Show active aliases |
@@ -155,7 +155,7 @@ Unknown commands produce a clear error instead of being passed silently to the b
 | `ug` | upgrade | `ac` | autoclean |
 | `fug` | full-upgrade | `cl` | clean |
 | `fp` | flatpak | `sk` | snap |
-| `ex` | extra | `wg` | winget |
+| `wg` | winget |  |  |
 
 **Subcommand-only** (work inside any subsystem that has a matching subcommand):
 
@@ -166,7 +166,6 @@ Unknown commands produce a clear error instead of being passed silently to the b
 | `abs` | fetch-abs | aur only |
 
 ```bash
-alps ex ins firefox       # extra install firefox (auto-detects backend)
 alps fp ins firefox       # flatpak install firefox
 alps sk ins firefox       # snap install firefox
 alps aur se neovim-git    # aur search neovim-git
@@ -219,7 +218,7 @@ alias_-R  = "remove"
 
 ## AUR (Arch Linux)
 
-`alps install <pkg>` on Arch tries `pacman -S` first, then falls through to AUR automatically. Uses `yay` if available, otherwise the built-in makepkg path.
+`alps install <pkg>` on Arch tries `pacman -S` first, then falls through to AUR automatically. Uses `yay` or `paru` if available (paru preferred), otherwise the built-in makepkg path.
 
 ### Requirements
 
@@ -249,22 +248,13 @@ alps aur fetch-abs <pkg>        # fetch official PKGBUILD (asp or Arch GitLab)
 ## Extra Packages (Snap, Flatpak, Winget)
 
 ```bash
-# Use unified extra command (auto-detects available backend)
-alps extra install <pkg>
-alps extra search <query>
-alps extra update
-alps extra remove <pkg>
-alps extra list
-alps extra show <pkg>
-alps extra purge <pkg>
-alps extra clean
-alps extra autoremove
-
-# Or use specific backend directly
+# Manage each package manager directly — no auto-detection
 alps snap install <pkg>     # Snap (Ubuntu/Debian)
 alps flatpak install <pkg>  # Flatpak
 alps winget install <pkg>   # Winget (WSL)
 ```
+
+Each backend supports `install`, `remove`, `purge`, `search`, `show`, `list`, `update`, and `upgrade`; snap and flatpak also support `autoremove`/`clean` where the manager allows it.
 
 Snap is available on Debian/Ubuntu and auto-offered as a fallback when apt can't find a package. Winget is available on WSL for Windows package management.
 
@@ -291,12 +281,6 @@ Cross-distro script repo for tools
 Linux:
 ```bash
 alps install fakeroot coreutils tar unzip bash
-```
-
-macOS (most tools already included):
-```bash
-# Only if you need additional tools via Homebrew
-brew install coreutils
 ```
 
 ### Quick User Guide

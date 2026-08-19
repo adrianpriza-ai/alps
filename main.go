@@ -57,8 +57,6 @@ func main() {
 		runRepo(args, cfg)
 	case "aur":
 		runAUR(args, cfg)
-	case "extra":
-		runExtra(args, cfg)
 	case "winget":
 		runWinget(args, cfg)
 	case "flatpak":
@@ -81,8 +79,6 @@ func dispatchResolved(resolved string, args []string, cfg *config.Config) {
 		runRepo(args, cfg)
 	case "aur":
 		runAUR(args, cfg)
-	case "extra":
-		runExtra(args, cfg)
 	case "winget":
 		runWinget(args, cfg)
 	case "flatpak":
@@ -1025,60 +1021,6 @@ func runSnap(args []string, cfg *config.Config) {
 		extraBackendClean("snap", dryRun, cfg)
 	default:
 		ui.Msgf(cfg, ui.LevelError, "Unknown snap subcommand: %s", subcmd)
-		os.Exit(1)
-	}
-}
-
-func runExtra(args []string, cfg *config.Config) {
-	ui.PrintHeader(cfg)
-
-	// Detect available extra backend
-	backend := extra.Detect()
-	if backend == nil {
-		ui.Msg(cfg, ui.LevelError, "No supported extra package manager found (snap/flatpak/winget)")
-		os.Exit(1)
-	}
-
-	backendName := backend.Name
-
-	if len(args) == 0 {
-		ui.Msgf(cfg, ui.LevelError, "Usage: alps extra <install|remove|purge|search|show|list|update|upgrade|autoremove|clean> [args]")
-		os.Exit(1)
-	}
-
-	rawSubcmd := args[0]
-	subcmd, err := cli.ResolveSubCmd("extra", rawSubcmd, cfg)
-	if err != nil {
-		ui.Msgf(cfg, ui.LevelError, "%v", err)
-		os.Exit(1)
-	}
-	rest := args[1:]
-	pkgs, restFlags := pack.ParseFlagsExt(rest)
-	dryRun := restFlags.DryRun
-
-	switch subcmd {
-	case "install":
-		extraBackendInstall(backendName, pkgs, dryRun, cfg)
-	case "remove":
-		extraBackendRemove(backendName, pkgs, dryRun, cfg)
-	case "purge":
-		extraBackendPurge(backendName, pkgs, dryRun, cfg)
-	case "search":
-		extraBackendSearch(backendName, rest, pkgs, cfg)
-	case "show":
-		extraBackendShow(backendName, pkgs, cfg)
-	case "list":
-		extraBackendList(backendName, cfg)
-	case "update":
-		extraBackendUpdate(backendName, dryRun, cfg)
-	case "upgrade":
-		extraBackendUpgrade(backendName, dryRun, cfg)
-	case "autoremove":
-		extraBackendAutoremove(backendName, dryRun, cfg)
-	case "clean":
-		extraBackendClean(backendName, dryRun, cfg)
-	default:
-		ui.Msgf(cfg, ui.LevelError, "Unknown extra subcommand: %s", subcmd)
 		os.Exit(1)
 	}
 }

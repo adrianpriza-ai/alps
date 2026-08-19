@@ -2,20 +2,16 @@
 
 ## Reporting a Vulnerability
 
-Please do not report security vulnerabilities through public GitHub issues or discussions.
-
-Instead, email the maintainer at:
-
-**coreygit1@gmail.com**
+Report vulnerabilities by email to **coreygit1@gmail.com**. Do not use public GitHub issues or discussions.
 
 Include:
-- A description of the vulnerability
-- Steps to reproduce the issue
-- Potential impact
-- Any possible fixes or mitigations (if known)
+- What the vulnerability is
+- Steps to reproduce it
+- What impact it could have
+- Any fixes you have in mind
 
-All reports will be reviewed promptly.
+Reports get reviewed promptly.
 
 ## Supported Versions
 
-Only the latest release of ALPS is currently supported with security updates.
+Only the latest release gets security updates.

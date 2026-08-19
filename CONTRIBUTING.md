@@ -25,7 +25,7 @@ alps/
 ├── main.go         # entry point, backend dispatch
 ├── config/         # config loading and parsing
 ├── ui/             # output, header, colors
-├── aur/            # AUR helper (yay + makepkg, dep resolution)
+├── aur/            # AUR helper (yay/paru + makepkg, dep resolution)
 ├── extra/          # snap, flatpak, winget support
 ├── backend/        # backend selection/routing + native package managers
 ├── more/           # alps-more script repo
@@ -56,30 +56,15 @@ alps/
 
 ## Testing
 
-The project uses Go's testing framework with both unit and integration tests:
+- **Unit tests**: `go test ./...`
+- **CI-friendly**: `go test -short ./...` — skips real system calls and platform-specific checks
+- **Package-specific**: `go test ./more/`
 
-- **Unit tests**: `go test ./...` - Runs all tests including system-specific tests
-- **CI-friendly tests**: `go test -short ./...` - Skips tests that require real system calls or specific platforms
-- **Package-specific tests**: `go test ./more/` - Tests a specific package
-
-### Test Philosophy
-
-- Unit tests should avoid real system calls when possible (use `t.TempDir()`, mock interfaces, etc.)
-- Tests that require real system calls are skipped in short mode for CI compatibility
-- Platform-specific tests (macOS, Termux, etc.) are skipped on incompatible platforms
-- Tests cover security-critical paths like manifest validation, command execution, and privilege escalation
-
-### Adding New Tests
-
-When adding new functionality:
-1. Write unit tests that avoid real system calls (use short mode)
-2. Add integration tests for platform-specific behavior in non-short mode
-3. Ensure tests pass with `go test -short ./...` before submitting
-4. For security-sensitive code, add comprehensive test coverage
+Tests avoid real system calls when possible. Platform-specific tests skip on incompatible platforms. Security-critical paths (manifest validation, command execution, privilege escalation) have full coverage.
 
 ## Security Considerations
 
-ALPS handles package installation and remote script execution, so we take security seriously:
+ALPS handles package installation and remote script execution, so security matters:
 
 - **Manifest authentication**: All official manifests are authenticated with SHA-256 checksums
 - **HTTPS-only**: All remote content downloads require HTTPS and approved hosts

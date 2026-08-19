@@ -413,6 +413,9 @@ func PrintDiagnostic(cfg *config.Config) {
 		if _, err := exec.LookPath("snap"); err == nil {
 			extras = append(extras, "snap")
 		}
+		if _, err := exec.LookPath("paru"); err == nil {
+			extras = append(extras, "paru")
+		}
 		if _, err := exec.LookPath("yay"); err == nil {
 			extras = append(extras, "yay")
 		}

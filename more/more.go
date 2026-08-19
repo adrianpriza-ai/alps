@@ -735,9 +735,9 @@ func WarnReducedSafety(e *Entry, rec InstalledRecord, cfg *config.Config) {
 	if e == nil || e.Safety != "free" {
 		return
 	}
-	msg := "This package/script runs at reduced safety (safety=free): commands are not validated and downloads are not SHA-256 verified."
+	msg := "This package/script runs at reduced safety (safety=free)."
 	if rec.Safety == "strict" {
-		msg = "Safety mode changed from strict to free — this package/script now runs at reduced safety: commands are not validated and downloads are not SHA-256 verified."
+		msg = "Safety changed from strict to free — now running at reduced safety."
 	}
 	fmt.Printf("  %s%s%s  %s\n", cfg.Style.ColorWarning, cfg.Style.SymWarn, cfg.Style.ColorReset, msg)
 }
@@ -1345,6 +1345,13 @@ func getBuildDir(pkgName string) (string, error) {
 	return dir, nil
 }
 
+// isValidNameChar reports whether a rune is permitted in a package name component.
+// Allowed: alphanumerics plus -, _, +, and .
+func isValidNameChar(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+		r == '-' || r == '_' || r == '+' || r == '.'
+}
+
 // validatePkgNameComponent rejects package names that could escape the build
 // cache root or otherwise break the expected directory layout.
 func validatePkgNameComponent(name string) error {
@@ -1361,8 +1368,7 @@ func validatePkgNameComponent(name string) error {
 		return fmt.Errorf("package name too long")
 	}
 	for _, r := range name {
-		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') &&
-			r != '-' && r != '_' && r != '+' && r != '.' {
+		if !isValidNameChar(r) {
 			return fmt.Errorf("invalid character %q in package name", r)
 		}
 	}

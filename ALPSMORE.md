@@ -134,7 +134,7 @@ deps = curl/wget, git/svn, make
 
 ### macOS Support
 
-ALPSMORE fully supports macOS with the following considerations:
+ALPSMORE supports macOS with the following considerations:
 
 **OS Tags:**
 - Use `os = macos` or `os = darwin` for macOS-specific entries
@@ -243,9 +243,9 @@ Execute after the build phase completes, using `sudo` for real system access (sk
 
 **Notes:**
 - Service/user macros are no-ops on Termux (no systemd/useradd).
-- `{CURL_RUN}` is **deprecated** (replaced by `{BASH_RUN}`).
-- **Security**: SHA-256 verification is handled at entry level via `sha256sums`
-- **Security**: All downloads are HTTPS-only with size limits and host whitelisting
+- `{CURL_RUN}` is deprecated (replaced by `{BASH_RUN}`).
+- SHA-256 verification runs at entry level via `sha256sums`.
+- All downloads are HTTPS-only with size limits and host whitelisting.
 
 
 ## SHA-256 Checksums
@@ -454,30 +454,27 @@ When using structured macros (`{INSTALL_BIN}`, `{INSTALL_LIB}`, etc.), ALPS auto
 
 ## Validation & Safety
 
-**Pre-install checks:**
-1. `arch` matches system
-2. `os` matches detected distro  
-3. `deps` binaries exist (via `exec.LookPath`)
+Checks before install:
+1. `arch` matches your CPU
+2. `os` matches your distro
+3. `deps` binaries exist (`exec.LookPath`)
 4. `cmd_begin`/`cmd_end` defined (required)
-5. **Strict mode**: `remove_begin`/`remove_end` optional (auto-generated from macros)
+5. **Strict mode**: `remove_begin` optional — auto-generated from macros
 6. **Free mode**: `remove_begin`/`remove_end` required
 
-**Safety features:**
-- **Strict mode**: Validates commands for dangerous patterns (`rm -rf /`, etc.)
-- **Fakeroot usage**: Safe file operations during build without full root privileges
-- **Protected paths**: Warns about operations on sensitive system paths
-- **No `-y` flag**: For repo/aur/flatpak/snap (explicit confirmation required)
-- **Full install preview**: Before execution
-- **Snapshot saved**: To `installed.json` for remove/purge even if repo disappears
-- **Owned items tracking**: Safe removal without dangerous commands
-- **Security-hardened downloads:**
-  - HTTPS-only requirement for all remote content
-  - SHA-256 digest verification for all script downloads
-  - Response size limits (10MB for manifests, 100MB for scripts)
-  - Atomic cache writes to prevent partial corruption
-  - Explicit host whitelist (no broad suffix matching)
-  - Display of generated scripts before execution
-  - No mutable branch fallbacks (explicit branch required)
+Safety features:
+- Strict mode rejects dangerous patterns (`rm -rf /`, etc.)
+- Fakeroot during build in strict mode — no full root needed
+- Warns on sensitive system paths
+- No `-y` flag for repo installs (explicit confirmation required)
+- Full preview before execution
+- Snapshot saved to `installed.json` even if the repo disappears later
+- Owned items tracked for safe removal
+- Downloads are HTTPS-only, SHA-256 verified, size-limited (10MB manifests, 100MB scripts)
+- Atomic cache writes prevent partial corruption
+- Host whitelist only — no broad suffix matching
+- Generated scripts shown before they run
+- Branch must be explicit when installing from GitHub/GitLab (no mutable HEAD/main/master fallback)
 
 ---
 

@@ -203,10 +203,6 @@ complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" flatpak fp
 complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" snap sk; and test (count $t) -eq 2' \
     -a 'install remove purge search show list update upgrade autoremove clean' -d 'snap subcommand'
 
-# extra subcommands (ex alias included)
-complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" extra ex; and test (count $t) -eq 2' \
-    -a 'install remove purge search show list update upgrade autoremove clean' -d 'extra subcommand'
-
 # winget subcommands (wg alias included)
 complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" winget wg; and test (count $t) -eq 2' \
     -a 'install remove purge search show list update upgrade' -d 'winget subcommand'
@@ -285,13 +281,6 @@ _alps_completions() {
                     ;;
                 *)
                     COMPREPLY=($(compgen -W "install search list remove clean build-local fetch-abs" -- "$cur"))
-                    ;;
-            esac
-            ;;
-        extra)
-            case "${words[2]}" in
-                *)
-                    COMPREPLY=($(compgen -W "install remove purge search show list update upgrade autoremove clean" -- "$cur"))
                     ;;
             esac
             ;;
@@ -418,14 +407,6 @@ _alps() {
                             ;;
                     esac
                     ;;
-                extra)
-                    case ${words[3]} in
-                        *)
-                            _describe 'extra subcommand' \
-                                '(install remove purge search show list update upgrade autoremove clean)'
-                            ;;
-                    esac
-                    ;;
                 winget)
                     case ${words[3]} in
                         *)
@@ -472,7 +453,6 @@ func cmdDesc(cmd string) string {
 		"completion":   "generate shell completion",
 		"repo":         "manage alps-more repo packages",
 		"aur":          "manage AUR packages directly",
-		"extra":        "manage extra packages (snap/flatpak/winget)",
 		"winget":       "manage winget packages (WSL)",
 		"flatpak":      "manage flatpak packages",
 		"snap":         "manage snap packages",
@@ -498,7 +478,7 @@ func cmdDesc(cmd string) string {
 // effectiveCmds returns the command list for this distro/environment.
 func effectiveCmds() []string {
 	base := []string{
-		"help", "aliases", "config-show", "version", "repo", "extra", "flatpak",
+		"help", "aliases", "config-show", "version", "repo", "flatpak",
 		"install", "remove", "purge", "update", "upgrade",
 		"full-upgrade", "search", "show", "list",
 		"autoremove", "autoclean", "clean",

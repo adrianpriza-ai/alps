@@ -53,7 +53,6 @@ func TestResolveSubCmd(t *testing.T) {
 		{"aur search", "aur", "search", "search", false},
 		{"repo update", "repo", "update", "update", false},
 		{"repo install", "repo", "install", "install", false},
-		{"extra install", "extra", "install", "install", false},
 		{"unknown aur subcmd", "aur", "unknown", "", true},
 		{"unknown repo subcmd", "repo", "invalid", "", true},
 	}
@@ -106,7 +105,6 @@ func TestIsHardCommand(t *testing.T) {
 		{"help", true},
 		{"repo", true},
 		{"aur", true},
-		{"extra", true},
 		{"unknown", false},
 		{"myalias", false},
 	}
@@ -134,8 +132,6 @@ func TestIsValidSubCmd(t *testing.T) {
 		{"repo install", "repo", "install", true},
 		{"repo update", "repo", "update", true},
 		{"repo invalid", "repo", "invalid", false},
-		{"extra install", "extra", "install", true},
-		{"extra invalid", "extra", "invalid", false},
 		{"invalid system", "invalid", "install", false},
 	}
 

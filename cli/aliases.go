@@ -12,7 +12,7 @@ var hardCommands = map[string]bool{
 	"help": true, "--help": true, "-h": true,
 	"version": true, "--version": true,
 	"aliases": true, "config-show": true, "completion": true,
-	"repo": true, "aur": true, "extra": true, "winget": true, "flatpak": true, "snap": true,
+	"repo": true, "aur": true, "winget": true, "flatpak": true, "snap": true,
 	"install": true, "remove": true, "purge": true,
 	"update": true, "upgrade": true, "full-upgrade": true,
 	"search": true, "show": true, "list": true,
@@ -29,11 +29,6 @@ var validSubCmds = map[string]map[string]bool{
 	"repo": {
 		"update": true, "list": true, "install": true,
 		"remove": true, "purge": true, "search": true, "upgrade": true, "clean": true,
-	},
-	"extra": {
-		"install": true, "remove": true, "purge": true, "search": true,
-		"show": true, "list": true, "update": true, "upgrade": true,
-		"autoremove": true, "clean": true,
 	},
 	"winget": {
 		"install": true, "remove": true, "purge": true, "search": true,
