@@ -483,7 +483,6 @@ ALPSMORE file fetching (`alps repo install`) only accepts the following git forg
 | Host | Platform | Install example |
 |-|-|-|
 | `github.com` | GitHub | `alps repo install github.com/user/repo@main` |
-| `raw.githubusercontent.com` | GitHub | (used internally for raw content) |
 | `codeberg.org` | Codeberg | `alps repo install codeberg.org/user/repo@main` |
 | `gitlab.com` | GitLab | `alps repo install gitlab.com/user/repo@main` |
 | `gitea.com` | Gitea | `alps repo install gitea.com/user/repo@main` |
