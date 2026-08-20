@@ -639,6 +639,13 @@ func TestIsAllowedURL(t *testing.T) {
 		"https://atomgit.com/user/repo",
 		// Gitea / Forgejo instances
 		"https://gitea.com/user/repo",
+		// Pages hosts (wildcard subdomains)
+		"https://anyone.github.io/project/file.txt",
+		"https://custom.codeberg.page/project/file.txt",
+		"https://username.gitlab.io/project/file.txt",
+		"https://username.sr.ht/project/file.txt",
+		"https://username.pages.debian.net/project/file.txt",
+		"https://username.sourceforge.io/project/file.txt",
 	}
 
 	invalidURLs := []string{

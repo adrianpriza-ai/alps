@@ -393,27 +393,39 @@ func isAllowedURL(rawURL string) bool {
 		"raw.githubusercontent.com",
 		"codeberg.org",
 		"gitlab.com",
-		// Project pages (ALPSMORE docs)
-		"adrianpriza-ai.github.io",
-		"moreland.codeberg.page",
 		// Open-source hosting platforms
-		"sr.ht",              // SourceHut — minimalist, no GitHub dependency
-		"git.savannah.gnu.org", // GNU Project (GCC, Emacs, Bash, etc.)
-		"git.kernel.org",     // Linux kernel and related projects
-		"git.code.sf.net",    // SourceForge Git hosting
-		"gitlab.freedesktop.org", // Freedesktop.org (X11, Mesa, Wayland)
-		"pagure.io",          // Fedora Project's forge
-		"salsa.debian.org",   // Debian's GitLab instance
+		"sr.ht",                   // SourceHut — minimalist, no GitHub dependency
+		"git.savannah.gnu.org",    // GNU Project (GCC, Emacs, Bash, etc.)
+		"git.kernel.org",          // Linux kernel and related projects
+		"git.code.sf.net",         // SourceForge Git hosting
+		"gitlab.freedesktop.org",  // Freedesktop.org (X11, Mesa, Wayland)
+		"pagure.io",               // Fedora Project's forge
+		"salsa.debian.org",        // Debian's GitLab instance
 		"git.savannah.nongnu.org", // Non-GNU Savannah projects
 		// Chinese open-source platforms
-		"gitee.com",          // Gitee — Chinese GitHub equivalent
-		"gitcode.com",        // GitCode — CSDN's git platform
-		"atomgit.com",        // AtomGit — open-source by China
+		"gitee.com",   // Gitee — Chinese GitHub equivalent
+		"gitcode.com", // GitCode — CSDN's git platform
+		"atomgit.com", // AtomGit — open-source by China
 		// Gitea / Forgejo instances
-		"gitea.com",          // Gitea official SaaS
+		"gitea.com", // Gitea official SaaS
 	}
+	// Exact host matching
 	for _, h := range allowedHosts {
 		if host == h {
+			return true
+		}
+	}
+	// Pages hosts: allow any subdomain (*.github.io, *.codeberg.page, etc.)
+	pagesSuffixes := []string{
+		"github.io",        // GitHub Pages
+		"codeberg.page",    // Codeberg Pages
+		"gitlab.io",        // GitLab Pages
+		"sr.ht",            // SourceHut Pages (username.sr.ht)
+		"pages.debian.net", // Debian Pages
+		"sourceforge.io",   // SourceForge Pages
+	}
+	for _, suffix := range pagesSuffixes {
+		if host == suffix || strings.HasSuffix(host, "."+suffix) {
 			return true
 		}
 	}

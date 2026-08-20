@@ -481,21 +481,25 @@ Safety features:
 ALPSMORE supports downloading from the following whitelisted hosts only:
 
 | Host | Platform | Notes |
-|------|----------|-------|
+|-|-|-|
 | `github.com` | GitHub | Major git forge |
 | `raw.githubusercontent.com` | GitHub | Raw file content |
+| `*.github.io` | GitHub Pages | Any user/org pages site |
 | `codeberg.org` | Codeberg | Forgejo-based, non-profit |
+| `*.codeberg.page` | Codeberg Pages | Any user/org pages site |
 | `gitlab.com` | GitLab | Major git forge |
+| `*.gitlab.io` | GitLab Pages | Any user/group pages site |
 | `gitea.com` | Gitea | Gitea official SaaS |
-| `adrianpriza-ai.github.io` | GitHub Pages | ALPSMORE project pages |
-| `moreland.codeberg.page` | Codeberg Pages | ALPSMORE project pages |
 | `sr.ht` | SourceHut | Minimalist, no GitHub dependency |
+| `*.sr.ht` | SourceHut Pages | Any user pages site |
 | `git.savannah.gnu.org` | GNU Savannah | GNU Project (GCC, Emacs, Bash, etc.) |
 | `git.kernel.org` | kernel.org | Linux kernel and related projects |
 | `git.code.sf.net` | SourceForge | SourceForge Git hosting |
+| `*.sourceforge.io` | SourceForge Pages | Any project pages site |
 | `gitlab.freedesktop.org` | Freedesktop | X11, Mesa, Wayland, PipeWire |
 | `pagure.io` | Pagure | Fedora Project's forge |
 | `salsa.debian.org` | Salsa | Debian's GitLab instance |
+| `*.pages.debian.net` | Debian Pages | Any user pages site |
 | `git.savannah.nongnu.org` | GNU Savannah | Non-GNU projects (Inkscape, etc.) |
 | `gitee.com` | Gitee | Chinese GitHub equivalent |
 | `gitcode.com` | GitCode | CSDN's git platform |
