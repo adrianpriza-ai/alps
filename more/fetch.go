@@ -386,13 +386,31 @@ func isAllowedURL(rawURL string) bool {
 	}
 	host := strings.ToLower(u.Hostname())
 	// Security: Explicit approved hosts only (no broad suffixes)
+	// Includes major git forges and well-known open-source hosting platforms.
 	allowedHosts := []string{
+		// Major git forges
 		"github.com",
 		"raw.githubusercontent.com",
 		"codeberg.org",
 		"gitlab.com",
+		// Project pages (ALPSMORE docs)
 		"adrianpriza-ai.github.io",
 		"moreland.codeberg.page",
+		// Open-source hosting platforms
+		"sr.ht",              // SourceHut — minimalist, no GitHub dependency
+		"git.savannah.gnu.org", // GNU Project (GCC, Emacs, Bash, etc.)
+		"git.kernel.org",     // Linux kernel and related projects
+		"git.code.sf.net",    // SourceForge Git hosting
+		"gitlab.freedesktop.org", // Freedesktop.org (X11, Mesa, Wayland)
+		"pagure.io",          // Fedora Project's forge
+		"salsa.debian.org",   // Debian's GitLab instance
+		"git.savannah.nongnu.org", // Non-GNU Savannah projects
+		// Chinese open-source platforms
+		"gitee.com",          // Gitee — Chinese GitHub equivalent
+		"gitcode.com",        // GitCode — CSDN's git platform
+		"atomgit.com",        // AtomGit — open-source by China
+		// Gitea / Forgejo instances
+		"gitea.com",          // Gitea official SaaS
 	}
 	for _, h := range allowedHosts {
 		if host == h {
@@ -459,6 +477,14 @@ func remoteRawURL(ref RemoteRef, branch string) string {
 		return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/ALPSMORE", ref.RepoPath, branch)
 	case "codeberg":
 		return fmt.Sprintf("https://%s/%s/raw/branch/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
+	case "gitee":
+		return fmt.Sprintf("https://%s/%s/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
+	case "gitcode":
+		return fmt.Sprintf("https://%s/%s/-/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
+	case "atomgit":
+		return fmt.Sprintf("https://%s/%s/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
+	case "gitea":
+		return fmt.Sprintf("https://%s/%s/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
 	default:
 		return fmt.Sprintf("https://%s/%s/-/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
 	}

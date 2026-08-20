@@ -624,6 +624,21 @@ func TestIsAllowedURL(t *testing.T) {
 		"https://codeberg.org/user/repo/raw/branch/main/file",
 		"https://moreland.codeberg.page/alps-more/main.txt",
 		"https://gitlab.com/user/repo/-/raw/main/file",
+		// Open-source hosting platforms
+		"https://sr.ht/~user/repo",
+		"https://git.savannah.gnu.org/git/emacs.git",
+		"https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
+		"https://git.code.sf.net/p/foo/bar",
+		"https://gitlab.freedesktop.org/mesa/mesa",
+		"https://pagure.io/fedora-infra/clipboard.git",
+		"https://salsa.debian.org/debian/some-package",
+		"https://git.savannah.nongnu.org/cgit/inkscape.git",
+		// Chinese open-source platforms
+		"https://gitee.com/user/repo",
+		"https://gitcode.com/user/repo",
+		"https://atomgit.com/user/repo",
+		// Gitea / Forgejo instances
+		"https://gitea.com/user/repo",
 	}
 
 	invalidURLs := []string{

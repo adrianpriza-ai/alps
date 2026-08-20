@@ -33,6 +33,14 @@ func providerFromHost(host string) string {
 		return "github"
 	case host == "codeberg.org" || strings.HasSuffix(host, ".codeberg.org"):
 		return "codeberg"
+	case host == "gitee.com":
+		return "gitee"
+	case host == "gitcode.com":
+		return "gitcode"
+	case host == "atomgit.com":
+		return "atomgit"
+	case host == "gitea.com":
+		return "gitea"
 	default:
 		// Self-hosted GitLab and other GitLab-compatible forges.
 		return "gitlab"
