@@ -1444,8 +1444,8 @@ func handleBashRun(line, server, pkgDir string, ctx *MacroContext) (string, erro
 		finalURL = server + scriptURL
 	}
 
-	if !isAllowedURL(finalURL) {
-		return "", fmt.Errorf("disallowed URL host/scheme for {BASH_RUN}: %s", finalURL)
+	if !isSafeDownloadURL(finalURL) {
+		return "", fmt.Errorf("{BASH_RUN} requires HTTPS: %s", finalURL)
 	}
 
 	// Security: every downloaded script must be declared in sha256sums, and the
@@ -1483,8 +1483,8 @@ func handleBashRun(line, server, pkgDir string, ctx *MacroContext) (string, erro
 // downloadScriptWithLimit downloads a script with size limit and security checks.
 // This is a local version of downloadOnceWithSizeLimit for script downloads.
 func downloadScriptWithLimit(url string, maxSize int64) ([]byte, error) {
-	if !isAllowedURL(url) {
-		return nil, fmt.Errorf("disallowed download URL host/scheme: %s", url)
+	if !isSafeDownloadURL(url) {
+		return nil, fmt.Errorf("script download requires HTTPS: %s", url)
 	}
 	client := &http.Client{Timeout: scriptDownloadTimeout}
 	resp, err := client.Get(url)

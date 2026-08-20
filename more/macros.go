@@ -815,8 +815,8 @@ func executeDownload(macro Macro, ctx *MacroContext) (string, error) {
 	}
 
 	url := macro.Args[0]
-	if !isAllowedURL(url) {
-		return "", fmt.Errorf("disallowed URL host/scheme for DOWNLOAD: %s", url)
+	if !isSafeDownloadURL(url) {
+		return "", fmt.Errorf("DOWNLOAD requires HTTPS: %s", url)
 	}
 
 	file, err := resolveDownloadPath(macro.Args, ctx)
@@ -1306,8 +1306,8 @@ func executeBashRun(macro Macro, ctx *MacroContext) (string, error) {
 
 	// If URL, download first using Go's HTTP client
 	if strings.HasPrefix(script, "http://") || strings.HasPrefix(script, "https://") {
-		if !isAllowedURL(script) {
-			return "", fmt.Errorf("disallowed URL host/scheme for BASH_RUN: %s", script)
+		if !isSafeDownloadURL(script) {
+			return "", fmt.Errorf("BASH_RUN requires HTTPS: %s", script)
 		}
 
 		// The manifest must declare a digest for every downloaded script; resolve

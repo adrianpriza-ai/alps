@@ -292,9 +292,7 @@ alps repo list install                    # list installed packages (alps-more +
 alps repo list remove                     # list stale packages no longer in repo
 alps repo search <query>                  # search by name or description
 alps repo install <pkg>                   # install with preview and validation
-alps repo install github.com/user/repo    # install from a GitHub ALPSMORE file
-alps repo install gitlab.com/user/repo    # install from a GitLab ALPSMORE file
-alps repo install codeberg.org/user/repo  # install from a Codeberg ALPSMORE file
+alps repo install github.com/user/repo@main  # install from any supported forge
 alps repo upgrade [pkg]                   # upgrade one or all installed packages
 alps repo remove <pkg>                    # remove package
 alps repo purge <pkg>                     # remove package and delete config/data

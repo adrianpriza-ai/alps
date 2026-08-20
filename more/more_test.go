@@ -616,13 +616,11 @@ func TestStripSudo(t *testing.T) {
 	}
 }
 
-func TestIsAllowedURL(t *testing.T) {
+func TestIsForgeHost(t *testing.T) {
 	validURLs := []string{
 		"https://github.com/foo/bar",
 		"https://raw.githubusercontent.com/foo/bar/main/file.txt",
-		"https://adrianpriza-ai.github.io/alps-more/main.txt",
 		"https://codeberg.org/user/repo/raw/branch/main/file",
-		"https://moreland.codeberg.page/alps-more/main.txt",
 		"https://gitlab.com/user/repo/-/raw/main/file",
 		// Open-source hosting platforms
 		"https://sr.ht/~user/repo",
@@ -639,13 +637,6 @@ func TestIsAllowedURL(t *testing.T) {
 		"https://atomgit.com/user/repo",
 		// Gitea / Forgejo instances
 		"https://gitea.com/user/repo",
-		// Pages hosts (wildcard subdomains)
-		"https://anyone.github.io/project/file.txt",
-		"https://custom.codeberg.page/project/file.txt",
-		"https://username.gitlab.io/project/file.txt",
-		"https://username.sr.ht/project/file.txt",
-		"https://username.pages.debian.net/project/file.txt",
-		"https://username.sourceforge.io/project/file.txt",
 	}
 
 	invalidURLs := []string{
@@ -653,17 +644,46 @@ func TestIsAllowedURL(t *testing.T) {
 		"https://attacker.org/malware",
 		"ftp://github.com/file",
 		"file:///etc/passwd",
+		"https://unknown-host.com/file",
 	}
 
 	for _, url := range validURLs {
-		if !isAllowedURL(url) {
-			t.Errorf("expected URL %q to be allowed", url)
+		if !isForgeHost(url) {
+			t.Errorf("expected forge URL %q to be allowed", url)
 		}
 	}
 
 	for _, url := range invalidURLs {
-		if isAllowedURL(url) {
-			t.Errorf("expected URL %q to be rejected", url)
+		if isForgeHost(url) {
+			t.Errorf("expected forge URL %q to be rejected", url)
+		}
+	}
+}
+
+func TestIsSafeDownloadURL(t *testing.T) {
+	validURLs := []string{
+		"https://example.com/package.tar.gz",
+		"https://myserver.example.com/foo/bar.sh",
+		"https://cdn.example.org/releases/v1.0.tar.gz",
+		"https://github.com/foo/bar",
+	}
+
+	invalidURLs := []string{
+		"http://example.com/file",
+		"ftp://github.com/file",
+		"file:///etc/passwd",
+		"javascript:alert(1)",
+	}
+
+	for _, url := range validURLs {
+		if !isSafeDownloadURL(url) {
+			t.Errorf("expected download URL %q to be allowed", url)
+		}
+	}
+
+	for _, url := range invalidURLs {
+		if isSafeDownloadURL(url) {
+			t.Errorf("expected download URL %q to be rejected", url)
 		}
 	}
 }

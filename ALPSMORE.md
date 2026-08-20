@@ -478,34 +478,32 @@ Safety features:
 
 ### Supported Hosts
 
-ALPSMORE supports downloading from the following whitelisted hosts only:
+ALPSMORE file fetching (`alps repo install`) only accepts the following git forge hosts:
 
-| Host | Platform | Notes |
+| Host | Platform | Install example |
 |-|-|-|
-| `github.com` | GitHub | Major git forge |
-| `raw.githubusercontent.com` | GitHub | Raw file content |
-| `*.github.io` | GitHub Pages | Any user/org pages site |
-| `codeberg.org` | Codeberg | Forgejo-based, non-profit |
-| `*.codeberg.page` | Codeberg Pages | Any user/org pages site |
-| `gitlab.com` | GitLab | Major git forge |
-| `*.gitlab.io` | GitLab Pages | Any user/group pages site |
-| `gitea.com` | Gitea | Gitea official SaaS |
-| `sr.ht` | SourceHut | Minimalist, no GitHub dependency |
-| `*.sr.ht` | SourceHut Pages | Any user pages site |
-| `git.savannah.gnu.org` | GNU Savannah | GNU Project (GCC, Emacs, Bash, etc.) |
-| `git.kernel.org` | kernel.org | Linux kernel and related projects |
-| `git.code.sf.net` | SourceForge | SourceForge Git hosting |
-| `*.sourceforge.io` | SourceForge Pages | Any project pages site |
-| `gitlab.freedesktop.org` | Freedesktop | X11, Mesa, Wayland, PipeWire |
-| `pagure.io` | Pagure | Fedora Project's forge |
-| `salsa.debian.org` | Salsa | Debian's GitLab instance |
-| `*.pages.debian.net` | Debian Pages | Any user pages site |
-| `git.savannah.nongnu.org` | GNU Savannah | Non-GNU projects (Inkscape, etc.) |
-| `gitee.com` | Gitee | Chinese GitHub equivalent |
-| `gitcode.com` | GitCode | CSDN's git platform |
-| `atomgit.com` | AtomGit | CSDN + Huawei open-source platform |
+| `github.com` | GitHub | `alps repo install github.com/user/repo@main` |
+| `raw.githubusercontent.com` | GitHub | (used internally for raw content) |
+| `codeberg.org` | Codeberg | `alps repo install codeberg.org/user/repo@main` |
+| `gitlab.com` | GitLab | `alps repo install gitlab.com/user/repo@main` |
+| `gitea.com` | Gitea | `alps repo install gitea.com/user/repo@main` |
+| `sr.ht` | SourceHut | `alps repo install sr.ht/~user/repo@main` |
+| `git.savannah.gnu.org` | GNU Savannah | `alps repo install git.savannah.gnu.org/git/emacs.git@main` |
+| `git.kernel.org` | kernel.org | `alps repo install git.kernel.org/pub/scm/...@main` |
+| `git.code.sf.net` | SourceForge | `alps repo install git.code.sf.net/p/foo/bar@main` |
+| `gitlab.freedesktop.org` | Freedesktop | `alps repo install gitlab.freedesktop.org/mesa/mesa@main` |
+| `pagure.io` | Pagure | `alps repo install pagure.io/fedora-infra/clipboard.git@main` |
+| `salsa.debian.org` | Salsa | `alps repo install salsa.debian.org/debian/some-package@main` |
+| `git.savannah.nongnu.org` | GNU Savannah | `alps repo install git.savannah.nongnu.org/cgit/inkscape.git@main` |
+| `gitee.com` | Gitee | `alps repo install gitee.com/user/repo@main` |
+| `gitcode.com` | GitCode | `alps repo install gitcode.com/user/repo@main` |
+| `atomgit.com` | AtomGit | `alps repo install atomgit.com/user/repo@main` |
 
-**Note:** All hosts require HTTPS. No HTTP, FTP, or file:// URLs are allowed.
+**Note:** Branch must always be explicit (`@main`, `@master`, `@dev`, etc.). No mutable HEAD/main/master fallback.
+
+### Macro Downloads (`{DOWNLOAD}` / `{BASH_RUN}`)
+
+Macros only require **HTTPS** — any host is allowed since the ALPSMORE maintainer controls which URLs are in their file.
 
 ---
 

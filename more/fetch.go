@@ -375,18 +375,19 @@ func downloadWithRetry(url string) ([]byte, error) {
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
 }
 
-func isAllowedURL(rawURL string) bool {
+// isForgeHost checks whether a URL belongs to a supported git forge.
+// Used when fetching ALPSMORE files — only forges that serve raw content are allowed.
+func isForgeHost(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false
 	}
-	// Security: Require HTTPS only
+	// Require HTTPS for forge connections
 	if u.Scheme != "https" {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())
-	// Security: Explicit approved hosts only (no broad suffixes)
-	// Includes major git forges and well-known open-source hosting platforms.
+	// Explicit approved hosts only (no broad suffixes)
 	allowedHosts := []string{
 		// Major git forges
 		"github.com",
@@ -409,27 +410,33 @@ func isAllowedURL(rawURL string) bool {
 		// Gitea / Forgejo instances
 		"gitea.com", // Gitea official SaaS
 	}
-	// Exact host matching
+	// Exact host matching — Pages hosts (github.io, codeberg.page, etc.)
+	// are excluded because they serve static content, not raw git files.
 	for _, h := range allowedHosts {
 		if host == h {
 			return true
 		}
 	}
-	// Pages hosts: allow any subdomain (*.github.io, *.codeberg.page, etc.)
-	pagesSuffixes := []string{
-		"github.io",        // GitHub Pages
-		"codeberg.page",    // Codeberg Pages
-		"gitlab.io",        // GitLab Pages
-		"sr.ht",            // SourceHut Pages (username.sr.ht)
-		"pages.debian.net", // Debian Pages
-		"sourceforge.io",   // SourceForge Pages
-	}
-	for _, suffix := range pagesSuffixes {
-		if host == suffix || strings.HasSuffix(host, "."+suffix) {
-			return true
-		}
-	}
 	return false
+}
+
+// isSafeDownloadURL checks whether a URL is safe for macro downloads.
+// Only enforces HTTPS and no file:// — host is not restricted since
+// the ALPSMORE maintainer controls which URLs are in their file.
+func isSafeDownloadURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	// Only HTTPS is allowed for downloads
+	if u.Scheme != "https" {
+		return false
+	}
+	// Block file:// and other non-network schemes
+	if u.Hostname() == "" {
+		return false
+	}
+	return true
 }
 
 func downloadOnce(rawURL string) ([]byte, error) {
@@ -437,8 +444,8 @@ func downloadOnce(rawURL string) ([]byte, error) {
 }
 
 func downloadOnceWithSizeLimit(rawURL string, maxSize int64) ([]byte, error) {
-	if !isAllowedURL(rawURL) {
-		return nil, fmt.Errorf("disallowed download URL host/scheme: %s", rawURL)
+	if !isForgeHost(rawURL) {
+		return nil, fmt.Errorf("ALPSMORE fetch: disallowed host/scheme: %s", rawURL)
 	}
 	client := &http.Client{Timeout: downloadTimeout}
 	resp, err := client.Get(rawURL)
