@@ -41,6 +41,8 @@ func providerFromHost(host string) string {
 		return "atomgit"
 	case host == "gitea.com":
 		return "gitea"
+	case host == "sr.ht" || strings.HasSuffix(host, ".sr.ht"):
+		return "sourcehut"
 	default:
 		// Self-hosted GitLab and other GitLab-compatible forges.
 		return "gitlab"

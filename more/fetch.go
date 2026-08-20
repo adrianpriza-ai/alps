@@ -504,6 +504,9 @@ func remoteRawURL(ref RemoteRef, branch string) string {
 		return fmt.Sprintf("https://%s/%s/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
 	case "gitea":
 		return fmt.Sprintf("https://%s/%s/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
+	case "sourcehut":
+		// SourceHut serves raw content on git.sr.ht, not sr.ht
+		return fmt.Sprintf("https://git.sr.ht/%s/raw/branch/%s/ALPSMORE", ref.RepoPath, branch)
 	default:
 		return fmt.Sprintf("https://%s/%s/-/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
 	}
