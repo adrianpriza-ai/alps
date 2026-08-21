@@ -38,24 +38,24 @@ var aurHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 // Package represents an AUR package.
 type Package struct {
-	Name         string   `json:"Name"`
-	PackageBase  string   `json:"PackageBase"`
-	Version      string   `json:"Version"`
-	Description  string   `json:"Description"`
-	URL          string   `json:"URL"`
-	Votes        int      `json:"NumVotes"`
-	Popularity   float64  `json:"Popularity"`
-	Maintainer   string   `json:"Maintainer"`
-	URLPath      string   `json:"URLPath"`
-	OutOfDate    int64    `json:"OutOfDate"`
-	Depends      []string `json:"Depends"`
-	MakeDepends  []string `json:"MakeDepends"`
-	License      []string `json:"License"`
-	Conflicts    []string `json:"Conflicts"`
-	Provides     []string `json:"Provides"`
-	Replaces     []string `json:"Replaces"`
-	Keywords     []string `json:"Keywords"`
-	Groups       []string `json:"Groups"`
+	Name        string   `json:"Name"`
+	PackageBase string   `json:"PackageBase"`
+	Version     string   `json:"Version"`
+	Description string   `json:"Description"`
+	URL         string   `json:"URL"`
+	Votes       int      `json:"NumVotes"`
+	Popularity  float64  `json:"Popularity"`
+	Maintainer  string   `json:"Maintainer"`
+	URLPath     string   `json:"URLPath"`
+	OutOfDate   int64    `json:"OutOfDate"`
+	Depends     []string `json:"Depends"`
+	MakeDepends []string `json:"MakeDepends"`
+	License     []string `json:"License"`
+	Conflicts   []string `json:"Conflicts"`
+	Provides    []string `json:"Provides"`
+	Replaces    []string `json:"Replaces"`
+	Keywords    []string `json:"Keywords"`
+	Groups      []string `json:"Groups"`
 }
 
 type rpcResponse struct {
@@ -166,7 +166,7 @@ func SearchNarrow(query string) ([]Package, error) {
 				fieldContains(p.Conflicts, w) ||
 				fieldContains(p.Groups, w) ||
 				strings.Contains(strings.ToLower(p.Maintainer), w)
-			
+
 			if matches {
 				filtered = append(filtered, p)
 			}
