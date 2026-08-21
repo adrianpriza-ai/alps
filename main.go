@@ -605,7 +605,7 @@ func runAUR(args []string, cfg *config.Config) {
 	}
 
 	if len(args) == 0 {
-		ui.Msg(cfg, ui.LevelError, "Usage: alps aur <install|search|list|remove|clean|build-local|fetch-abs> [args]")
+		ui.Msg(cfg, ui.LevelError, "Usage: alps aur <install|search|list|remove|clean|build-local|fetch-abs|info|clone|orphans> [args]")
 		os.Exit(1)
 	}
 
@@ -697,6 +697,33 @@ func runAUR(args []string, cfg *config.Config) {
 			pkgName = pkgs[0]
 		}
 		if err := backend.FetchABS(pkgName); err != nil {
+			os.Exit(1)
+		}
+
+	case "info":
+		if len(pkgs) == 0 {
+			ui.Msg(cfg, ui.LevelError, "Usage: alps aur info <package>")
+			os.Exit(1)
+		}
+		for _, pkg := range pkgs {
+			if info, err := aur.Info(pkg); err != nil {
+				ui.Msgf(cfg, ui.LevelError, "%s: not found in AUR", pkg)
+			} else {
+				aur.PrintPackageInfo(info)
+			}
+		}
+
+	case "clone":
+		if len(pkgs) == 0 {
+			ui.Msg(cfg, ui.LevelError, "Usage: alps aur clone <package>")
+			os.Exit(1)
+		}
+		if err := backend.Clone(pkgs[0]); err != nil {
+			os.Exit(1)
+		}
+
+	case "orphans":
+		if err := backend.Orphans(); err != nil {
 			os.Exit(1)
 		}
 

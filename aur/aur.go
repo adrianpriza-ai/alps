@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -37,18 +38,24 @@ var aurHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 // Package represents an AUR package.
 type Package struct {
-	Name        string   `json:"Name"`
-	Version     string   `json:"Version"`
-	Description string   `json:"Description"`
-	URL         string   `json:"URL"`
-	Votes       int      `json:"NumVotes"`
-	Popularity  float64  `json:"Popularity"`
-	Maintainer  string   `json:"Maintainer"`
-	URLPath     string   `json:"URLPath"`
-	OutOfDate   int64    `json:"OutOfDate"`
-	Depends     []string `json:"Depends"`
-	MakeDepends []string `json:"MakeDepends"`
-	License     []string `json:"License"`
+	Name         string   `json:"Name"`
+	PackageBase  string   `json:"PackageBase"`
+	Version      string   `json:"Version"`
+	Description  string   `json:"Description"`
+	URL          string   `json:"URL"`
+	Votes        int      `json:"NumVotes"`
+	Popularity   float64  `json:"Popularity"`
+	Maintainer   string   `json:"Maintainer"`
+	URLPath      string   `json:"URLPath"`
+	OutOfDate    int64    `json:"OutOfDate"`
+	Depends      []string `json:"Depends"`
+	MakeDepends  []string `json:"MakeDepends"`
+	License      []string `json:"License"`
+	Conflicts    []string `json:"Conflicts"`
+	Provides     []string `json:"Provides"`
+	Replaces     []string `json:"Replaces"`
+	Keywords     []string `json:"Keywords"`
+	Groups       []string `json:"Groups"`
 }
 
 type rpcResponse struct {
@@ -137,6 +144,7 @@ func Search(query string) ([]Package, error) {
 }
 
 // SearchNarrow searches AUR using all words in query.
+// It searches across name, description, keywords, provides, conflicts, groups, and maintainer.
 func SearchNarrow(query string) ([]Package, error) {
 	words := strings.Fields(query)
 	if len(words) == 0 {
@@ -150,14 +158,32 @@ func SearchNarrow(query string) ([]Package, error) {
 		w := strings.ToLower(word)
 		var filtered []Package
 		for _, p := range results {
-			if strings.Contains(strings.ToLower(p.Name), w) ||
-				strings.Contains(strings.ToLower(p.Description), w) {
+			// Check if word matches in any searchable field
+			matches := strings.Contains(strings.ToLower(p.Name), w) ||
+				strings.Contains(strings.ToLower(p.Description), w) ||
+				fieldContains(p.Keywords, w) ||
+				fieldContains(p.Provides, w) ||
+				fieldContains(p.Conflicts, w) ||
+				fieldContains(p.Groups, w) ||
+				strings.Contains(strings.ToLower(p.Maintainer), w)
+			
+			if matches {
 				filtered = append(filtered, p)
 			}
 		}
 		results = filtered
 	}
 	return results, nil
+}
+
+// fieldContains checks if a search term matches any string in a field array
+func fieldContains(field []string, term string) bool {
+	for _, item := range field {
+		if strings.Contains(strings.ToLower(item), term) {
+			return true
+		}
+	}
+	return false
 }
 
 // Info fetches package info by name.
@@ -390,6 +416,18 @@ func aurCacheDir(pkgName string) (string, error) {
 }
 
 func AURCacheRoot() (string, error) {
+	// If running under sudo or doas, resolve the invoking user's home directory
+	// so cache files are not written into /root/.cache/alps/aur with root ownership.
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
+		if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
+			return filepath.Join(u.HomeDir, ".cache", "alps", "aur"), nil
+		}
+	}
+	if doasUser := os.Getenv("DOAS_USER"); doasUser != "" && doasUser != "root" {
+		if u, err := user.Lookup(doasUser); err == nil && u.HomeDir != "" {
+			return filepath.Join(u.HomeDir, ".cache", "alps", "aur"), nil
+		}
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

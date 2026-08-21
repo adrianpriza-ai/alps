@@ -1,4 +1,4 @@
-name: Build
+name: CI
 
 on:
   push:
@@ -6,42 +6,148 @@ on:
   pull_request:
     branches: [main]
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
-      - uses: actions/setup-go@v6
+jobs:
+  format:
+    name: Auto Format
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          # Checkout head branch on PRs so formatted changes can be pushed
+          ref: ${{ github.head_ref || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: true
 
-      - name: Build
-        run: go build -o alps .
+      - name: Auto-format code
+        run: |
+          # Automatically format Go code with simplification flag (-s)
+          gofmt -s -w .
 
-      - name: Vet
+      - name: Commit formatted code
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "style: auto-format code with gofmt -s"
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+          commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+
+  lint:
+    name: Lint & Vet
+    runs-on: ubuntu-latest
+    needs: [format]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Go Vet
         run: go vet ./...
 
-      - name: Format check
+      - name: Check module tidiness
         run: |
-          if [ -n "$(gofmt -s -l .)" ]; then
-            echo "Code is not formatted. Run: gofmt -s -w ."
-            exit 1
-          fi
+          go mod tidy
+          git diff --exit-code go.mod go.sum || (echo "go.mod or go.sum is not tidy. Run 'go mod tidy'" && exit 1)
 
-      - name: Test
-        run: go test ./...
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: [format]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
-      - name: Race detection
-        run: go test -race ./...
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
 
-      - name: Coverage
-        run: go test -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Run tests with Race Detection & Coverage
+        run: go test -v -race -covermode=atomic -coverprofile=coverage.out ./...
 
-      - name: Coverage report
+      - name: Coverage summary
+        if: matrix.os == 'ubuntu-latest'
         run: go tool cover -func=coverage.out
 
-      - name: Security vulnerability check
+      - name: Upload coverage artifact
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+          retention-days: 7
+
+  cross-compile:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('/v{0}', matrix.goarm) || '' }})
+    runs-on: ubuntu-latest
+    needs: [format]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: arm
+            goarm: 7
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Compile target
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: go build -v -o /dev/null .
+
+  security:
+    name: Security Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: [format]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...

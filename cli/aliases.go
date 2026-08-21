@@ -24,7 +24,7 @@ var validSubCmds = map[string]map[string]bool{
 	"aur": {
 		"install": true, "search": true, "list": true,
 		"remove": true, "clean": true, "build-local": true, "fetch-abs": true,
-		"update": true, "upgrade": true,
+		"update": true, "upgrade": true, "info": true, "clone": true, "orphans": true,
 	},
 	"repo": {
 		"update": true, "list": true, "install": true,

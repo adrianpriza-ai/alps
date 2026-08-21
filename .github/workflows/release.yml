@@ -11,13 +11,37 @@ on:
         description: "Tag to release (example: v1.0.0)"
         required: true
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: read
 
 jobs:
-  release:
+  validate:
+    name: Pre-Release Tests
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test -v -race ./...
+
+  release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+    needs: [validate]
 
     steps:
       - name: Checkout
@@ -29,11 +53,12 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: true
 
       - name: Install packaging tools
         run: |
-          sudo apt update
-          sudo apt install -y dpkg-dev apt-utils
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev apt-utils
 
       - name: Build binaries
         run: |
@@ -63,12 +88,24 @@ jobs:
             go build \
             -ldflags="-s -w -X main.Version=$TAG" \
             -o alps-darwin-arm64 .
-            
-      - name: Install Android NDK
+
+      - name: Cache Android NDK
+        id: cache-ndk
+        uses: actions/cache@v4
+        with:
+          path: android-ndk-r27d
+          key: ndk-r27d-linux-x86_64
+
+      - name: Download Android NDK
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
         run: |
           wget -q https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
           unzip -q android-ndk-r27d-linux.zip
-          echo "ANDROID_NDK_HOME=$(pwd)/android-ndk-r27d" >> $GITHUB_ENV
+          rm -f android-ndk-r27d-linux.zip
+
+      - name: Set Android NDK Environment
+        run: |
+          echo "ANDROID_NDK_HOME=${{ github.workspace }}/android-ndk-r27d" >> $GITHUB_ENV
 
       - name: Build Termux binaries
         run: |

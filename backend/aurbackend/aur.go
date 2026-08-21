@@ -215,6 +215,35 @@ func (b *Backend) Clean(dryRun bool) error {
 	return nil
 }
 
+// Clone clones an AUR package repository to the current directory
+func (b *Backend) Clone(pkgName string) error {
+	if err := aur.Clone(pkgName); err != nil {
+		ui.Msgf(b.cfg, ui.LevelError, "%v", err)
+		return err
+	}
+	return nil
+}
+
+// Orphans lists AUR packages that have no reverse dependencies
+func (b *Backend) Orphans() error {
+	orphans, err := aur.FindAUROrphans()
+	if err != nil {
+		ui.Msgf(b.cfg, ui.LevelError, "%v", err)
+		return err
+	}
+	
+	if len(orphans) == 0 {
+		ui.Msg(b.cfg, ui.LevelInfo, "No AUR orphan packages found.")
+		return nil
+	}
+	
+	ui.Msgf(b.cfg, ui.LevelInfo, "Found %d AUR orphan package(s):", len(orphans))
+	for _, orphan := range orphans {
+		fmt.Printf("  - %s\n", orphan)
+	}
+	return nil
+}
+
 // buildIgnoreSet reads the pacman config and returns a set of packages the user has marked to ignore.
 func buildIgnoreSet() map[string]bool {
 	pacConf, _ := aur.ReadPacmanConf()
@@ -241,6 +270,18 @@ func filterNonIgnored(installed map[string]string, ignoreSet map[string]bool, sy
 	return names
 }
 
+// isVCSPackage checks if a package is a VCS (version control system) package
+// by checking for common VCS suffixes.
+func isVCSPackage(name string) bool {
+	vcsSuffixes := []string{"-git", "-svn", "-hg", "-bzr", "-cvs"}
+	for _, suffix := range vcsSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // findOutdated compares installed versions against the latest AUR info and returns packages with
 // a newer version available, printing the version comparison for each.
 func findOutdated(installed map[string]string, latest map[string]*aur.Package, ignoreSet map[string]bool, style config.Style) []aur.Package {
@@ -253,7 +294,18 @@ func findOutdated(installed map[string]string, latest map[string]*aur.Package, i
 		if !ok {
 			continue
 		}
-		if pkg.Version != installedVer {
+		// VCS packages have dynamic versions based on git commits
+		// The AUR RPC version is static (when PKGBUILD was last updated)
+		// so we can't reliably detect updates via version comparison
+		if isVCSPackage(name) {
+			fmt.Printf("  %s%s%s  %s%s%s (VCS package - may have updates not reflected in AUR RPC)\n",
+				style.ColorDim, pkg.Name, style.ColorReset,
+				style.ColorDim, installedVer, style.ColorReset)
+			continue
+		}
+		// Use Vercmp for proper Arch version comparison.
+		// Vercmp returns 1 when AUR version is newer, 0 when equal, -1 when installed is newer.
+		if aur.Vercmp(pkg.Version, installedVer) == 1 {
 			outdated = append(outdated, *pkg)
 			fmt.Printf("  %s%s%s  %s%s%s → %s%s%s\n",
 				style.ColorPrimary, pkg.Name, style.ColorReset,

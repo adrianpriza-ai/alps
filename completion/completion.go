@@ -179,12 +179,16 @@ complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" repo; and 
 
 # aur subcommands
 complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" aur; and test (count $t) -eq 2' \
-    -a 'install search list remove clean build-local fetch-abs' -d 'aur subcommand'
+    -a 'install search list remove clean build-local fetch-abs info clone orphans' -d 'aur subcommand'
 
 # aur install/search → pacman repo + AUR
 complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" aur; and contains -- "$t[3]" install ins search se' \
     -a "(%s)" -d 'repo package'
 complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" aur; and contains -- "$t[3]" install ins search se' \
+    -a "(%s)" -d 'AUR package'
+
+# aur info/clone → AUR packages only
+complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" aur; and contains -- "$t[3]" info clone' \
     -a "(%s)" -d 'AUR package'
 
 # aur remove → AUR-installed packages
@@ -215,8 +219,11 @@ complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" install in
 complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" remove rm purge pu; and test (count $t) -eq 2' \
     -a "(%s)" -d 'installed package'
 `, morePkgs, moreInstalled,
-		pkgList, aurNames, aurInstalled,
-		pkgList, installedList)
+	pkgList, aurNames,
+	aurNames,
+	aurInstalled,
+	pkgList,
+	installedList)
 }
 
 func genBash(cmds []string, backend string) {
@@ -271,16 +278,19 @@ _alps_completions() {
                 install|search)
                     COMPREPLY=($(compgen -W "$(%s) $(%s)" -- "$cur"))
                     ;;
+                info|clone)
+                    COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
+                    ;;
                 remove)
                     COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
                     ;;
                 build-local)
                     COMPREPLY=($(compgen -d -- "$cur"))
                     ;;
-                fetch-abs)
+                fetch-abs|orphans)
                     ;;
                 *)
-                    COMPREPLY=($(compgen -W "install search list remove clean build-local fetch-abs" -- "$cur"))
+                    COMPREPLY=($(compgen -W "install search list remove clean build-local fetch-abs info clone orphans" -- "$cur"))
                     ;;
             esac
             ;;
@@ -312,7 +322,8 @@ complete -F _alps_completions alps
 `, cmdList,
 		pkgList, installedList,
 		morePkgs, moreInstalled,
-		pkgList, aurNames, aurInstalled)
+		pkgList, aurNames, aurInstalled,
+		aurNames)
 }
 
 func genZsh(cmds []string, backend string) {
@@ -391,6 +402,11 @@ _alps() {
                             aurpkgs=(${(f)"$(%s)"})
                             _describe 'AUR package' aurpkgs
                             ;;
+                        info|clone)
+                            local aurpkgs
+                            aurpkgs=(${(f)"$(%s)"})
+                            _describe 'AUR package' aurpkgs
+                            ;;
                         remove)
                             local aurinst
                             aurinst=(${(f)"$(%s)"})
@@ -399,11 +415,11 @@ _alps() {
                         build-local)
                             _path_files -/
                             ;;
-                        fetch-abs)
+                        fetch-abs|orphans)
                             ;;
                         *)
                             _describe 'aur subcommand' \
-                                '(install search list remove clean build-local fetch-abs)'
+                                '(install search list remove clean build-local fetch-abs info clone orphans)'
                             ;;
                     esac
                     ;;
@@ -440,7 +456,9 @@ _alps
 `, strings.Join(cmdList, "\n                "),
 		pkgList, installedList,
 		morePkgs, moreInstalled,
-		pkgList, aurNames, aurInstalled)
+		pkgList, aurNames, aurInstalled,
+		aurNames,
+		aurNames)
 }
 
 // cmdDesc returns a description for a command.
@@ -468,6 +486,9 @@ func cmdDesc(cmd string) string {
 		"autoremove":   "remove unused packages",
 		"autoclean":    "clean partial packages",
 		"clean":        "clean package cache",
+		"info":         "show AUR package metadata",
+		"clone":        "clone AUR PKGBUILD for inspection",
+		"orphans":      "list AUR orphan packages",
 	}
 	if d, ok := descs[cmd]; ok {
 		return d

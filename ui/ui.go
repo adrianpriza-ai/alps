@@ -184,6 +184,9 @@ func PrintHelp(cfg *config.Config) {
 			{"aur clean", "remove build cache"},
 			{"aur build-local [dir]", "build a local PKGBUILD"},
 			{"aur fetch-abs <pkg>", "fetch official PKGBUILD"},
+			{"aur info <pkg>", "show AUR package metadata"},
+			{"aur clone <pkg>", "clone AUR PKGBUILD for inspection"},
+			{"aur orphans", "list AUR orphan packages"},
 		})
 		fmt.Println()
 		fmt.Printf("  %s%s%s %sArch tip:%s use %sfull-upgrade%s, not update/upgrade — avoids partial upgrades\n\n",
