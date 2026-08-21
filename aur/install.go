@@ -1078,20 +1078,21 @@ func reviewPKGBUILD(path string) error {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		cmd.Run()		} else {
-			view, err := readYesNo("  View full PKGBUILD in terminal?", false)
-			if err != nil {
-				return err
-			}
-			if view {
-				fmt.Println()
-				for _, line := range lines {
-					fmt.Printf("  %s\n", line)
-				}
-				fmt.Println()
-			}
+		cmd.Run()
+	} else {
+		view, err := readYesNo("  View full PKGBUILD in terminal?", false)
+		if err != nil {
+			return err
 		}
-		return nil
+		if view {
+			fmt.Println()
+			for _, line := range lines {
+				fmt.Printf("  %s\n", line)
+			}
+			fmt.Println()
+		}
+	}
+	return nil
 }
 
 // - Root detection & privilege dropping for makepkg -
@@ -1125,7 +1126,7 @@ func unprivilegedCommand(name string, args ...string) (*exec.Cmd, error) {
 	orig := originalUser()
 	if orig == "" {
 		return nil, fmt.Errorf(
-			"refusing to run %s as root: Arch Linux makepkg does not allow root execution.\n" +
+			"refusing to run %s as root: Arch Linux makepkg does not allow root execution.\n"+
 				"Please run alps as a regular user (alps will request sudo privileges for pacman when needed).",
 			name,
 		)
