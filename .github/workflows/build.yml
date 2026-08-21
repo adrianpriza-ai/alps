@@ -18,13 +18,13 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           # Checkout head branch on PRs so formatted changes can be pushed
           ref: ${{ github.head_ref || github.ref }}
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -35,7 +35,7 @@ jobs:
           gofmt -s -w .
 
       - name: Commit formatted code
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: "style: auto-format code with gofmt -s"
           commit_user_name: "github-actions[bot]"
@@ -48,10 +48,10 @@ jobs:
     needs: [format]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -78,10 +78,10 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -122,10 +122,10 @@ jobs:
             goarch: arm64
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -143,10 +143,10 @@ jobs:
     needs: [format]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
