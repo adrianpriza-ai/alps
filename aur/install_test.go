@@ -8,17 +8,18 @@ import (
 	"testing"
 )
 
-// gpgTempHome creates a short-path GPG homedir under os.TempDir() rather than
-// using t.TempDir() directly. On macOS, t.TempDir() generates paths like
-// /var/folders/…/T/TestFoo12345/001 which can exceed the ~104-character Unix
-// domain socket limit, causing gpg-agent to refuse to start. A path rooted at
-// /tmp/<short-name> stays well within that limit.
-// The directory is registered for cleanup via t.Cleanup so the test runner
-// still removes it on exit.
+// gpgTempHome creates a short-path GPG homedir under /tmp rather than using
+// t.TempDir() directly. On macOS, t.TempDir() generates paths under $TMPDIR
+// (e.g. /var/folders/…/T/TestFoo12345/001) which can exceed the ~104-character
+// Unix domain socket limit, causing gpg-agent to refuse to start and key
+// generation to fail. Using /tmp directly keeps the socket path well within
+// that limit on both Linux and macOS.
+// The directory is registered for cleanup via t.Cleanup.
 func gpgTempHome(t *testing.T) string {
 	t.Helper()
-	// Use a short, unique directory name derived from the test name hash.
-	dir, err := os.MkdirTemp("", "gpgt-")
+	// Explicitly use /tmp, not os.TempDir(). On macOS os.TempDir() returns
+	// the process-private $TMPDIR which is a very long path.
+	dir, err := os.MkdirTemp("/tmp", "gpgt-")
 	if err != nil {
 		t.Fatalf("gpgTempHome: %v", err)
 	}
@@ -74,9 +75,7 @@ Expire-Date: 0
 		t.Fatalf("failed to write GPG batch config: %v", err)
 	}
 
-	// --no-autostart prevents gpg from trying to launch an agent, which
-	// would fail on macOS if the socket path is too long.
-	genKey := exec.Command("gpg", "--batch", "--no-autostart", "--homedir", gpgHome, "--gen-key", configPath)
+	genKey := exec.Command("gpg", "--batch", "--homedir", gpgHome, "--gen-key", configPath)
 	if out, err := genKey.CombinedOutput(); err != nil {
 		t.Fatalf("gpg --gen-key failed: %v\n%s", err, string(out))
 	}
@@ -91,7 +90,7 @@ Expire-Date: 0
 
 	// Create a detached signature
 	sigPath := pkgPath + ".sig"
-	sign := exec.Command("gpg", "--batch", "--no-autostart", "--homedir", gpgHome,
+	sign := exec.Command("gpg", "--batch", "--homedir", gpgHome,
 		"--armor", "--detach-sign", "--output", sigPath, pkgPath)
 	if out, err := sign.CombinedOutput(); err != nil {
 		t.Fatalf("gpg --detach-sign failed: %v\n%s", err, string(out))
@@ -106,7 +105,7 @@ Expire-Date: 0
 	// key and import it into the default keyring, then clean up after.
 
 	// Export the public key
-	export := exec.Command("gpg", "--no-autostart", "--homedir", gpgHome, "--armor", "--export", "test@example.com")
+	export := exec.Command("gpg", "--homedir", gpgHome, "--armor", "--export", "test@example.com")
 	pubKey, err := export.Output()
 	if err != nil {
 		t.Fatalf("gpg --export failed: %v", err)
@@ -152,7 +151,7 @@ Expire-Date: 0
 		t.Fatalf("failed to write GPG batch config: %v", err)
 	}
 
-	genKey := exec.Command("gpg", "--batch", "--no-autostart", "--homedir", gpgHome, "--gen-key", configPath)
+	genKey := exec.Command("gpg", "--batch", "--homedir", gpgHome, "--gen-key", configPath)
 	if out, err := genKey.CombinedOutput(); err != nil {
 		t.Fatalf("gpg --gen-key failed: %v\n%s", err, string(out))
 	}
@@ -165,14 +164,14 @@ Expire-Date: 0
 	}
 
 	sigPath := pkgPath + ".sig"
-	sign := exec.Command("gpg", "--batch", "--no-autostart", "--homedir", gpgHome,
+	sign := exec.Command("gpg", "--batch", "--homedir", gpgHome,
 		"--armor", "--detach-sign", "--output", sigPath, pkgPath)
 	if out, err := sign.CombinedOutput(); err != nil {
 		t.Fatalf("gpg --detach-sign failed: %v\n%s", err, string(out))
 	}
 
 	// Import the public key so gpg --verify can find it
-	export := exec.Command("gpg", "--no-autostart", "--homedir", gpgHome, "--armor", "--export", "tamper@example.com")
+	export := exec.Command("gpg", "--homedir", gpgHome, "--armor", "--export", "tamper@example.com")
 	pubKey, err := export.Output()
 	if err != nil {
 		t.Fatalf("gpg --export failed: %v", err)
@@ -220,7 +219,7 @@ Expire-Date: 0
 	if err := os.WriteFile(filepath.Join(signerHome, "batch.conf"), []byte(signerConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("gpg", "--batch", "--no-autostart", "--homedir", signerHome, "--gen-key",
+	if out, err := exec.Command("gpg", "--batch", "--homedir", signerHome, "--gen-key",
 		filepath.Join(signerHome, "batch.conf")).CombinedOutput(); err != nil {
 		t.Fatalf("gpg --gen-key (signer) failed: %v\n%s", err, string(out))
 	}
@@ -237,7 +236,7 @@ Expire-Date: 0
 	if err := os.WriteFile(filepath.Join(wrongKeyHome, "batch.conf"), []byte(wrongConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("gpg", "--batch", "--no-autostart", "--homedir", wrongKeyHome, "--gen-key",
+	if out, err := exec.Command("gpg", "--batch", "--homedir", wrongKeyHome, "--gen-key",
 		filepath.Join(wrongKeyHome, "batch.conf")).CombinedOutput(); err != nil {
 		t.Fatalf("gpg --gen-key (wrong) failed: %v\n%s", err, string(out))
 	}
@@ -250,14 +249,14 @@ Expire-Date: 0
 	}
 
 	sigPath := pkgPath + ".sig"
-	sign := exec.Command("gpg", "--batch", "--no-autostart", "--homedir", signerHome,
+	sign := exec.Command("gpg", "--batch", "--homedir", signerHome,
 		"--armor", "--detach-sign", "--output", sigPath, pkgPath)
 	if out, err := sign.CombinedOutput(); err != nil {
 		t.Fatalf("gpg --detach-sign failed: %v\n%s", err, string(out))
 	}
 
 	// Import only the WRONG key into the default keyring
-	wrongExport := exec.Command("gpg", "--no-autostart", "--homedir", wrongKeyHome, "--armor", "--export", "wrong@example.com")
+	wrongExport := exec.Command("gpg", "--homedir", wrongKeyHome, "--armor", "--export", "wrong@example.com")
 	wrongPub, err := wrongExport.Output()
 	if err != nil {
 		t.Fatal(err)
@@ -474,3 +473,4 @@ func TestUnprivilegedCommandNonRoot(t *testing.T) {
 		t.Errorf("expected command 'echo', got %q", cmd.Args[0])
 	}
 }
+

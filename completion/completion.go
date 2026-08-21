@@ -219,11 +219,11 @@ complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" install in
 complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" remove rm purge pu; and test (count $t) -eq 2' \
     -a "(%s)" -d 'installed package'
 `, morePkgs, moreInstalled,
-		pkgList, aurNames,
-		aurNames,
-		aurInstalled,
-		pkgList,
-		installedList)
+	pkgList, aurNames,
+	aurNames,
+	aurInstalled,
+	pkgList,
+	installedList)
 }
 
 func genBash(cmds []string, backend string) {
