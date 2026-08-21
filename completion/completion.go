@@ -453,12 +453,11 @@ _alps() {
 }
 
 _alps
-`, strings.Join(cmdList, "\n                "),
-		pkgList, installedList,
-		morePkgs, moreInstalled,
-		pkgList, aurNames, aurInstalled,
-		aurNames,
-		aurNames)
+`,strings.Join(cmdList, "\n                "),
+	pkgList, installedList,
+	morePkgs, moreInstalled,
+	pkgList, aurNames, aurInstalled,
+	aurNames)
 }
 
 // cmdDesc returns a description for a command.
