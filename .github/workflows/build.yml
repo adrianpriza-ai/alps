@@ -62,7 +62,11 @@ jobs:
       - name: Check module tidiness
         run: |
           go mod tidy
-          git diff --exit-code go.mod go.sum || (echo "go.mod or go.sum is not tidy. Run 'go mod tidy'" && exit 1)
+          # Only diff files that git already tracks. When the module has no
+          # external dependencies go.sum is not created, and passing an
+          # untracked path to git diff causes a fatal "no such path" error.
+          git diff --exit-code -- go.mod $(git ls-files go.sum) \
+            || (echo "go.mod or go.sum is not tidy. Run 'go mod tidy'" && exit 1)
 
   test:
     name: Test (${{ matrix.os }})
