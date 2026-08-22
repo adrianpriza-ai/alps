@@ -9,7 +9,7 @@
   [![Release](https://img.shields.io/github/v/release/adrianpriza-ai/alps?include_prereleases&style=flat&color=red)](https://github.com/adrianpriza-ai/alps/releases)
   [![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
   [![Go](https://img.shields.io/badge/Go-1.25.13+-00ADD8?style=flat&logo=go)](https://go.dev)
-  [![Build](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml/badge.svg)](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml)
+  [![CI](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml/badge.svg)](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml)
   
 </div>
 
@@ -228,12 +228,19 @@ sudo pacman -S --needed git base-devel
 
 ### Built-in AUR features
 
-- **Full recursive dep resolution** — AUR deps are resolved and built in topological order
-- **PKGBUILD review** — All PKGBUILDs shown up-front for review before any build starts
-- **Single confirm prompt** — Covers the entire build plan
-- **Provider selection** — Unknown dep with no exact match → presents up to 5 candidates to pick a provider
-- **Accurate dep checking** — Uses `pacman -T` for virtual packages and provides handling
-- **Makedep cleanup** — Removal offered once at the very end
+| Area | What it does |
+|---|---|
+| RPC search/info | `Search`, `SearchNarrow`, `Info`, `InfoBatch`, `Exists` — all with retry, backoff, jitter |
+| Install pipeline | Dependency resolution → build plan → `makepkg -si` or delegate to yay/paru |
+| PKGBUILD review | Summary of important fields, optional editor/terminal view before building |
+| Local builds | `BuildLocal` from a user-supplied PKGBUILD directory |
+| ABS fetching | `FetchABS` via `asp` or Arch GitLab fallback |
+| Cache management | Build cache at `~/.cache/alps/aur/`, reuse by name+version match |
+| Pacman helpers | `pkgInstalled`, `inPacmanRepo`, `unsatisfiedDeps`, `GetInstalledAUR`, `ReadPacmanConf` |
+| Validation | Package name regex (`^[a-zA-Z0-9@._+\-]+$`), path traversal check in cache dirs |
+| Safety checks | `editorIsSafe` rejects shell metacharacters, PKGBUILD review prompt, `--noconfirm` never passed to helper |
+
+Also handles provider selection (unknown dep presents up to 5 candidates), uses `pacman -T` for virtual packages and provides handling, and offers makedep cleanup once at the end.
 
 ```bash
 alps aur install <pkg>          # install with full dep resolution
@@ -256,7 +263,7 @@ alps winget install <pkg>   # Winget (WSL)
 
 Each backend supports `install`, `remove`, `purge`, `search`, `show`, `list`, `update`, and `upgrade`; snap and flatpak also support `autoremove`/`clean` where the manager allows it.
 
-Snap is available on Debian/Ubuntu and auto-offered as a fallback when apt can't find a package. Winget is available on WSL for Windows package management.
+Snap is available on Debian/Ubuntu and offered as a fallback when apt can't find a package. Winget is available on WSL.
 
 ## alps-more
 
@@ -274,7 +281,7 @@ Cross-distro script repo for tools
 - **systemctl** – Manages systemd service macros (not needed on macOS/Termux).
 - **useradd / userdel** – Handles user account management macros (not needed on macOS/Termux).
 
-**macOS:** Most requirements are already included with macOS. Additional tools can be installed via Homebrew if needed.
+- **macOS:** Available out of the box; add packages via Homebrew if needed.
 
 **Install dependencies:**
 
@@ -291,7 +298,7 @@ alps repo list                            # list available packages for your dis
 alps repo list install                    # list installed packages (alps-more + remote)
 alps repo list remove                     # list stale packages no longer in repo
 alps repo search <query>                  # search by name or description
-alps repo install <pkg>                   # install with preview and validation
+alps repo install <pkg>                   # install (preview required)
 alps repo install github.com/user/repo@main  # install from any supported forge
 alps repo upgrade [pkg]                   # upgrade one or all installed packages
 alps repo remove <pkg>                    # remove package
@@ -303,7 +310,7 @@ alps repo clean                           # remove build cache (~/.cache/alps/mo
 
 - Build dir: `~/.cache/alps/more/<package>/`
 - State file: `/var/lib/alps/installed.json` (Termux: `$PREFIX/var/lib/alps/installed.json`, macOS: `~/Library/Application Support/alps/installed.json`)
-- Repo cache: `/var/cache/alps/more/main.txt` ((Termux: `$PREFIX/var/cache/alps/more/main.txt macOS: `~/Library/Caches/alps/more/main.txt`)
+- Repo cache: `/var/cache/alps/more/main.txt` (Termux: `$PREFIX/var/cache/alps/more/main.txt`, macOS: `~/Library/Caches/alps/more/main.txt`)
 - Mirrors: [GitHub Pages](https://github.com/adrianpiza-ai/alps-more) and [Codeberg](https://codeberg.org/moreland/alps-more)
 
 ### Key Features
@@ -329,7 +336,7 @@ alps repo clean                           # remove build cache (~/.cache/alps/mo
 
 ### Full Authoring Guide
 
-Complete documentation, including all package fields, command blocks, macros, placeholders, examples, and publishing instructions are in **[ALPSMORE.md](ALPSMORE.md)**.
+See [ALPSMORE.md](ALPSMORE.md) for complete authoring docs: package fields, command blocks, macros, placeholders, examples, and publishing instructions.
 
 ## Contributing
 

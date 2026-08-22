@@ -1,6 +1,7 @@
 package aurbackend
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -231,12 +232,12 @@ func (b *Backend) Orphans() error {
 		ui.Msgf(b.cfg, ui.LevelError, "%v", err)
 		return err
 	}
-
+	
 	if len(orphans) == 0 {
 		ui.Msg(b.cfg, ui.LevelInfo, "No AUR orphan packages found.")
 		return nil
 	}
-
+	
 	ui.Msgf(b.cfg, ui.LevelInfo, "Found %d AUR orphan package(s):", len(orphans))
 	for _, orphan := range orphans {
 		fmt.Printf("  - %s\n", orphan)
@@ -271,19 +272,20 @@ func filterNonIgnored(installed map[string]string, ignoreSet map[string]bool, sy
 }
 
 // isVCSPackage checks if a package is a VCS (version control system) package
-// by checking for common VCS suffixes.
+// by delegating to the shared detection in the aur package.
 func isVCSPackage(name string) bool {
-	vcsSuffixes := []string{"-git", "-svn", "-hg", "-bzr", "-cvs"}
-	for _, suffix := range vcsSuffixes {
-		if strings.HasSuffix(name, suffix) {
-			return true
-		}
-	}
-	return false
+	return aur.IsVCSPackage(name)
 }
 
 // findOutdated compares installed versions against the latest AUR info and returns packages with
 // a newer version available, printing the version comparison for each.
+//
+// VCS development packages (-git, -svn, -hg, …) get special treatment: their
+// versions track upstream commits, so static RPC comparison cannot detect
+// updates. Instead, aur.CheckVCSUpdate probes the package's actual upstream
+// remote and compares revisions. When that probe is impossible (no network,
+// unsupported VCS, version without an embedded revision) we fall back to the
+// legacy "may have updates" warning rather than reporting a false result.
 func findOutdated(installed map[string]string, latest map[string]*aur.Package, ignoreSet map[string]bool, style config.Style) []aur.Package {
 	var outdated []aur.Package
 	for name, installedVer := range installed {
@@ -294,14 +296,39 @@ func findOutdated(installed map[string]string, latest map[string]*aur.Package, i
 		if !ok {
 			continue
 		}
-		// VCS packages have dynamic versions based on git commits
-		// The AUR RPC version is static (when PKGBUILD was last updated)
-		// so we can't reliably detect updates via version comparison
+		// VCS packages have dynamic versions based on git commits.
+		// Probe the upstream repository for a definitive answer instead of
+		// comparing against the AUR RPC's frozen snapshot version.
 		if isVCSPackage(name) {
-			fmt.Printf("  %s%s%s  %s%s%s (VCS package - may have updates not reflected in AUR RPC)\n",
-				style.ColorDim, pkg.Name, style.ColorReset,
-				style.ColorDim, installedVer, style.ColorReset)
-			continue
+			update, upstreamRev, err := aur.CheckVCSUpdate(pkg, installedVer)
+			switch {
+			case err == nil && update:
+				outdated = append(outdated, *pkg)
+				fmt.Printf("  %s%s%s  %s%s%s → %srebuild%s (upstream %s)\n",
+					style.ColorPrimary, pkg.Name, style.ColorReset,
+					style.ColorDim, installedVer, style.ColorReset,
+					style.ColorSuccess, style.ColorReset, upstreamRev)
+				continue
+			case err == nil:
+				// Installed build already matches the upstream tip.
+				fmt.Printf("  %s%s%s  %s%s%s (up to date with upstream %s)\n",
+					style.ColorDim, pkg.Name, style.ColorReset,
+					style.ColorDim, installedVer, style.ColorReset, upstreamRev)
+				continue
+			case errors.Is(err, aur.ErrVCSPinned):
+				// Source anchored to a fixed tag/commit — its published
+				// version is stable, so fall through to normal comparison.
+			case errors.Is(err, aur.ErrUnknownVCSVersion):
+				fmt.Printf("  %s%s%s  %s%s%s (VCS package — version carries no revision; may have updates)\n",
+					style.ColorDim, pkg.Name, style.ColorReset,
+					style.ColorDim, installedVer, style.ColorReset)
+				continue
+			default:
+				fmt.Printf("  %s%s%s  %s%s%s (VCS update check failed: %v — may have updates)\n",
+					style.ColorDim, pkg.Name, style.ColorReset,
+					style.ColorDim, installedVer, style.ColorReset, err)
+				continue
+			}
 		}
 		// Use Vercmp for proper Arch version comparison.
 		// Vercmp returns 1 when AUR version is newer, 0 when equal, -1 when installed is newer.

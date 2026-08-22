@@ -2,11 +2,13 @@ package aur
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/adrianpriza-ai/alps/config"
@@ -238,6 +240,14 @@ func printInstallSummary(plan *installPlan, warn string) {
 	}
 }
 
+// reviewAURPKGBUILDs syncs each planned package's AUR repo and walks the
+// user through reviewing it before building.
+//
+// On upgrades (#18) the checkout usually already exists: the previous HEAD is
+// captured before syncing, and if upstream moved, the user is offered a
+// focused git diff of what changed instead of wading through the entire
+// PKGBUILD again — much harder to miss a malicious change in a diff.
+// Fresh installs (no prior checkout) fall back to the full-file review.
 func reviewAURPKGBUILDs(plan *installPlan, arrow string) error {
 	if ok, err := readYesNo(fmt.Sprintf("  %s Review PKGBUILDs before building?", arrow), false); err != nil {
 		return err
@@ -247,8 +257,20 @@ func reviewAURPKGBUILDs(plan *installPlan, arrow string) error {
 			if err != nil {
 				return err
 			}
+			// Capture the pre-sync HEAD so we can tell whether this is an
+			// upgrade with actual repository changes.
+			oldHead := gitHead(pkgDir)
 			if err := cloneAUR(p, pkgDir); err != nil {
 				return err
+			}
+			if oldHead != "" && oldHead != gitHead(pkgDir) {
+				shown, err := reviewPKGBUILDUpdate(pkgDir, oldHead, arrow)
+				if err != nil {
+					return err
+				}
+				if shown {
+					continue // change set was reviewed; skip the full-file dump
+				}
 			}
 			if err := reviewPKGBUILD(filepath.Join(pkgDir, "PKGBUILD")); err != nil {
 				return err
@@ -256,6 +278,58 @@ func reviewAURPKGBUILDs(plan *installPlan, arrow string) error {
 		}
 	}
 	return nil
+}
+
+// gitHead returns the current HEAD commit of the git repository at dir, or
+// "" when dir is not a repository (or has no commits yet).
+func gitHead(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// reviewPKGBUILDUpdate presents a diff-based review of an upgraded package:
+// a per-file stat overview followed by (on request) the full PKGBUILD patch
+// between oldHead and the freshly fetched HEAD.
+// It returns true when the user engaged with (or consciously skipped) the
+// change set, and false when the caller should fall back to reviewing the
+// complete file — e.g. when the shallow history no longer contains oldHead
+// and the diff cannot be computed.
+func reviewPKGBUILDUpdate(pkgDir, oldHead, arrow string) (bool, error) {
+	statOut, err := exec.Command("git", "-C", pkgDir, "--no-pager", "diff", "--stat", oldHead, "HEAD").Output()
+	if err != nil || strings.TrimSpace(string(statOut)) == "" {
+		return false, nil
+	}
+
+	fmt.Printf("\n  :: %s changed since your last build:\n", filepath.Base(pkgDir))
+	for _, line := range strings.Split(strings.TrimRight(string(statOut), "\n"), "\n") {
+		fmt.Printf("     %s\n", line)
+	}
+
+	viewDiff, err := readYesNo(fmt.Sprintf("  %s View the PKGBUILD diff? (recommended)", arrow), true)
+	if err != nil {
+		return false, err
+	}
+	if !viewDiff {
+		return true, nil // declined the detailed view; treat as reviewed
+	}
+
+	cmd, err := unprivilegedCommand("git", "-C", pkgDir, "--no-pager", "diff", oldHead, "HEAD", "--", "PKGBUILD")
+	if err != nil {
+		return false, err
+	}
+	cmd.Env = safeMakepkgEnv()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// Shallow-clone pruning can drop the old snapshot; fall back to a
+		// full review rather than skipping the security gate entirely.
+		warnStderr("could not render PKGBUILD diff for %s: %v", filepath.Base(pkgDir), err)
+		return false, nil
+	}
+	return true, nil
 }
 
 // collectUserInputs gathers confirmations before building.
@@ -381,6 +455,13 @@ func executeInstallPlan(plan *installPlan, noConfirm bool) error {
 		return err
 	}
 
+	// Fetch/clone every planned AUR repository up front, in parallel (#19),
+	// so the sequential build loop below starts with all sources in place
+	// instead of paying a network round-trip before each build.
+	if err := prefetchAURRepos(plan.AURPackages); err != nil {
+		return err
+	}
+
 	var builtDirs []string
 	for _, pkg := range plan.AURPackages {
 		pkgDir, err := buildAndInstall(pkg, noConfirm)
@@ -399,6 +480,72 @@ func executeInstallPlan(plan *installPlan, noConfirm bool) error {
 	}
 
 	cleanupBuildCaches(builtDirs, noConfirm, ok)
+	return nil
+}
+
+// prefetchWorkers caps how many AUR repositories are cloned/fetched at once
+// during the parallel prefetch phase. The work is network-bound, so a small
+// fixed pool keeps latency down without hammering the AUR or spawning
+// unbounded git processes.
+const prefetchWorkers = 8
+
+// prefetchAURRepos clones or updates every package's AUR checkout in
+// parallel. Any failure aborts the plan before any build starts — better to
+// fail fast than to compile for minutes and then discover a broken source.
+func prefetchAURRepos(pkgs []*Package) error {
+	return prefetchRepos(pkgs, syncAURRepo)
+}
+
+// repoSyncFunc mirrors syncAURRepo's signature so tests can inject a stub.
+type repoSyncFunc func(pkgName, pkgDir string, quiet bool) error
+
+// prefetchRepos runs syncFn over all package cache dirs using a bounded
+// worker pool. Output stays quiet during the fetches (parallel progress
+// lines would interleave into garbage); results are reported sequentially
+// once every worker has finished.
+func prefetchRepos(pkgs []*Package, syncFn repoSyncFunc) error {
+	if len(pkgs) == 0 {
+		return nil
+	}
+	_, _, arrow := configSymbols()
+	fmt.Printf("\n  %s fetching %d AUR repositories (%d workers)...\n",
+		arrow, len(pkgs), min(prefetchWorkers, len(pkgs)))
+
+	type result struct {
+		name string
+		err  error
+	}
+	results := make(chan result, len(pkgs))
+	sem := make(chan struct{}, prefetchWorkers)
+	var wg sync.WaitGroup
+
+	for _, pkg := range pkgs {
+		wg.Add(1)
+		go func(p *Package) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			pkgDir, err := aurCacheDir(p.Name)
+			if err == nil {
+				err = syncFn(p.Name, pkgDir, true)
+			}
+			results <- result{name: p.Name, err: err}
+		}(pkg)
+	}
+	wg.Wait()
+	close(results)
+
+	var failures []string
+	for r := range results {
+		if r.err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", r.name, r.err))
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("failed to fetch AUR repositories:\n     %s",
+			strings.Join(failures, "\n     "))
+	}
 	return nil
 }
 
@@ -484,10 +631,18 @@ func buildAndInstall(pkg *Package, noConfirm bool) (string, error) {
 	// installed version is greater than or equal to the AUR version, no rebuild
 	// is needed. Using vercmp <= 0 (instead of == 0) also avoids unnecessary
 	// downgrades when a user has a newer local build installed.
-	if installedVer := pkgInstalledVersion(pkg.Name); installedVer != "" {
-		if vercmp(pkg.Version, installedVer) <= 0 {
-			fmt.Printf("  %s  %s %s is already installed (satisfies %s)\n", ok, pkg.Name, installedVer, pkg.Version)
-			return "", nil
+	//
+	// VCS packages (-git, -svn, …) are exempt: their versions encode upstream
+	// commits (e.g. r1234.abc5678), so the AUR RPC version typically equals the
+	// installed one even when upstream has moved ahead. The upgrade path relies
+	// on precise VCS detection to queue these rebuilds, so comparing static
+	// versions here would silently cancel them.
+	if !IsVCSPackage(pkg.Name) {
+		if installedVer := pkgInstalledVersion(pkg.Name); installedVer != "" {
+			if vercmp(pkg.Version, installedVer) <= 0 {
+				fmt.Printf("  %s  %s %s is already installed (satisfies %s)\n", ok, pkg.Name, installedVer, pkg.Version)
+				return "", nil
+			}
 		}
 	}
 
@@ -722,13 +877,27 @@ func Clone(pkgName string) error {
 	return nil
 }
 
-// cloneAUR clones the AUR git repo.
+// cloneAUR clones or updates the AUR git repo for pkg into pkgDir,
+// printing progress messages.
 func cloneAUR(pkg *Package, pkgDir string) error {
-	_, _, arrow := configSymbols()
+	return syncAURRepo(pkg.Name, pkgDir, false)
+}
 
-	gitURL := fmt.Sprintf("https://aur.archlinux.org/%s.git", pkg.Name)
+// syncAURRepo ensures pkgDir holds a fresh checkout of pkgName's AUR
+// repository: an existing checkout is verified (remote URL) and fetched,
+// otherwise a shallow clone is created.
+//
+// The same routine backs both the install pipeline and VCS update checks;
+// when quiet is true no progress output is printed (update scans stay silent),
+// but security failures — such as a tampered remote URL — are always fatal.
+func syncAURRepo(pkgName, pkgDir string, quiet bool) error {
+	var _, _, arrow = configSymbols()
+
+	gitURL := fmt.Sprintf("https://aur.archlinux.org/%s.git", pkgName)
 	if _, err := os.Stat(filepath.Join(pkgDir, ".git")); err == nil {
-		fmt.Printf("  %s updating %s...\n", arrow, pkg.Name)
+		if !quiet {
+			fmt.Printf("  %s updating %s...\n", arrow, pkgName)
+		}
 
 		// Verify the remote URL BEFORE fetching to prevent communicating
 		// with a hijacked origin. If the cached repo was tampered with,
@@ -745,9 +914,9 @@ func cloneAUR(pkg *Package, pkgDir string) error {
 		}
 		fetch.Env = safeMakepkgEnv()
 		fetch.Stdout = nil
-		fetch.Stderr = os.Stderr
+		fetch.Stderr = stderrFor(quiet)
 		if err := fetch.Run(); err != nil {
-			return fmt.Errorf("git fetch failed for %s: %w", pkg.Name, err)
+			return fmt.Errorf("git fetch failed for %s: %w", pkgName, err)
 		}
 
 		reset, err := unprivilegedCommand("git", "-C", pkgDir, "reset", "--hard", "FETCH_HEAD")
@@ -756,9 +925,9 @@ func cloneAUR(pkg *Package, pkgDir string) error {
 		}
 		reset.Env = safeMakepkgEnv()
 		reset.Stdout = nil
-		reset.Stderr = os.Stderr
+		reset.Stderr = stderrFor(quiet)
 		if err := reset.Run(); err != nil {
-			return fmt.Errorf("git reset failed for %s: %w", pkg.Name, err)
+			return fmt.Errorf("git reset failed for %s: %w", pkgName, err)
 		}
 		return nil
 	}
@@ -770,18 +939,29 @@ func cloneAUR(pkg *Package, pkgDir string) error {
 		return fmt.Errorf("failed to create cache dir: %w", err)
 	}
 
-	fmt.Printf("  %s cloning %s...\n", arrow, gitURL)
+	if !quiet {
+		fmt.Printf("  %s cloning %s...\n", arrow, gitURL)
+	}
 	cmd, err := unprivilegedCommand("git", "clone", "--depth=1", gitURL, pkgDir)
 	if err != nil {
 		return err
 	}
 	cmd.Env = safeMakepkgEnv()
 	cmd.Stdout = nil
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = stderrFor(quiet)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git clone failed for %s: %w", pkg.Name, err)
+		return fmt.Errorf("git clone failed for %s: %w", pkgName, err)
 	}
 	return nil
+}
+
+// stderrFor returns the destination for subprocess diagnostics: visible
+// during normal installs, suppressed during quiet background syncs.
+func stderrFor(quiet bool) io.Writer {
+	if quiet {
+		return nil
+	}
+	return os.Stderr
 }
 
 // Local builds and ABS fetching
@@ -1078,21 +1258,20 @@ func reviewPKGBUILD(path string) error {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		cmd.Run()
-	} else {
-		view, err := readYesNo("  View full PKGBUILD in terminal?", false)
-		if err != nil {
-			return err
-		}
-		if view {
-			fmt.Println()
-			for _, line := range lines {
-				fmt.Printf("  %s\n", line)
+		cmd.Run()		} else {
+			view, err := readYesNo("  View full PKGBUILD in terminal?", false)
+			if err != nil {
+				return err
 			}
-			fmt.Println()
+			if view {
+				fmt.Println()
+				for _, line := range lines {
+					fmt.Printf("  %s\n", line)
+				}
+				fmt.Println()
+			}
 		}
-	}
-	return nil
+		return nil
 }
 
 // - Root detection & privilege dropping for makepkg -
@@ -1126,7 +1305,7 @@ func unprivilegedCommand(name string, args ...string) (*exec.Cmd, error) {
 	orig := originalUser()
 	if orig == "" {
 		return nil, fmt.Errorf(
-			"refusing to run %s as root: Arch Linux makepkg does not allow root execution.\n"+
+			"refusing to run %s as root: Arch Linux makepkg does not allow root execution.\n" +
 				"Please run alps as a regular user (alps will request sudo privileges for pacman when needed).",
 			name,
 		)

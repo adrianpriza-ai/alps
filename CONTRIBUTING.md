@@ -71,6 +71,7 @@ ALPS handles package installation and remote script execution, so security matte
 - **Privilege escalation**: Centralized through structured privilege decisions
 - **Command execution**: Uses typed command structures instead of raw shell strings when possible
 - **APT signing**: Repository metadata is signed with GPG, no `trusted=yes`
+- **AUR safety**: See [handoff.md](handoff.md) for the full AUR security audit, including fixed items and open gaps (vercmp, GPG verification, privilege dropping, env sanitization, etc.)
 
 When contributing:
 - Never weaken security checks for convenience

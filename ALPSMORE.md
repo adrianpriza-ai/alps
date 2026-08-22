@@ -1,6 +1,6 @@
 # ALPSMORE — Package Authoring & User Guide
 
-ALPSMORE files are INI-style metadata files for the **alps-more** cross-distro script repository. This guide covers both package creation and usage.
+ALPSMORE files are INI-style metadata files for the **alps-more** cross-distro script repository.
 
 ---
 
@@ -39,6 +39,31 @@ cmd_end
 
 # remove_begin is optional - auto-generated from INSTALL macros
 ```
+
+### Supported Hosts
+
+`alps repo install` only accepts these git forge hosts:
+
+| Host | Platform | Install example |
+|-|-|-|
+| `github.com` | GitHub | `alps repo install github.com/user/repo@main` |
+| `raw.githubusercontent.com` | GitHub | (used internally for raw content) |
+| `codeberg.org` | Codeberg | `alps repo install codeberg.org/user/repo@main` |
+| `gitlab.com` | GitLab | `alps repo install gitlab.com/user/repo@main` |
+| `gitea.com` | Gitea | `alps repo install gitea.com/user/repo@main` |
+| `sr.ht` | SourceHut | `alps repo install sr.ht/~user/repo@main` |
+| `git.savannah.gnu.org` | GNU Savannah | `alps repo install git.savannah.gnu.org/git/emacs.git@main` |
+| `git.kernel.org` | kernel.org | `alps repo install git.kernel.org/pub/scm/...@main` |
+| `git.code.sf.net` | SourceForge | `alps repo install git.code.sf.net/p/foo/bar@main` |
+| `gitlab.freedesktop.org` | Freedesktop | `alps repo install gitlab.freedesktop.org/mesa/mesa@main` |
+| `pagure.io` | Pagure | `alps repo install pagure.io/fedora-infra/clipboard.git@main` |
+| `salsa.debian.org` | Salsa | `alps repo install salsa.debian.org/debian/some-package@main` |
+| `git.savannah.nongnu.org` | GNU Savannah | `alps repo install git.savannah.nongnu.org/cgit/inkscape.git@main` |
+| `gitee.com` | Gitee | `alps repo install gitee.com/user/repo@main` |
+| `gitcode.com` | GitCode | `alps repo install gitcode.com/user/repo@main` |
+| `atomgit.com` | AtomGit | `alps repo install atomgit.com/user/repo@main` |
+
+Branch must always be explicit (`@main`, `@master`, `@dev`, etc.) — no mutable HEAD/main/master fallback.
 
 ---
 
@@ -134,27 +159,14 @@ deps = curl/wget, git/svn, make
 
 ### macOS Support
 
-ALPSMORE supports macOS with the following considerations:
+Use `os = macos` or `os = darwin` — both match on macOS systems.
 
-**OS Tags:**
-- Use `os = macos` or `os = darwin` for macOS-specific entries
-- Both tags are equivalent and will match on macOS systems
-
-**Directory Structure:**
 - Build directory: `~/.cache/alps/more/<package>/`
 - State directory: `~/Library/Application Support/alps`
 - Cache directory: `~/Library/Caches/alps/more`
-
-**Install Paths:**
-- Respects `HOMEBREW_PREFIX` environment variable if set
-- Defaults to `/usr/local` for binaries, libraries, and configs
-- Uses macOS-standard directory structure
-
-**Macro Behavior:**
-- Systemd service macros (ENABLE_SERVICE, START_SERVICE, etc.) are no-ops on macOS
-- User management macros (CREATE_USER, REMOVE_USER) are no-ops on macOS
-- Fakeroot wrapping is automatically skipped on macOS
-- All other macros work normally on macOS
+- Respects `HOMEBREW_PREFIX` if set; otherwise defaults to `/usr/local`
+- Systemd service macros and user management macros are no-ops
+- Fakeroot is skipped (not available on macOS)
 
 **Example macOS Entry:**
 ```ini
@@ -178,20 +190,17 @@ cmd_end
 ### Strict Mode (Default)
 - Uses structured helper macros for file operations
 - Validates commands for dangerous patterns
-- Safer permissions and protected paths
-- **Uses `fakeroot` during build** if available for file operations
-- **Defers file operations** (`{INSTALL_*}`, `{SYMLINK}`) until after build completes
-- **Auto-generates remove commands** from macros (no manual `remove_begin` needed)
+- Uses `fakeroot` during build if available
+- Defers `{INSTALL_*}` and `{SYMLINK}` until after the build completes
+- Auto-generates remove commands from macros — no manual `remove_begin` needed
 - Recommended for most packages
 
 ### Free Mode
-- Allows manual scripts and full control
-- No command validation
-- **Does not use fakeroot** - allows direct access
+- Allows manual scripts and full control; no command validation
+- Does not use fakeroot — direct access only
 - File operations execute immediately
-- **Requires manual `remove_begin`/`remove_end`** blocks
-- For complex packages requiring custom behavior
-- **Downloads without `sha256sums` are allowed** in free mode (strict mode refuses them); the install prompt warns that the package runs at reduced safety
+- Requires manual `remove_begin`/`remove_end` blocks
+- Downloads without `sha256sums` are allowed; install prompt warns of reduced safety
 
 ---
 
@@ -243,9 +252,7 @@ Execute after the build phase completes, using `sudo` for real system access (sk
 
 **Notes:**
 - Service/user macros are no-ops on Termux (no systemd/useradd).
-- `{CURL_RUN}` is deprecated (replaced by `{BASH_RUN}`).
-- SHA-256 verification runs at entry level via `sha256sums`.
-- All downloads are HTTPS-only with size limits and host whitelisting.
+- `{CURL_RUN}` is deprecated; use `{BASH_RUN}` instead.
 
 
 ## SHA-256 Checksums
@@ -265,11 +272,10 @@ cmd_end
 ```
 
 ### How It Works
-- The `sha256sums` field contains comma-separated 64-character SHA-256 hashes
-- Downloads are verified in order: first hash for first download, second hash for second download, etc.
-- Applies to both `{DOWNLOAD}` and `{BASH_RUN}` macros
-- **Strict mode (default): checksums are required.** Any entry that downloads remote content MUST list exactly one digest per download. A `{DOWNLOAD}` or `{BASH_RUN}` without a matching `sha256sums` entry is rejected before anything is fetched or executed, and a digest mismatch fails the installation.
-- **Free mode: checksums are optional.** If a digest is listed it is still verified, but downloads without a matching `sha256sums` entry are allowed; the install confirmation shows a reduced-safety warning.
+
+The `sha256sums` field holds comma-separated 64-character hashes. Downloads verify in order: first hash for the first download, second for the second, and so on. Applies to both `{DOWNLOAD}` and `{BASH_RUN}`.
+
+Strict mode (default) requires checksums — any `{DOWNLOAD}` or `{BASH_RUN}` without a matching `sha256sums` entry is rejected before anything is fetched. A digest mismatch fails the installation. Free mode allows downloads without checksums but shows a reduced-safety warning on install.
 
 ### Generating Checksums
 ```bash
@@ -287,7 +293,7 @@ Extract the 64-character hashes and add them to your `sha256sums` field in the s
 
 ## Complete Examples
 
-### Example 0: Using BASH_RUN with SHA-256 Verification
+### Example 1: BASH_RUN with SHA-256 Verification
 
 ```ini
 [secure-tool]
@@ -311,7 +317,7 @@ sha256sum install.sh
 # Add the 64-character hex digest to the sha256sums field
 ```
 
-### Example 0.1: Multiple Downloads with SHA-256 Verification
+### Example 2: Multiple Downloads with SHA-256 Verification
 
 ```ini
 [multi-download-tool]
@@ -329,16 +335,14 @@ cmd_begin
 cmd_end
 ```
 
-**Note:** The sha256sums are applied in order - first hash for first download, second hash for second download, etc.
-
-### Example 1: Strict Mode (Recommended)
+### Example 3: Strict Mode (Recommended)
 ```ini
 [myapp]
 desc = My command-line application
 version = 2.0.0
 arch = x86_64, aarch64
 os = linux, debian, ubuntu, arch
-safety = strict  # uses fakeroot during build, no sudo
+safety = strict  # no sudo
 
 cmd_begin
   # Download and extract (run during build with fakeroot)
@@ -367,14 +371,14 @@ cmd_end
 # Remove will: stop/disable service, remove user, delete tracked files
 ```
 
-### Example 2: Free Mode
+### Example 4: Free Mode
 ```ini
 [complex-app]
 desc = Complex application with custom install script
 version = 3.0.0
 arch = x86_64
 os = linux
-safety = free  # no fakeroot, full control
+safety = free  # full control
 
 cmd_begin
   {DOWNLOAD} https://example.com/app.tar.gz
@@ -397,13 +401,11 @@ remove_end
 
 ## Automatic Owned Items Tracking
 
-When using structured macros (`{INSTALL_BIN}`, `{INSTALL_LIB}`, etc.), ALPS automatically tracks installed files and directories in `installed.json`. This enables safe, automatic removal without manual `remove_begin` blocks.
+When using structured macros (`{INSTALL_BIN}`, `{INSTALL_LIB}`, etc.), ALPS writes installed files and directories to `installed.json`, enabling automatic removal without manual `remove_begin` blocks.
 
 ### Benefits
-- **Safety**: No dangerous `rm -rf` commands in state files
-- **Control**: Each item type removed with appropriate commands
-- **Transparency**: Clear visibility into what files/packages own
-- **Error Handling**: Graceful handling if items don't exist
+
+No dangerous `rm -rf` commands in state files. Each item type uses the appropriate removal command. Failures on individual items don't halt the rest of the process.
 
 ### Example installed.json Structure
 ```json
@@ -423,10 +425,11 @@ When using structured macros (`{INSTALL_BIN}`, `{INSTALL_LIB}`, etc.), ALPS auto
 ```
 
 ### Removal Process
-1. **Remove**: Stops services, removes owned items, then runs manual remove lines
-2. **Purge**: Removes owned items, manual remove lines, then config/data cleanup
+
+1. **Remove**: stops services, removes owned items, then runs any manual remove lines
+2. **Purge**: removes owned items and manual lines, then runs config/data cleanup from `purge_begin`
 3. Items are removed in reverse order (children before parents)
-4. Individual failures don't stop the entire removal process
+4. Individual failures don't stop the rest of the process
 
 ---
 
@@ -474,31 +477,6 @@ Safety features:
 - Atomic cache writes prevent partial corruption
 - Host whitelist only — no broad suffix matching
 - Generated scripts shown before they run
-- Branch must be explicit when installing from GitHub/GitLab (no mutable HEAD/main/master fallback)
-
-### Supported Hosts
-
-ALPSMORE file fetching (`alps repo install`) only accepts the following git forge hosts:
-
-| Host | Platform | Install example |
-|-|-|-|
-| `github.com` | GitHub | `alps repo install github.com/user/repo@main` |
-| `codeberg.org` | Codeberg | `alps repo install codeberg.org/user/repo@main` |
-| `gitlab.com` | GitLab | `alps repo install gitlab.com/user/repo@main` |
-| `gitea.com` | Gitea | `alps repo install gitea.com/user/repo@main` |
-| `sr.ht` | SourceHut | `alps repo install sr.ht/~user/repo@main` |
-| `git.savannah.gnu.org` | GNU Savannah | `alps repo install git.savannah.gnu.org/git/emacs.git@main` |
-| `git.kernel.org` | kernel.org | `alps repo install git.kernel.org/pub/scm/...@main` |
-| `git.code.sf.net` | SourceForge | `alps repo install git.code.sf.net/p/foo/bar@main` |
-| `gitlab.freedesktop.org` | Freedesktop | `alps repo install gitlab.freedesktop.org/mesa/mesa@main` |
-| `pagure.io` | Pagure | `alps repo install pagure.io/fedora-infra/clipboard.git@main` |
-| `salsa.debian.org` | Salsa | `alps repo install salsa.debian.org/debian/some-package@main` |
-| `git.savannah.nongnu.org` | GNU Savannah | `alps repo install git.savannah.nongnu.org/cgit/inkscape.git@main` |
-| `gitee.com` | Gitee | `alps repo install gitee.com/user/repo@main` |
-| `gitcode.com` | GitCode | `alps repo install gitcode.com/user/repo@main` |
-| `atomgit.com` | AtomGit | `alps repo install atomgit.com/user/repo@main` |
-
-**Note:** Branch must always be explicit (`@main`, `@master`, `@dev`, etc.). No mutable HEAD/main/master fallback.
 
 ### Macro Downloads (`{DOWNLOAD}` / `{BASH_RUN}`)
 
@@ -538,13 +516,12 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 
 ## Best Practices
 
-1. **Always** define `arch` and `os` — prevents install on unsupported systems
-2. **Use structured macros** (`{INSTALL_BIN}`, etc.) for automatic cleanup
-3. **Set `safety = strict`** for most packages — safer and more predictable
-4. **Make scripts idempotent** — safe to re-run
-5. **Set `version`** — enables upgrade detection
-6. **List dependencies** in `deps` — pre-install validation
-7. **Prefer structured macros** over manual install commands for better tracking
+1. Define `arch` and `os` — prevents install on unsupported systems
+2. Use structured macros (`{INSTALL_BIN}`, etc.) for automatic cleanup
+3. Set `safety = strict` unless you need full control
+4. Make scripts idempotent — safe to re-run
+5. Set `version` to enable upgrade detection
+6. List dependencies in `deps` for pre-install validation
 
 ---
 
@@ -575,7 +552,7 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 ### Requirements
 
 **Common (all platforms):**
-- bash
+- bash/sh
 - tar & unzip
 - GNU coreutils
 
