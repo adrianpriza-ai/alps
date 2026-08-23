@@ -207,10 +207,11 @@ jobs:
             mkdir -p pkg/DEBIAN
 
             cp artifacts/alps-linux-$ARCH/alps-linux-$ARCH pkg/usr/local/bin/alps
+            chmod +x pkg/usr/local/bin/alps
 
-            ./alps completion fish > pkg/usr/share/fish/vendor_completions.d/alps.fish
-            ./alps completion bash > pkg/usr/share/bash-completion/completions/alps
-            ./alps completion zsh > pkg/usr/share/zsh/site-functions/_alps
+            ./pkg/usr/local/bin/alps completion fish > pkg/usr/share/fish/vendor_completions.d/alps.fish
+            ./pkg/usr/local/bin/alps completion bash > pkg/usr/share/bash-completion/completions/alps
+            ./pkg/usr/local/bin/alps completion zsh > pkg/usr/share/zsh/site-functions/_alps
 
             echo "deb [signed-by=/usr/share/keyrings/alps-archive-keyring.gpg] https://adrianpriza-ai.github.io/alps-apt stable main" \
               > pkg/etc/apt/sources.list.d/alps.list
