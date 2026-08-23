@@ -30,7 +30,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -79,7 +79,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -128,7 +128,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -177,7 +177,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -373,11 +373,18 @@ jobs:
 
           # Security: Generate signed InRelease file (requires GPG key setup)
           if [ -n "${{ secrets.APT_GPG_PRIVATE_KEY }}" ]; then
-            echo "${{ secrets.APT_GPG_PRIVATE_KEY }}" | gpg --import --batch --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}"
-            gpg --batch --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --detach-sign --armor --output dists/stable/Release.gpg dists/stable/Release
-            gpg --batch --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --clearsign --output dists/stable/InRelease dists/stable/Release
+            export GPG_TTY=$(tty || echo /dev/null)
+            mkdir -p ~/.gnupg
+            chmod 700 ~/.gnupg
+            echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+            echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
+            gpgconf --kill gpg-agent
+
+            echo "${{ secrets.APT_GPG_PRIVATE_KEY }}" | gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --import
+            gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --detach-sign --armor --output dists/stable/Release.gpg dists/stable/Release
+            gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --clearsign --output dists/stable/InRelease dists/stable/Release
             # Export public key for distribution
-            gpg --batch --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --armor --export --output alps-archive-keyring.gpg
+            gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --armor --export --output alps-archive-keyring.gpg
           else
             echo "Warning: APT_GPG_PRIVATE_KEY not set, skipping repository signing"
             echo "Repository will be unsigned - this is not recommended for production"
