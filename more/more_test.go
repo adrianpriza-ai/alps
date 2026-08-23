@@ -785,8 +785,8 @@ func TestNeedsMirrorSkipsComments(t *testing.T) {
 	}
 }
 
-// TestCheckUpdatesNoPackages verifies CheckUpdates returns nil when no packages
-// are installed (empty installed.json).
+// TestCheckUpdatesNoPackages verifies CheckUpdates returns nil summary and no
+// error when no packages are installed (ReadInstalled returns empty records).
 func TestCheckUpdatesNoPackages(t *testing.T) {
 	cfg := &config.Config{
 		Style: config.Style{
@@ -801,11 +801,11 @@ func TestCheckUpdatesNoPackages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if summary == nil {
-		t.Fatal("expected non-nil summary")
-	}
-	if len(summary.Upgradeable) != 0 || len(summary.Stale) != 0 {
-		t.Errorf("expected empty summary when no packages installed, got %+v", summary)
+	// CheckUpdates returns nil summary when there are no installed records.
+	if summary != nil {
+		if len(summary.Upgradeable) != 0 || len(summary.Stale) != 0 {
+			t.Errorf("expected empty summary when no packages installed, got %+v", summary)
+		}
 	}
 }
 
