@@ -196,6 +196,16 @@ jobs:
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
 
+          # Completions are shell scripts — identical for every arch.
+          # Generate them once from the native amd64 binary to avoid
+          # "Exec format error" when trying to run arm64/armv7 binaries
+          # on the amd64 runner.
+          chmod +x artifacts/alps-linux-amd64/alps-linux-amd64
+          mkdir -p /tmp/alps-completions
+          artifacts/alps-linux-amd64/alps-linux-amd64 completion fish > /tmp/alps-completions/alps.fish
+          artifacts/alps-linux-amd64/alps-linux-amd64 completion bash > /tmp/alps-completions/alps
+          artifacts/alps-linux-amd64/alps-linux-amd64 completion zsh > /tmp/alps-completions/_alps
+
           for ARCH in amd64 arm64 armv7; do
             rm -rf pkg
 
@@ -209,9 +219,9 @@ jobs:
             cp artifacts/alps-linux-$ARCH/alps-linux-$ARCH pkg/usr/local/bin/alps
             chmod +x pkg/usr/local/bin/alps
 
-            ./pkg/usr/local/bin/alps completion fish > pkg/usr/share/fish/vendor_completions.d/alps.fish
-            ./pkg/usr/local/bin/alps completion bash > pkg/usr/share/bash-completion/completions/alps
-            ./pkg/usr/local/bin/alps completion zsh > pkg/usr/share/zsh/site-functions/_alps
+            cp /tmp/alps-completions/alps.fish pkg/usr/share/fish/vendor_completions.d/alps.fish
+            cp /tmp/alps-completions/alps pkg/usr/share/bash-completion/completions/alps
+            cp /tmp/alps-completions/_alps pkg/usr/share/zsh/site-functions/_alps
 
             echo "deb [signed-by=/usr/share/keyrings/alps-archive-keyring.gpg] https://adrianpriza-ai.github.io/alps-apt stable main" \
               > pkg/etc/apt/sources.list.d/alps.list
