@@ -423,10 +423,6 @@ func (b *Backend) fetchRepoEntry(pkgName string) (*more.Entry, *more.RemoteRef, 
 func (b *Backend) printRepoInstallPreview(entry *more.Entry, source string) {
 	ui.Msgf(b.cfg, ui.LevelInfo, "Install %s%s%s from %s?",
 		b.cfg.Style.ColorBold, entry.Name, b.cfg.Style.ColorReset+b.cfg.Style.ColorInfo, source)
-	// Warn about free-mode packages (and flag a strict→free change) at the
-	// confirmation prompt so installs and upgrades never happen silently.
-	rec, _ := more.GetInstalled(entry.Name)
-	more.WarnReducedSafety(entry, rec, b.cfg)
 	if entry.Desc != "" {
 		fmt.Printf("  %s%s%s\n", b.cfg.Style.ColorDim, entry.Desc, b.cfg.Style.ColorReset)
 	}
@@ -444,7 +440,13 @@ func (b *Backend) printRepoInstallPreview(entry *more.Entry, source string) {
 	}
 
 	fmt.Println()
-
 	fmt.Print(b.cfg.Style.ColorReset)
+
+	// Warn about free-mode packages (and flag a strict→free change) directly
+	// above the confirmation prompt so it stays visible on TTY screens where
+	// the top of the preview has already scrolled away.
+	rec, _ := more.GetInstalled(entry.Name)
+	more.WarnReducedSafety(entry, rec, b.cfg)
+
 	fmt.Println()
 }

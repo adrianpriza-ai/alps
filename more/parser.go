@@ -8,13 +8,49 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
+	"github.com/adrianpriza-ai/alps/config"
 	"github.com/adrianpriza-ai/alps/runner"
 )
 
 // unknownTokenRe matches any leftover {TOKEN} placeholders (all-caps identifier inside braces)
 // that were not replaced during variable expansion. Used to strip them before shell execution.
 var unknownTokenRe = regexp.MustCompile(`\{[A-Z][A-Z0-9_]*\}`)
+
+// stripUnknownTokens removes unknown {ALL_CAPS_TOKEN} patterns from a string,
+// but preserves patterns preceded by $ (e.g., ${HOME}, ${1}) which are shell expressions.
+func stripUnknownTokens(s string) string {
+	// Find all matches and build a set of positions to skip (those preceded by $)
+	matches := unknownTokenRe.FindAllStringIndex(s, -1)
+	if len(matches) == 0 {
+		return s
+	}
+
+	// Build a set of match indices that should be skipped (preceded by $)
+	skip := make(map[int]bool)
+	for _, loc := range matches {
+		if loc[0] > 0 && s[loc[0]-1] == '$' {
+			skip[loc[0]] = true
+		}
+	}
+
+	// Build result string, skipping matches that are preceded by $
+	var result strings.Builder
+	prevEnd := 0
+	for _, loc := range matches {
+		if skip[loc[0]] {
+			// This match is preceded by $, keep it
+			result.WriteString(s[prevEnd:loc[1]])
+		} else {
+			// Strip this unknown token
+			result.WriteString(s[prevEnd:loc[0]])
+		}
+		prevEnd = loc[1]
+	}
+	result.WriteString(s[prevEnd:])
+	return result.String()
+}
 
 // OperationType represents the type of operation being performed
 type OperationType string
@@ -227,7 +263,7 @@ func categorizeMacro(line string, macro Macro, manifest *ExecutionManifest, op O
 
 // processShellCommand processes a plain shell command
 func processShellCommand(line string, stripEsc bool) string {
-	line = unknownTokenRe.ReplaceAllString(line, "")
+	line = stripUnknownTokens(line)
 	if stripEsc {
 		line = stripSudo(line)
 	}
@@ -238,12 +274,9 @@ func processShellCommand(line string, stripEsc bool) string {
 // It intentionally does NOT strip unknown {TOKEN} patterns so that
 // macro prefixes like {DOWNLOAD} survive to be parsed by ParseMacro.
 func expandPlaceholders(line string, ctx *MacroContext) string {
-	line = strings.ReplaceAll(line, "{ARCH}", ctx.Arch)
-	line = strings.ReplaceAll(line, "{VERSION}", ctx.Version)
-	line = strings.ReplaceAll(line, "{SERVER}", ctx.Server)
-	line = strings.ReplaceAll(line, "{PKGNAME}", ctx.PackageName)
-	line = strings.ReplaceAll(line, "{DISVER}", ctx.DistroVersion)
-	return line
+	// Use replaceVars without stripping unknown tokens so macro prefixes like
+	// {DOWNLOAD} survive to be parsed by ParseMacro.
+	return replaceVars(line, ctx, false)
 }
 
 // writeTempScript writes a temporary script file and returns its path.
@@ -327,6 +360,29 @@ func ReadManifest() (*ExecutionManifest, error) {
 	return manifest, nil
 }
 
+// styleOnce/styleCache memoize the configured output style so execution
+// helpers can use user-configured symbols without threading *config.Config
+// through every call site.
+var (
+	styleOnce  sync.Once
+	styleCache config.Style
+)
+
+// currentStyle returns the user's configured output style (loaded once).
+func currentStyle() config.Style {
+	styleOnce.Do(func() { styleCache = config.Load().Style })
+	return styleCache
+}
+
+// envStepLabel maps an operation to a user-facing label for the after_env
+// phase: installs/upgrades run "post-install" steps, removals run "cleanup".
+func envStepLabel(op OperationType) string {
+	if op == OperationRemove || op == OperationPurge {
+		return "cleanup"
+	}
+	return "post-install"
+}
+
 // Executes execution manifest with proper error handling, wraps build_env and after_env with fakeroot if safety=strict, and avoids automatic cleanup/removal.
 func ExecuteManifest(manifest *ExecutionManifest, e *Entry, op OperationType, ctx *MacroContext) error {
 	afterEnvSudo := !isTermux() && !isMacOS()
@@ -367,7 +423,7 @@ func executeBuildEnv(commands []string, op OperationType, ctx *MacroContext) err
 		return nil
 	}
 
-	fmt.Printf("  executing build_env (%d commands)...\n", len(commands))
+	fmt.Printf("  %s executing build (%d command(s))\n", currentStyle().SymArrow, len(commands))
 	for _, cmd := range commands {
 		expanded, err := expandAndWrapCommand(cmd, op, ctx)
 		if err != nil {
@@ -378,10 +434,9 @@ func executeBuildEnv(commands []string, op OperationType, ctx *MacroContext) err
 		}
 
 		if err := executeCommand(expanded, false); err != nil {
-			return fmt.Errorf("build_env command failed: %w", err)
+			return fmt.Errorf("build command failed: %w", err)
 		}
 	}
-	fmt.Printf("  build_env completed successfully\n")
 	return nil
 }
 
@@ -390,7 +445,7 @@ func executeAfterEnv(commands []string, useSudo bool, ctx *MacroContext, op Oper
 	// Filter out install/creation macros during remove or purge operations.
 	// This is a safety net in case categorizeMacro let them through.
 	if op == OperationRemove || op == OperationPurge {
-		filtered := commands[:0]
+		filtered := make([]string, 0, len(commands))
 		for _, cmd := range commands {
 			macro, _, isMacro := ParseMacro(strings.TrimSpace(cmd))
 			if isMacro && isInstallOnlyMacro(macro.Name) {
@@ -405,11 +460,12 @@ func executeAfterEnv(commands []string, useSudo bool, ctx *MacroContext, op Oper
 		return nil
 	}
 
-	fmt.Printf("  executing after_env (%d commands)...\n", len(commands))
+	label := envStepLabel(op)
+	fmt.Printf("  %s executing %s (%d command(s))\n", currentStyle().SymArrow, label, len(commands))
 	for _, cmd := range commands {
 		expanded, err := ExpandMacros([]string{cmd}, ctx)
 		if err != nil {
-			return fmt.Errorf("failed to expand after_env macro: %w", err)
+			return fmt.Errorf("failed to expand %s macro: %w", label, err)
 		}
 		if len(expanded) > 0 && expanded[0] != "" {
 			cmd = expanded[0]
@@ -418,10 +474,9 @@ func executeAfterEnv(commands []string, useSudo bool, ctx *MacroContext, op Oper
 		}
 
 		if err := executeCommand(cmd, useSudo); err != nil {
-			return fmt.Errorf("after_env command failed: %w", err)
+			return fmt.Errorf("%s command failed: %w", label, err)
 		}
 	}
-	fmt.Printf("  after_env completed successfully\n")
 	return nil
 }
 
@@ -429,7 +484,7 @@ func executeAfterEnv(commands []string, useSudo bool, ctx *MacroContext, op Oper
 func expandAndWrapCommand(cmd string, op OperationType, ctx *MacroContext) (string, error) {
 	expanded, err := ExpandMacros([]string{cmd}, ctx)
 	if err != nil {
-		return "", fmt.Errorf("failed to expand build_env macro: %w", err)
+		return "", fmt.Errorf("failed to expand build macro: %w", err)
 	}
 	if len(expanded) == 0 || expanded[0] == "" {
 		return "", nil // Skip empty commands (macros that execute in Go)

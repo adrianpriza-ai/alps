@@ -13,12 +13,10 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
-
-	"github.com/adrianpriza-ai/alps/config"
 )
 
 func getSymOK() string {
-	return config.Load().Style.SymOK
+	return currentStyle().SymOK
 }
 
 // isTermux checks if running in Termux.
@@ -164,9 +162,6 @@ func NewMacroContext(e *Entry, server string) *MacroContext {
 // isKnownMacro checks if a macro name is recognized by ALPS.
 func isKnownMacro(name string) bool {
 	name = strings.ToUpper(name)
-	if name == "DONWLOAD" {
-		return true
-	}
 	_, ok := macroRegistry[name]
 	return ok
 }
@@ -191,6 +186,7 @@ func ParseMacro(line string) (Macro, string, bool) {
 
 	name := strings.ToUpper(parts[0])
 	if name == "DONWLOAD" {
+		fmt.Fprintf(os.Stderr, "  warning: {DONWLOAD} is deprecated, use {DOWNLOAD} instead\n")
 		name = "DOWNLOAD"
 	}
 
@@ -233,6 +229,27 @@ func ExpandMacros(lines []string, ctx *MacroContext) ([]string, error) {
 	return expanded, nil
 }
 
+// replaceVars replaces all known variable placeholders in a string using a MacroContext.
+// When stripUnknown is true, remaining {ALL_CAPS_TOKEN} patterns are stripped (but
+// literal braces in shell expressions like ${1} or ${HOME} are preserved).
+func replaceVars(s string, ctx *MacroContext, stripUnknown bool) string {
+	s = strings.ReplaceAll(s, "{ARCH}", ctx.Arch)
+	s = strings.ReplaceAll(s, "{OS}", ctx.OS)
+	s = strings.ReplaceAll(s, "{DISTRO}", ctx.Distro)
+	s = strings.ReplaceAll(s, "{VERSION}", ctx.Version)
+	s = strings.ReplaceAll(s, "{PKG_DIR}", ctx.BuildDir)
+	s = strings.ReplaceAll(s, "{SERVER}", ctx.Server)
+	s = strings.ReplaceAll(s, "{PKGNAME}", ctx.PackageName)
+	s = strings.ReplaceAll(s, "{DISVER}", ctx.DistroVersion)
+	if stripUnknown {
+		// Strip any remaining unknown {TOKEN} placeholders so they never reach the shell.
+		// Use stripUnknownTokens to only strip {ALL_CAPS_TOKEN} patterns, preserving
+		// literal braces in shell expressions like ${1} or ${HOME}.
+		s = stripUnknownTokens(s)
+	}
+	return s
+}
+
 // expandLine expands macros in a single line
 func expandLine(line string, ctx *MacroContext) (string, error) {
 	line = strings.TrimSpace(line)
@@ -241,24 +258,13 @@ func expandLine(line string, ctx *MacroContext) (string, error) {
 	}
 
 	// Replace plain variable tokens in a line that has no structured macro prefix.
-	replaceVars := func(s string) string {
-		s = strings.ReplaceAll(s, "{ARCH}", ctx.Arch)
-		s = strings.ReplaceAll(s, "{OS}", ctx.OS)
-		s = strings.ReplaceAll(s, "{DISTRO}", ctx.Distro)
-		s = strings.ReplaceAll(s, "{VERSION}", ctx.Version)
-		s = strings.ReplaceAll(s, "{PKG_DIR}", ctx.BuildDir)
-		s = strings.ReplaceAll(s, "{SERVER}", ctx.Server)
-		s = strings.ReplaceAll(s, "{PKGNAME}", ctx.PackageName)
-		s = strings.ReplaceAll(s, "{DISVER}", ctx.DistroVersion)
-		// Strip any remaining unknown {TOKEN} placeholders so they never reach the shell.
-		s = strings.ReplaceAll(s, "{", "")
-		s = strings.ReplaceAll(s, "}", "")
-		return s
+	replaceLocal := func(s string) string {
+		return replaceVars(s, ctx, true)
 	}
 
 	macro, remaining, isMacro := ParseMacro(line)
 	if !isMacro {
-		return replaceVars(line), nil
+		return replaceLocal(line), nil
 	}
 
 	// Expand variable tokens inside macro arguments.
@@ -275,18 +281,7 @@ func expandLine(line string, ctx *MacroContext) (string, error) {
 // expandMacroArgs replaces variable tokens inside macro argument strings in-place.
 func expandMacroArgs(macro *Macro, ctx *MacroContext) {
 	for i, arg := range macro.Args {
-		arg = strings.ReplaceAll(arg, "{ARCH}", ctx.Arch)
-		arg = strings.ReplaceAll(arg, "{OS}", ctx.OS)
-		arg = strings.ReplaceAll(arg, "{DISTRO}", ctx.Distro)
-		arg = strings.ReplaceAll(arg, "{VERSION}", ctx.Version)
-		arg = strings.ReplaceAll(arg, "{PKG_DIR}", ctx.BuildDir)
-		arg = strings.ReplaceAll(arg, "{SERVER}", ctx.Server)
-		arg = strings.ReplaceAll(arg, "{PKGNAME}", ctx.PackageName)
-		arg = strings.ReplaceAll(arg, "{DISVER}", ctx.DistroVersion)
-		// Strip any remaining unknown {TOKEN} placeholders.
-		arg = strings.ReplaceAll(arg, "{", "")
-		arg = strings.ReplaceAll(arg, "}", "")
-		macro.Args[i] = arg
+		macro.Args[i] = replaceVars(arg, ctx, true)
 	}
 }
 
@@ -942,15 +937,12 @@ func isValidSha256(s string) bool {
 	return true
 }
 
-// downloadSimple performs a download without progress tracking
+// downloadSimple performs a download without progress tracking.
+// Security: writes to a temporary file, verifies SHA256, then atomically
+// renames to the final path so a crash or hash mismatch never leaves a
+// partial or unverified file at the destination.
 func downloadSimple(body io.Reader, file string, ctx *MacroContext) (string, error) {
-	out, err := os.Create(file)
-	if err != nil {
-		return "", fmt.Errorf("failed to create file %s: %w", file, err)
-	}
-	defer out.Close()
-
-	// Read all bytes to compute SHA256
+	// Read all bytes to compute SHA256 before writing anything to disk
 	bodyBytes, err := io.ReadAll(body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read download: %w", err)
@@ -968,22 +960,33 @@ func downloadSimple(body io.Reader, file string, ctx *MacroContext) (string, err
 
 	// Free mode may opt out of digest verification (expectedHash == "").
 	if expectedHash != "" && computedHash != expectedHash {
-		_ = os.Remove(file)
 		return "", fmt.Errorf("SHA256 mismatch for %s: expected %s, got %s", file, expectedHash, computedHash)
 	}
 
-	// Write the file
-	if _, err := out.Write(bodyBytes); err != nil {
-		return "", fmt.Errorf("failed to write file %s: %w", file, err)
+	// Write to a temp file in the same directory (ensures rename is atomic)
+	tmpPath := file + ".tmp"
+	if err := os.WriteFile(tmpPath, bodyBytes, 0644); err != nil {
+		return "", fmt.Errorf("failed to write file %s: %w", tmpPath, err)
+	}
+
+	// Atomically move the verified file to its final destination
+	if err := os.Rename(tmpPath, file); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("failed to move file to %s: %w", file, err)
 	}
 	return "", nil
 }
 
-// downloadWithProgress performs a download with progress tracking
+// downloadWithProgress performs a download with progress tracking.
+// Security: streams to a temporary file, verifies SHA256, then atomically
+// renames to the final path so a crash or hash mismatch never leaves a
+// partial or unverified file at the destination.
 func downloadWithProgress(body io.Reader, file string, contentLength int64, ctx *MacroContext) (string, error) {
-	out, err := os.Create(file)
+	// Write to a temp file in the same directory (ensures rename is atomic)
+	tmpPath := file + ".tmp"
+	out, err := os.Create(tmpPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to create file %s: %w", file, err)
+		return "", fmt.Errorf("failed to create file %s: %w", tmpPath, err)
 	}
 	defer out.Close()
 
@@ -1003,7 +1006,8 @@ func downloadWithProgress(body io.Reader, file string, contentLength int64, ctx 
 	}
 
 	if _, err := io.Copy(out, reader); err != nil {
-		return "", fmt.Errorf("failed to write file %s: %w", file, err)
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("failed to write file %s: %w", tmpPath, err)
 	}
 
 	fmt.Println()
@@ -1014,16 +1018,21 @@ func downloadWithProgress(body io.Reader, file string, contentLength int64, ctx 
 	// The manifest must declare a digest for every download.
 	expectedHash, err := requireNextSha256(ctx, displayName)
 	if err != nil {
-		_ = os.Remove(file)
+		_ = os.Remove(tmpPath)
 		return "", err
 	}
 
 	// Free mode may opt out of digest verification (expectedHash == "").
 	if expectedHash != "" && computedHash != expectedHash {
-		_ = os.Remove(file)
+		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("SHA256 mismatch for %s: expected %s, got %s", file, expectedHash, computedHash)
 	}
 
+	// Atomically move the verified file to its final destination
+	if err := os.Rename(tmpPath, file); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("failed to move file to %s: %w", file, err)
+	}
 	return "", nil
 }
 
@@ -1384,38 +1393,6 @@ func executeSH(macro Macro, ctx *MacroContext) (string, error) {
 	return wrapWithFakeroot(cmd, ctx), nil
 }
 
-// GenerateUninstallCommands generates uninstall commands based on tracked installed paths
-func GenerateUninstallCommands(ctx *MacroContext) []string {
-	var commands []string
-
-	// Process in reverse order for proper cleanup (children before parents)
-	for i := len(ctx.InstalledPaths) - 1; i >= 0; i-- {
-		path := ctx.InstalledPaths[i]
-		if !path.Generated {
-			continue
-		}
-
-		switch path.Type {
-		case "file":
-			commands = append(commands, fmt.Sprintf("rm -f %s", path.Path))
-		case "dir":
-			commands = append(commands, fmt.Sprintf("rmdir %s 2>/dev/null || true", path.Path))
-		case "symlink":
-			commands = append(commands, fmt.Sprintf("rm -f %s", path.Path))
-		case "service":
-			// On Termux and macOS, systemd is not available, so skip service commands
-			if !isTermux() && !isMacOS() {
-				commands = append(commands, fmt.Sprintf("systemctl disable %s 2>/dev/null || true", path.Path))
-				commands = append(commands, fmt.Sprintf("systemctl stop %s 2>/dev/null || true", path.Path))
-			}
-		case "user":
-			commands = append(commands, fmt.Sprintf("userdel %s 2>/dev/null || true", path.Path))
-		}
-	}
-
-	return commands
-}
-
 // GenerateOwnedItems converts tracked installed paths to OwnedItems for state storage
 func GenerateOwnedItems(ctx *MacroContext) []OwnedItem {
 	var items []OwnedItem
@@ -1431,9 +1408,4 @@ func GenerateOwnedItems(ctx *MacroContext) []OwnedItem {
 	}
 
 	return items
-}
-
-// ExecuteDeferredOps is no longer needed - macros now return shell commands directly
-func ExecuteDeferredOps(ctx *MacroContext) error {
-	return nil
 }

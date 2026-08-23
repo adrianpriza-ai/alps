@@ -80,9 +80,9 @@ func PrintHeader(cfg *config.Config) {
 		version = version[:6]
 	}
 
-	fmt.Print("\n\033[97m                   /^\\\n")
-	fmt.Print("\033[97m   ALPS\033[37m        /^\\/   \\/\\\n")
-	fmt.Printf("\033[37m     %-6s%3s\033[1;32m/___\\____\\_\\\033[0m\n\n", version, "")
+	fmt.Print("\n                   /^\\\n")
+	fmt.Print("   ALPS        /^\\/   \\/\\\n")
+	fmt.Printf("     %-6s   \033[1;32m/___\\____\\_\\\033[0m\n\n", version)
 }
 
 // printSectionTitle prints a bold, compact section heading (no rule line,
@@ -148,7 +148,7 @@ func PrintHelp(cfg *config.Config) {
 	fmt.Println()
 
 	printSectionTitle(cfg, "Flags")
-	printRows(cfg, 20, [][2]string{
+	printRows(cfg, 16, [][2]string{
 		{"-n, --dry-run", "simulate, no changes written"},
 		{"-y, --noconfirm", "skip confirmation prompts (main backends)"},
 		{"-v, --verbose", "enable verbose output"},
@@ -158,7 +158,7 @@ func PrintHelp(cfg *config.Config) {
 	fmt.Println()
 
 	printSectionTitle(cfg, "Repo")
-	printRows(cfg, 22, [][2]string{
+	printRows(cfg, 23, [][2]string{
 		{"repo update", "refresh alps-more cache"},
 		{"repo list", "list available packages"},
 		{"repo list install", "list installed packages"},
@@ -176,7 +176,7 @@ func PrintHelp(cfg *config.Config) {
 	distro := detectDistroID()
 	if isArchBased(distro) {
 		printSectionTitle(cfg, "AUR")
-		printRows(cfg, 21, [][2]string{
+		printRows(cfg, 22, [][2]string{
 			{"aur install <pkg>", "install directly from AUR"},
 			{"aur search <query>", "search AUR only"},
 			{"aur list", "list installed AUR packages"},

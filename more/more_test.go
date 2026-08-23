@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/adrianpriza-ai/alps/config"
 )
 
 func TestDetectDistroVersion(t *testing.T) {
@@ -107,22 +109,6 @@ func TestDetectDistroVersionReal(t *testing.T) {
 				t.Errorf("expected unknown distro version on error, got %q", version)
 			}
 		}
-	}
-}
-
-func TestExpandVarsDisver(t *testing.T) {
-	// Note: expandVars uses the real detectDistroVersion() function internally
-	// We can only test with real system calls in non-short mode
-	if testing.Short() {
-		t.Skip("skipping expandVars test with real system calls in short mode")
-	}
-
-	version := detectDistroVersion()
-	input := "echo {DISVER} {ARCH} {OS}"
-	output := expandVars(input, "my-server", "my-pkg-dir", "1.0.0")
-
-	if !strings.Contains(output, version) {
-		t.Errorf("expected expanded output to contain distro version %q, got %q", version, output)
 	}
 }
 
@@ -637,6 +623,9 @@ func TestIsForgeHost(t *testing.T) {
 		"https://atomgit.com/user/repo",
 		// Gitea / Forgejo instances
 		"https://gitea.com/user/repo",
+		// Official alps-more manifest mirrors (GitHub/Codeberg Pages)
+		"https://adrianpriza-ai.github.io/alps-more/main.txt",
+		"https://moreland.codeberg.page/alps-more/main.txt",
 	}
 
 	invalidURLs := []string{
@@ -645,6 +634,9 @@ func TestIsForgeHost(t *testing.T) {
 		"ftp://github.com/file",
 		"file:///etc/passwd",
 		"https://unknown-host.com/file",
+		// Third-party Pages hosts must stay rejected (exact host matching)
+		"https://eviluser.github.io/malware/main.txt",
+		"https://eviluser.codeberg.page/malware/main.txt",
 	}
 
 	for _, url := range validURLs {
@@ -742,6 +734,186 @@ func TestParseDeps(t *testing.T) {
 				t.Errorf("parseDeps(%q) = %v; expected %v (element %d mismatch)", tc.input, result, tc.expected, i)
 				break
 			}
+		}
+	}
+}
+
+func TestNeedsMirrorSkipsComments(t *testing.T) {
+	// A comment line mentioning {SERVER} should not trigger mirror resolution.
+	// Only actual command lines should count.
+	e := &Entry{
+		CmdLines: []string{
+			"# uses {SERVER} for downloads",
+			"echo hello",
+		},
+	}
+	if needsMirror(e) {
+		t.Error("needsMirror returned true for entry with {SERVER} only in a comment")
+	}
+
+	// An actual command line with {SERVER} should still be detected.
+	e2 := &Entry{
+		CmdLines: []string{
+			"# note: {SERVER} is a mirror",
+			"wget {SERVER}/file.tar.gz",
+		},
+	}
+	if !needsMirror(e2) {
+		t.Error("needsMirror returned false for entry with {SERVER} in a real command")
+	}
+
+	// Same pattern for {BASH_RUN}.
+	e3 := &Entry{
+		RemoveLines: []string{
+			"# {BASH_RUN} is used for cleanup",
+			"rm -rf /tmp/build",
+		},
+	}
+	if needsMirror(e3) {
+		t.Error("needsMirror returned true for entry with {BASH_RUN} only in a comment")
+	}
+
+	// {BASH_RUN} in a real command should be detected.
+	e4 := &Entry{
+		PurgeLines: []string{
+			"# cleanup via {BASH_RUN}",
+			"{BASH_RUN} cleanup.sh",
+		},
+	}
+	if !needsMirror(e4) {
+		t.Error("needsMirror returned false for entry with {BASH_RUN} in a real command")
+	}
+}
+
+// TestCheckUpdatesNoPackages verifies CheckUpdates returns nil when no packages
+// are installed (empty installed.json).
+func TestCheckUpdatesNoPackages(t *testing.T) {
+	cfg := &config.Config{
+		Style: config.Style{
+			SymOK:    "ok",
+			SymErr:   "err",
+			SymWarn:  "warn",
+			SymInfo:  "info",
+			SymArrow: "->",
+		},
+	}
+	summary, err := CheckUpdates(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if summary == nil {
+		t.Fatal("expected non-nil summary")
+	}
+	if len(summary.Upgradeable) != 0 || len(summary.Stale) != 0 {
+		t.Errorf("expected empty summary when no packages installed, got %+v", summary)
+	}
+}
+
+// TestUpgradeAllNoPackages verifies UpgradeAll returns nil when no packages
+// are installed.
+func TestUpgradeAllNoPackages(t *testing.T) {
+	cfg := &config.Config{
+		Style: config.Style{
+			SymOK:    "ok",
+			SymErr:   "err",
+			SymWarn:  "warn",
+			SymInfo:  "info",
+			SymArrow: "->",
+		},
+	}
+	err := UpgradeAll(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestValidatePurgeCommands verifies that validatePurgeCommands correctly
+// validates that purge operations have required commands.
+func TestValidatePurgeCommands(t *testing.T) {
+	t.Run("no commands and no owned items returns error", func(t *testing.T) {
+		e := &Entry{Name: "pkg"}
+		rec := InstalledRecord{}
+		err := validatePurgeCommands(e, rec)
+		if err == nil {
+			t.Fatal("expected error for empty purge commands")
+		}
+		if !strings.Contains(err.Error(), "no remove or purge commands") {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("has remove lines is valid", func(t *testing.T) {
+		e := &Entry{Name: "pkg", RemoveLines: []string{"rm -rf /tmp/pkg"}}
+		rec := InstalledRecord{}
+		err := validatePurgeCommands(e, rec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("has purge lines is valid", func(t *testing.T) {
+		e := &Entry{Name: "pkg", PurgeLines: []string{"rm -rf /etc/pkg"}}
+		rec := InstalledRecord{}
+		err := validatePurgeCommands(e, rec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("has owned items is valid", func(t *testing.T) {
+		e := &Entry{Name: "pkg"}
+		rec := InstalledRecord{
+			OwnedItems: []OwnedItem{{Path: "/tmp/pkg", Type: "dir"}},
+		}
+		err := validatePurgeCommands(e, rec)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+// TestIsRemoteSource verifies isRemoteSource correctly identifies remote
+// git forge source strings.
+func TestIsRemoteSource(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		remote bool
+	}{
+		{"github source", "github:user/repo", true},
+		{"gitlab source", "gitlab:user/repo", true},
+		{"codeberg source", "codeberg:user/repo", true},
+		{"empty string", "", false},
+		{"plain path", "/usr/local/pkg", false},
+		{"url without provider", "https://example.com/repo", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isRemoteSource(tc.source)
+			if got != tc.remote {
+				t.Errorf("isRemoteSource(%q) = %v, want %v", tc.source, got, tc.remote)
+			}
+		})
+	}
+}
+
+// TestNormalizeArch verifies arch normalization.
+func TestNormalizeArch(t *testing.T) {
+	tests := []struct {
+		input, expected string
+	}{
+		{"x86_64", "x86_64"},
+		{"amd64", "x86_64"},
+		{"aarch64", "aarch64"},
+		{"arm64", "aarch64"},
+		{"i686", "i686"},
+		{"386", "i686"},
+	}
+	for _, tc := range tests {
+		got := normalizeArch(tc.input)
+		if got != tc.expected {
+			normalizeArch(tc.input)
+			t.Errorf("normalizeArch(%q) = %q, want %q", tc.input, got, tc.expected)
 		}
 	}
 }

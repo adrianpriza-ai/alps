@@ -23,8 +23,8 @@ const (
 
 	// Security: Pin to specific release version instead of mutable branches
 	// These should be updated to specific release tags/commits during releases
-	primaryURL  = "https://adrianpriza-ai.github.io/alps-more/v1/main.txt"
-	fallbackURL = "https://moreland.codeberg.page/alps-more/v1/main.txt"
+	primaryURL  = "https://adrianpriza-ai.github.io/alps-more/main.txt"
+	fallbackURL = "https://moreland.codeberg.page/alps-more/main.txt"
 
 	downloadTimeout = 15 * time.Second
 	serverTimeout   = 5 * time.Second
@@ -327,20 +327,6 @@ func CleanCache() error {
 }
 
 // CleanPackageCache removes a specific package's build cache directory.
-// Pattern: ~/.cache/alps/more/<package-name>/
-// Security: the package name is validated to prevent path traversal.
-func CleanPackageCache(pkgName string) error {
-	if err := validatePkgNameComponent(pkgName); err != nil {
-		return fmt.Errorf("invalid package name %q: %w", pkgName, err)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("cannot determine home directory: %w", err)
-	}
-	dir := filepath.Join(home, ".cache", "alps", "more", pkgName)
-	return os.RemoveAll(dir)
-}
-
 // CacheDir returns the path of the build cache directory.
 func CacheDir() string {
 	return getBuildCacheRoot()
@@ -356,23 +342,6 @@ func ReadCache() ([]byte, error) {
 		return nil, fmt.Errorf("cache is corrupt or empty, run: alps repo update")
 	}
 	return data, nil
-}
-
-// downloadWithRetry downloads with retries.
-func downloadWithRetry(url string) ([]byte, error) {
-	var lastErr error
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		data, err := downloadOnce(url)
-		if err == nil {
-			return data, nil
-		}
-		lastErr = err
-		if attempt < maxRetries {
-			fmt.Printf("  attempt %d/%d failed: %v — retrying...\n", attempt, maxRetries, err)
-			time.Sleep(retryDelay * time.Duration(attempt))
-		}
-	}
-	return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
 }
 
 // isForgeHost checks whether a URL belongs to a supported git forge.
@@ -409,9 +378,15 @@ func isForgeHost(rawURL string) bool {
 		"atomgit.com", // AtomGit — open-source by China
 		// Gitea / Forgejo instances
 		"gitea.com", // Gitea official SaaS
+		// Official alps-more manifest mirrors (GitHub/Codeberg Pages).
+		// Exact-host entries only — other *.github.io / *.codeberg.page
+		// sites remain rejected.
+		"adrianpriza-ai.github.io",
+		"moreland.codeberg.page",
 	}
-	// Exact host matching — Pages hosts (github.io, codeberg.page, etc.)
-	// are excluded because they serve static content, not raw git files.
+	// Exact host matching — third-party Pages hosts (other github.io,
+	// codeberg.page, etc.) are excluded because they serve static content,
+	// not raw git files.
 	for _, h := range allowedHosts {
 		if host == h {
 			return true
@@ -485,11 +460,6 @@ func hasValidEntries(data []byte) bool {
 	return false
 }
 
-// CachePath returns the cache file path.
-func CachePath() string {
-	return filepath.Clean(getCacheFile())
-}
-
 func remoteRawURL(ref RemoteRef, branch string) string {
 	switch ref.Provider {
 	case "github":
@@ -553,14 +523,6 @@ func fetchRemoteRef(ref RemoteRef) (*Entry, RemoteRef, error) {
 // repoPath must be in the form "user/repo".
 func FetchALPSMORE(repoPath string) (*Entry, error) {
 	ref := RemoteRef{Provider: "github", Host: "github.com", RepoPath: repoPath}
-	e, _, err := fetchRemoteRef(ref)
-	return e, err
-}
-
-// FetchALPSMOREGitLab fetches and parses an ALPSMORE file from gitlab.com.
-// repoPath must be in the form "user/repo".
-func FetchALPSMOREGitLab(repoPath string) (*Entry, error) {
-	ref := RemoteRef{Provider: "gitlab", Host: "gitlab.com", RepoPath: repoPath}
 	e, _, err := fetchRemoteRef(ref)
 	return e, err
 }

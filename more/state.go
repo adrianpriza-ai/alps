@@ -57,19 +57,6 @@ func ReadInstalled() (map[string]InstalledRecord, error) {
 	return records, nil
 }
 
-// MarkInstalled updates the installed record (version + timestamp only).
-func MarkInstalled(name, version string) error {
-	return MarkInstalledRecord(name, InstalledRecord{
-		Version:     version,
-		InstalledAt: time.Now().Format(time.RFC3339),
-	})
-}
-
-// MarkInstalledEntry updates the installed record with full entry metadata.
-func MarkInstalledEntry(e *Entry) error {
-	return MarkInstalledEntryWithOwnedItems(e, nil)
-}
-
 // MarkInstalledEntryWithOwnedItems updates the installed record with owned items.
 func MarkInstalledEntryWithOwnedItems(e *Entry, ownedItems []OwnedItem) error {
 	return MarkInstalledRecord(e.Name, InstalledRecord{

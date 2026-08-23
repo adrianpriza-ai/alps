@@ -232,12 +232,17 @@ sudo pacman -S --needed git base-devel
 |---|---|
 | RPC search/info | `Search`, `SearchNarrow`, `Info`, `InfoBatch`, `Exists` — all with retry, backoff, jitter |
 | Install pipeline | Dependency resolution → build plan → `makepkg -si` or delegate to yay/paru |
-| PKGBUILD review | Summary of important fields, optional editor/terminal view before building |
+| VCS update detection | Probes upstream repos (`git ls-remote`, `svn info`, `hg identify`) for `-git`/`-svn`/`-hg` packages instead of comparing frozen RPC versions |
+| Security | GPG signature verification on all installs, env var sanitization for `makepkg`, privilege dropping when run as root, AUR remote URL verification |
+| PKGBUILD review | Interactive diff on upgrades, summary of important fields, optional editor/terminal view before building |
 | Local builds | `BuildLocal` from a user-supplied PKGBUILD directory |
 | ABS fetching | `FetchABS` via `asp` or Arch GitLab fallback |
-| Cache management | Build cache at `~/.cache/alps/aur/`, reuse by name+version match |
+| Cache management | Build cache at `~/.cache/alps/aur/`, reuse by name+version match with `pacman -Qkp` integrity check |
+| Conflict detection | Pre-build conflict check against installed packages |
+| Split packages | Handles `pkgbase` split packages (matches by name, provides, or `PackageBase`) |
 | Pacman helpers | `pkgInstalled`, `inPacmanRepo`, `unsatisfiedDeps`, `GetInstalledAUR`, `ReadPacmanConf` |
-| Validation | Package name regex (`^[a-zA-Z0-9@._+\-]+$`), path traversal check in cache dirs |
+| Orphan detection | Cross-references `pacman -Qtdq` with `-Qm` to find AUR orphans |
+| Validation | Package name regex, path traversal check in cache dirs |
 | Safety checks | `editorIsSafe` rejects shell metacharacters, PKGBUILD review prompt, `--noconfirm` never passed to helper |
 
 Also handles provider selection (unknown dep presents up to 5 candidates), uses `pacman -T` for virtual packages and provides handling, and offers makedep cleanup once at the end.
@@ -245,7 +250,10 @@ Also handles provider selection (unknown dep presents up to 5 candidates), uses 
 ```bash
 alps aur install <pkg>          # install with full dep resolution
 alps aur search <query>         # multi-word narrowing search
+alps aur info <pkg>             # show package info from AUR RPC
+alps aur clone <pkg>            # clone AUR repo to cache
 alps aur list                   # list installed AUR packages
+alps aur orphans                # list AUR packages with no dependents
 alps aur remove <pkg>           # remove via pacman -R
 alps aur clean                  # remove build cache (~/.cache/alps/aur/)
 alps aur build-local [dir]      # build from a local PKGBUILD directory
