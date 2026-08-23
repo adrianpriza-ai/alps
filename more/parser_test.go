@@ -67,7 +67,7 @@ func TestWriteManifestReadManifestEmptySections(t *testing.T) {
 	t.Setenv("TMPDIR", tmpDir)
 
 	cases := []struct {
-		name     string
+		name   string
 		manifest *ExecutionManifest
 	}{
 		{

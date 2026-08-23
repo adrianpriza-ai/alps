@@ -585,6 +585,7 @@ func removePathWithSudo(path string, useSudo bool) error {
 	return r.Run(context.Background(), cmd)
 }
 
+
 func removeDir(path string) error {
 	cmd := exec.Command("rmdir", path)
 	cmd.Stdout = nil

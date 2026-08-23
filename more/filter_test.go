@@ -237,7 +237,7 @@ func TestExecuteInstallBinDestEndsWithSlash(t *testing.T) {
 }
 
 func TestExecuteInstallBinSourceOnly(t *testing.T) {
-	// With only source, dest defaults to /usr/bin/<basename>
+	// With only source, dest defaults to the platform bin directory + basename.
 	m := Macro{Name: "INSTALL_BIN", Args: []string{"mytool"}}
 	ctx := testCtx()
 	cmd, err := executeInstallBin(m, ctx)
@@ -245,13 +245,13 @@ func TestExecuteInstallBinSourceOnly(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should track a path ending in /usr/bin/mytool
+	// Should track a path ending in <binDir>/mytool
 	if len(ctx.InstalledPaths) != 1 {
 		t.Fatalf("expected 1 installed path, got %d", len(ctx.InstalledPaths))
 	}
 	trackedPath := ctx.InstalledPaths[0].Path
-	if !strings.HasSuffix(trackedPath, "/usr/bin/mytool") {
-		t.Errorf("expected tracked path to end with /usr/bin/mytool, got %q", trackedPath)
+	if !strings.HasSuffix(trackedPath, "/mytool") {
+		t.Errorf("expected tracked path to end with /mytool, got %q", trackedPath)
 	}
 
 	// Command should reference the default bin dir
