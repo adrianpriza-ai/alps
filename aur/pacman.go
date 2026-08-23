@@ -485,20 +485,20 @@ func FindAUROrphans() ([]string, error) {
 		}
 		return nil, fmt.Errorf("pacman -Qtdq failed: %w", err)
 	}
-	
+
 	orphanNames := make(map[string]bool)
 	for _, line := range strings.Split(string(orphansOut), "\n") {
 		if line != "" {
 			orphanNames[line] = true
 		}
 	}
-	
+
 	// Get installed AUR packages
 	aurPackages, err := GetInstalledAUR()
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Find intersection: AUR packages that are also orphans
 	var aurOrphans []string
 	for name := range aurPackages {
@@ -506,7 +506,7 @@ func FindAUROrphans() ([]string, error) {
 			aurOrphans = append(aurOrphans, name)
 		}
 	}
-	
+
 	return aurOrphans, nil
 }
 
