@@ -21,10 +21,10 @@ permissions:
 
 jobs:
   validate:
-    name: Pre-Release Tests
+    name: Pre-Release Validation
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
@@ -35,16 +35,143 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run tests
-        run: go test -v -race ./...
+      - name: Go Vet
+        run: go vet ./...
 
-  release:
-    name: Build & Publish Release
+      - name: Check module tidiness
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod $(git ls-files go.sum) \
+            || (echo "go.mod or go.sum is not tidy. Run 'go mod tidy'" && exit 1)
+
+      - name: Run tests with race detection
+        run: go test -v -race -covermode=atomic ./...
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
     needs: [validate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            output: alps-linux-amd64
+          - goos: linux
+            goarch: arm64
+            output: alps-linux-arm64
+          - goos: linux
+            goarch: arm
+            goarm: "7"
+            output: alps-linux-armv7
+          - goos: darwin
+            goarch: amd64
+            output: alps-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            output: alps-darwin-arm64
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          TAG=${{ inputs.tag || github.ref_name }}
+          go build \
+            -ldflags="-s -w -X main.Version=$TAG" \
+            -o ${{ matrix.output }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: ${{ matrix.output }}
+          retention-days: 1
+
+  build-termux:
+    name: Build Termux ${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    needs: [validate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: arm64
+            cc: aarch64-linux-android24-clang
+            output: alps-termux-aarch64
+          - goarch: arm
+            goarm: "7"
+            cc: armv7a-linux-androideabi24-clang
+            output: alps-termux-arm
+          - goarch: amd64
+            cc: x86_64-linux-android24-clang
+            output: alps-termux-x86_64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cache Android NDK
+        id: cache-ndk
+        uses: actions/cache@v4
+        with:
+          path: android-ndk-r27d
+          key: ndk-r27d-linux-x86_64
+
+      - name: Download Android NDK
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+          unzip -q android-ndk-r27d-linux.zip
+          rm -f android-ndk-r27d-linux.zip
+
+      - name: Build Termux binary
+        env:
+          ANDROID_NDK_HOME: ${{ github.workspace }}/android-ndk-r27d
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          TAG=${{ inputs.tag || github.ref_name }}
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+          GOEXPERIMENT=nodwarf5 CGO_ENABLED=1 GOOS=android GOARCH=${{ matrix.goarch }} \
+            CC="$NDK_BIN/${{ matrix.cc }}" \
+            go build -ldflags="-s -w -X main.Version=$TAG" -o ${{ matrix.output }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: ${{ matrix.output }}
+          retention-days: 1
+
+  package:
+    name: Build Debian Packages
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout repository
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
@@ -60,98 +187,39 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y dpkg-dev apt-utils
 
-      - name: Build binaries
-        run: |
-          TAG=${{ inputs.tag || github.ref_name }}
-           
-          GOOS=linux GOARCH=amd64 \
-            go build \
-            -ldflags="-s -w -X main.Version=$TAG" \
-            -o alps-linux-amd64 .
-             
-          GOOS=linux GOARCH=arm64 \
-            go build \
-            -ldflags="-s -w -X main.Version=$TAG" \
-            -o alps-linux-arm64 .
-             
-          GOOS=linux GOARCH=arm GOARM=7 \
-            go build \
-            -ldflags="-s -w -X main.Version=$TAG" \
-            -o alps-linux-armv7 .
-             
-          GOOS=darwin GOARCH=amd64 \
-            go build \
-            -ldflags="-s -w -X main.Version=$TAG" \
-            -o alps-darwin-amd64 .
-             
-          GOOS=darwin GOARCH=arm64 \
-            go build \
-            -ldflags="-s -w -X main.Version=$TAG" \
-            -o alps-darwin-arm64 .
-
-      - name: Cache Android NDK
-        id: cache-ndk
-        uses: actions/cache@v6
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
         with:
-          path: android-ndk-r27d
-          key: ndk-r27d-linux-x86_64
-
-      - name: Download Android NDK
-        if: steps.cache-ndk.outputs.cache-hit != 'true'
-        run: |
-          wget -q https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
-          unzip -q android-ndk-r27d-linux.zip
-          rm -f android-ndk-r27d-linux.zip
-
-      - name: Set Android NDK Environment
-        run: |
-          echo "ANDROID_NDK_HOME=${{ github.workspace }}/android-ndk-r27d" >> $GITHUB_ENV
-
-      - name: Build Termux binaries
-        run: |
-          TAG=${{ inputs.tag || github.ref_name }}
-          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          
-          GOEXPERIMENT=nodwarf5 CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
-            CC="$NDK_BIN/aarch64-linux-android24-clang" \
-            go build -ldflags="-s -w -X main.Version=$TAG" -o alps-termux-aarch64 .
-          
-          CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 \
-            CC="$NDK_BIN/armv7a-linux-androideabi24-clang" \
-            go build -ldflags="-s -w -X main.Version=$TAG" -o alps-termux-arm .
-          
-          CGO_ENABLED=1 GOOS=android GOARCH=amd64 \
-            CC="$NDK_BIN/x86_64-linux-android24-clang" \
-            go build -ldflags="-s -w -X main.Version=$TAG" -o alps-termux-x86_64 .
+          path: artifacts/
 
       - name: Build .deb packages
         run: |
           TAG=${{ inputs.tag || github.ref_name }}
-          
+
           for ARCH in amd64 arm64 armv7; do
             rm -rf pkg
-            
+
             mkdir -p pkg/usr/local/bin
             mkdir -p pkg/usr/share/fish/vendor_completions.d
             mkdir -p pkg/usr/share/bash-completion/completions
             mkdir -p pkg/usr/share/zsh/site-functions
             mkdir -p pkg/etc/apt/sources.list.d
             mkdir -p pkg/DEBIAN
-            
-            cp alps-linux-$ARCH pkg/usr/local/bin/alps
-            
-            ./alps-linux-amd64 completion fish > pkg/usr/share/fish/vendor_completions.d/alps.fish
-            ./alps-linux-amd64 completion bash > pkg/usr/share/bash-completion/completions/alps
-            ./alps-linux-amd64 completion zsh > pkg/usr/share/zsh/site-functions/_alps
-            
+
+            cp artifacts/alps-linux-$ARCH/alps-linux-$ARCH pkg/usr/local/bin/alps
+
+            ./alps completion fish > pkg/usr/share/fish/vendor_completions.d/alps.fish
+            ./alps completion bash > pkg/usr/share/bash-completion/completions/alps
+            ./alps completion zsh > pkg/usr/share/zsh/site-functions/_alps
+
             echo "deb [signed-by=/usr/share/keyrings/alps-archive-keyring.gpg] https://adrianpriza-ai.github.io/alps-apt stable main" \
               > pkg/etc/apt/sources.list.d/alps.list
-              
+
             DEBARCH=$ARCH
             if [ "$ARCH" = "armv7" ]; then
               DEBARCH="armhf"
             fi
-            
+
             echo "Package: alps" > pkg/DEBIAN/control
             echo "Version: ${TAG#v}" >> pkg/DEBIAN/control
             echo "Section: utils" >> pkg/DEBIAN/control
@@ -159,7 +227,7 @@ jobs:
             echo "Architecture: $DEBARCH" >> pkg/DEBIAN/control
             echo "Maintainer: adrianpriza-ai" >> pkg/DEBIAN/control
             echo "Description: Advanced Linux Package System" >> pkg/DEBIAN/control
-            
+
             echo '#!/bin/sh' > pkg/DEBIAN/postinst
             echo 'set -e' >> pkg/DEBIAN/postinst
             echo '' >> pkg/DEBIAN/postinst
@@ -173,25 +241,73 @@ jobs:
             echo 'apt update || true' >> pkg/DEBIAN/postinst
             echo 'exit 0' >> pkg/DEBIAN/postinst
             chmod 755 pkg/DEBIAN/postinst
-            
+
             dpkg-deb --build pkg alps_${TAG#v}_$DEBARCH.deb
           done
-          
+
           rm -rf pkg
 
-      - name: Generate checksums
+      - name: Upload .deb artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: debs
+          path: "*.deb"
+          retention-days: 1
+
+  release:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: [build, build-termux, package]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Collect binaries
         run: |
-           sha256sum \
-           alps-linux-amd64 \
-           alps-linux-arm64 \
-           alps-linux-armv7 \
-           alps-termux-aarch64 \
-           alps-termux-arm \
-           alps-termux-x86_64 \
-           alps-darwin-amd64 \
-           alps-darwin-arm64 \
-           *.deb \
-           > SHA256SUMS
+          mkdir -p binaries
+          find artifacts/ -maxdepth 2 -type f -not -path "*/debs/*" -exec cp {} binaries/ \;
+          cp artifacts/debs/*.deb binaries/
+
+      - name: Generate checksums
+        working-directory: binaries
+        run: sha256sum * > SHA256SUMS
+
+      - name: Generate release notes
+        run: |
+          TAG=${{ inputs.tag || github.ref_name }}
+          cat > release_notes.md << EOF
+          ## ALPS ${TAG}
+
+          **Advanced Linux Package System** — a single interface for every package manager.
+
+          ### What's Included
+
+          - **Multi-distro**: Auto-detects apt, dnf, pacman, zypper, and apk
+          - **AUR support**: Full dependency resolution, PKGBUILD review, yay/paru fallback
+          - **alps-more**: Cross-distro script repo with version tracking and mirror failover
+          - **Extra managers**: Snap, Flatpak, and Winget integration
+          - **Security**: HTTPS-only downloads, SHA-256 verification, GPG signature checks
+          - **Platforms**: Linux (amd64/arm64/armv7), macOS (amd64/arm64), Termux (aarch64/arm/x86_64)
+
+          ### Installation
+
+          \`\`\`bash
+          curl -fsSL https://alps-project.pages.dev/install.sh | sh
+          \`\`\`
+
+          Or download binaries from the assets below.
+
+          ### Checksums
+
+          See \`SHA256SUMS\` for file verification.
+          EOF
 
       - name: Clone APT repository
         run: |
@@ -213,9 +329,9 @@ jobs:
           mkdir -p dists/stable/main/binary-armhf
           mkdir -p dists/stable/main/binary-all
 
-          cp ../alps_${TAG#v}_amd64.deb  pool/main/amd64/
-          cp ../alps_${TAG#v}_arm64.deb  pool/main/arm64/
-          cp ../alps_${TAG#v}_armhf.deb  pool/main/armhf/
+          cp ../binaries/alps_${TAG#v}_amd64.deb pool/main/amd64/
+          cp ../binaries/alps_${TAG#v}_arm64.deb pool/main/arm64/
+          cp ../binaries/alps_${TAG#v}_armhf.deb pool/main/armhf/
 
           dpkg-scanpackages --multiversion pool/main/amd64 > dists/stable/main/binary-amd64/Packages
           gzip -kf dists/stable/main/binary-amd64/Packages
@@ -245,7 +361,6 @@ jobs:
             > dists/stable/Release
 
           # Security: Generate signed InRelease file (requires GPG key setup)
-          # This step requires a GPG key to be configured as a secret
           if [ -n "${{ secrets.APT_GPG_PRIVATE_KEY }}" ]; then
             echo "${{ secrets.APT_GPG_PRIVATE_KEY }}" | gpg --import --batch --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}"
             gpg --batch --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --detach-sign --armor --output dists/stable/Release.gpg dists/stable/Release
@@ -260,10 +375,10 @@ jobs:
       - name: Push APT repository
         run: |
           cd repo
-          
+
           git config user.name github-actions
           git config user.email github-actions@github.com
-          
+
           git add .
           git commit -m "Release ${{ inputs.tag || github.ref_name }}" || true
           git push
@@ -273,19 +388,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
-          generate_release_notes: ${{ inputs.tag == '' }}
-          files: |
-            alps-linux-amd64
-            alps-linux-arm64
-            alps-linux-armv7
-
-            alps-termux-aarch64
-            alps-termux-arm
-            alps-termux-x86_64
-
-            alps-darwin-amd64
-            alps-darwin-arm64
-
-            *.deb
-
-            SHA256SUMS
+          name: "ALPS ${{ inputs.tag || github.ref_name }}"
+          body_path: release_notes.md
+          files: binaries/*
+          generate_release_notes: false
