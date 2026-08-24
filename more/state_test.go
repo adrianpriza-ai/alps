@@ -188,9 +188,9 @@ func TestMarkInstalledRecordJSON(t *testing.T) {
 			},
 		},
 		"pkg-b": {
-			Version:     "2.1.0",
+			Version:    "2.1.0",
 			InstalledAt: "2026-08-23T15:00:00Z",
-			Safety:      "free",
+			Safety:     "free",
 		},
 	}
 

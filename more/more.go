@@ -250,7 +250,7 @@ func List(cfg *config.Config) (map[string]*Entry, error) {
 	records, err := ReadInstalled()
 	if err == nil {
 		for name, rec := range records {
-			if !isRemoteSource(rec.Source) {
+			if !IsRemoteSource(rec.Source) {
 				continue
 			}
 			if _, exists := filtered[name]; exists {
@@ -585,6 +585,7 @@ func removePathWithSudo(path string, useSudo bool) error {
 	return r.Run(context.Background(), cmd)
 }
 
+
 func removeDir(path string) error {
 	cmd := exec.Command("rmdir", path)
 	cmd.Stdout = nil
@@ -673,7 +674,7 @@ func Upgrade(name string, cfg *config.Config) error {
 		return fmt.Errorf("package %q is not installed via alps-more", name)
 	}
 
-	if isRemoteSource(rec.Source) {
+	if IsRemoteSource(rec.Source) {
 		return UpgradeFromSource(name, rec.Source, cfg)
 	}
 
@@ -699,8 +700,8 @@ func Upgrade(name string, cfg *config.Config) error {
 	return runOperation(e, OperationUpgrade)
 }
 
-// isRemoteSource returns true if the source string refers to a remote git forge.
-func isRemoteSource(source string) bool {
+// IsRemoteSource returns true if the source string refers to a remote git forge.
+func IsRemoteSource(source string) bool {
 	_, err := ParseSource(source)
 	return err == nil
 }
@@ -737,6 +738,34 @@ func UpgradeFromSource(name, source string, cfg *config.Config) error {
 	return runOperation(e, OperationUpgrade)
 }
 
+// UpgradeEntry upgrades a single package using an already-resolved repo entry
+// and its installed record. Unlike Upgrade(), it skips redundant lookups —
+// useful when the caller (e.g. the backend) has already fetched the entry
+// and compared versions during the preview phase.
+//
+// e   — the repo entry (from Find or FetchALPSMOREFromSource)
+// rec — the installed record (from GetInstalled)
+// cfg — configuration
+func UpgradeEntry(e *Entry, rec *InstalledRecord, cfg *config.Config) error {
+	priv.Invalidate()
+
+	if e.Version == "" || rec.Version == "" {
+		fmt.Printf("  %s  %s: no version info, reinstalling...\n", cfg.Style.SymInfo, e.Name)
+		WarnReducedSafety(e, *rec, cfg)
+		return runOperation(e, OperationInstall)
+	}
+
+	if e.Version == rec.Version {
+		fmt.Printf("  %s  %s %s is already up to date.\n", cfg.Style.SymOK, e.Name, e.Version)
+		return nil
+	}
+
+	fmt.Printf("  %s  %s: %s -> %s\n", cfg.Style.SymArrow, e.Name, rec.Version, e.Version)
+	WarnReducedSafety(e, *rec, cfg)
+
+	return runOperation(e, OperationUpgrade)
+}
+
 // UpgradeAll upgrades all installed packages.
 // GitHub-sourced packages are upgraded by re-fetching their ALPSMORE file.
 func UpgradeAll(cfg *config.Config) error {
@@ -754,7 +783,7 @@ func UpgradeAll(cfg *config.Config) error {
 		rec := records[name]
 
 		// Remote-sourced (github/gitlab): upgrade by re-fetching ALPSMORE.
-		if isRemoteSource(rec.Source) {
+		if IsRemoteSource(rec.Source) {
 			if err := UpgradeFromSource(name, rec.Source, cfg); err != nil {
 				fmt.Printf("  %s  %s: %v\n", cfg.Style.SymErr, name, err)
 				failed++
@@ -823,7 +852,7 @@ func ListInstalled(cfg *config.Config) error {
 			ver = "(no version)"
 		}
 		tag := ""
-		if isRemoteSource(rec.Source) {
+		if IsRemoteSource(rec.Source) {
 			tag = "  [" + rec.Source + "]"
 		}
 		fmt.Printf("  %s  %s %s%s\n", cfg.Style.SymOK, name, ver, tag)
@@ -848,7 +877,7 @@ func ListStale(cfg *config.Config) error {
 
 	var stale []string
 	for name, rec := range records {
-		if isRemoteSource(rec.Source) {
+		if IsRemoteSource(rec.Source) {
 			continue
 		}
 		_, findErr := Find(name, cfg)
@@ -891,7 +920,7 @@ func CheckUpdates(cfg *config.Config) (*UpdateSummary, error) {
 
 	for name, rec := range records {
 		// GitHub-sourced: skip stale detection, not applicable.
-		if isRemoteSource(rec.Source) {
+		if IsRemoteSource(rec.Source) {
 			continue
 		}
 

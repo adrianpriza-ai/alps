@@ -872,7 +872,7 @@ func TestValidatePurgeCommands(t *testing.T) {
 	})
 }
 
-// TestIsRemoteSource verifies isRemoteSource correctly identifies remote
+// TestIsRemoteSource verifies IsRemoteSource correctly identifies remote
 // git forge source strings.
 func TestIsRemoteSource(t *testing.T) {
 	tests := []struct {
@@ -889,9 +889,9 @@ func TestIsRemoteSource(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isRemoteSource(tc.source)
+			got := IsRemoteSource(tc.source)
 			if got != tc.remote {
-				t.Errorf("isRemoteSource(%q) = %v, want %v", tc.source, got, tc.remote)
+				t.Errorf("IsRemoteSource(%q) = %v, want %v", tc.source, got, tc.remote)
 			}
 		})
 	}

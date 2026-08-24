@@ -327,26 +327,195 @@ func (b *Backend) Search(query string) error {
 
 // Upgrade upgrades installed packages
 func (b *Backend) Upgrade(pkgs []string) error {
+	// pkgPreview holds the pre-check result for a single package.
+	// It stores the resolved entry and installed record so the execute
+	// phase can call more.UpgradeEntry / more.UpgradeFromSource directly
+	// without re-reading the installed DB or re-checking versions.
+	type pkgPreview struct {
+		name    string
+		from, to string
+		err     string // non-empty if the package can't be upgraded
+		entry   *more.Entry
+		rec     *more.InstalledRecord
+		remote  string // non-empty if sourced from github/gitlab
+	}
+
+	var previews []pkgPreview
+
 	if len(pkgs) == 0 {
-		ui.Msg(b.cfg, ui.LevelInfo, "Checking alps-more packages for updates...")
-		fmt.Println()
-		if err := more.UpgradeAll(b.cfg); err != nil {
+		// Upgrade all: read installed packages and build a preview.
+		records, err := more.ReadInstalled()
+		if err != nil {
 			ui.Msgf(b.cfg, ui.LevelError, "%v", err)
 			return err
 		}
-	} else {
-		var hasErrors bool
-		for _, pkgName := range pkgs {
-			if err := more.Upgrade(pkgName, b.cfg); err != nil {
-				ui.Msgf(b.cfg, ui.LevelError, "failed to upgrade %s: %v", pkgName, err)
-				hasErrors = true
+		if len(records) == 0 {
+			ui.Msg(b.cfg, ui.LevelWarn, "No packages installed via alps-more.")
+			return nil
+		}
+
+		ui.Msgf(b.cfg, ui.LevelInfo, "Upgrade all alps-more packages?")
+		fmt.Println()
+		for name, rec := range records {
+			recCopy := rec // avoid pointer aliasing across iterations
+			if more.IsRemoteSource(rec.Source) {
+				fe, fetchErr := more.FetchALPSMOREFromSource(rec.Source)
+				if fetchErr != nil {
+					previews = append(previews, pkgPreview{name: name, err: fmt.Sprintf("fetch failed: %v", fetchErr), rec: &recCopy, remote: rec.Source})
+					continue
+				}
+				fe.Source = rec.Source
+				if fe.Version != "" && rec.Version != "" && fe.Version == rec.Version {
+					previews = append(previews, pkgPreview{name: name, from: rec.Version, to: rec.Version, rec: &recCopy, remote: rec.Source})
+					continue
+				}
+				previews = append(previews, pkgPreview{name: name, from: rec.Version, to: fe.Version, entry: fe, rec: &recCopy, remote: rec.Source})
+				continue
+			}
+			e, findErr := more.Find(name, b.cfg)
+			if findErr != nil {
+				previews = append(previews, pkgPreview{name: name, err: "stale — no longer in repo", rec: &recCopy})
+				continue
+			}
+			if e.Version != "" && rec.Version != "" && e.Version != rec.Version {
+				previews = append(previews, pkgPreview{name: name, from: rec.Version, to: e.Version, entry: e, rec: &recCopy})
 			} else {
-				ui.Msg(b.cfg, ui.LevelOK, pkgName+" upgraded.")
+				previews = append(previews, pkgPreview{name: name, from: rec.Version, to: rec.Version, entry: e, rec: &recCopy})
 			}
 		}
-		if hasErrors {
-			return fmt.Errorf("some packages failed to upgrade")
+	} else {
+		// Upgrade specific packages: build a preview for each.
+		for _, pkgName := range pkgs {
+			rec, isInstalled := more.GetInstalled(pkgName)
+			if !isInstalled {
+				previews = append(previews, pkgPreview{name: pkgName, err: "not installed"})
+				continue
+			}
+			recCopy := rec // take address safely across iterations
+
+			// Remote packages are fetched and checked at upgrade time
+			// since the repo cache won't have their entry.
+			if more.IsRemoteSource(recCopy.Source) {
+				// Fetch the remote ALPSMORE to get the latest version for preview.
+				fe, fetchErr := more.FetchALPSMOREFromSource(recCopy.Source)
+				if fetchErr != nil {
+					previews = append(previews, pkgPreview{name: pkgName, err: fmt.Sprintf("fetch failed: %v", fetchErr), rec: &recCopy, remote: recCopy.Source})
+					continue
+				}
+				fe.Source = recCopy.Source
+				if fe.Version != "" && recCopy.Version != "" && fe.Version == recCopy.Version {
+					previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: recCopy.Version, rec: &recCopy, remote: recCopy.Source})
+					continue
+				}
+				previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: fe.Version, entry: fe, rec: &recCopy, remote: recCopy.Source})
+				continue
+			}
+
+			e, findErr := more.Find(pkgName, b.cfg)
+			if findErr != nil {
+				previews = append(previews, pkgPreview{name: pkgName, err: findErr.Error(), rec: &recCopy})
+				continue
+			}
+
+			if e.Version != "" && recCopy.Version != "" && e.Version == recCopy.Version {
+				previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: recCopy.Version, entry: e, rec: &recCopy})
+				continue
+			}
+
+			previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: e.Version, entry: e, rec: &recCopy})
 		}
+	}
+
+	if len(previews) == 0 {
+		return nil
+	}
+
+	// Count how many packages actually need upgrading.
+	var upgradable int
+	for _, p := range previews {
+		if p.err == "" && p.from != p.to {
+			upgradable++
+		}
+	}
+
+	if upgradable == 0 {
+		ui.Msg(b.cfg, ui.LevelOK, "All alps-more packages are up to date.")
+		return nil
+	}
+
+	// Show the full preview.
+	ui.Msgf(b.cfg, ui.LevelInfo, "Upgrade %d package(s)?", upgradable)
+	fmt.Println()
+	for _, p := range previews {
+		if p.err != "" {
+			fmt.Printf("  %s!%s  %s %s(%s)%s\n",
+				b.cfg.Style.ColorWarning, b.cfg.Style.ColorReset,
+				p.name, b.cfg.Style.ColorDim, p.err, b.cfg.Style.ColorReset)
+		} else if p.from == p.to {
+			// Skip up-to-date packages — they clutter the preview when
+			// there are many installed packages.
+			continue
+		} else {
+			tag := ""
+			if p.remote != "" {
+				tag = " [remote]"
+			}
+			fmt.Printf("  %s%s%s  %s: %s%s%s -> %s%s%s%s\n",
+				b.cfg.Style.ColorDim, b.cfg.Style.SymArrow, b.cfg.Style.ColorReset,
+				p.name,
+				b.cfg.Style.ColorDim, p.from, b.cfg.Style.ColorReset,
+				b.cfg.Style.ColorSuccess, p.to, tag, b.cfg.Style.ColorReset)
+		}
+	}
+	fmt.Println()
+
+	if !ui.Confirm() {
+		ui.Msg(b.cfg, ui.LevelWarn, "Upgrade cancelled.")
+		return nil
+	}
+
+	// Execute upgrades. The preview already resolved every entry and
+	// compared versions, so we call the lower-level UpgradeEntry /
+	// UpgradeFromSource directly — no redundant lookups.
+	fmt.Println()
+	var upgraded, failed int
+	for _, p := range previews {
+		if p.err != "" {
+			ui.Msgf(b.cfg, ui.LevelError, "%s: %s", p.name, p.err)
+			failed++
+			continue
+		}
+		if p.from == p.to {
+			continue
+		}
+
+		var err error
+		if p.remote != "" && p.entry != nil {
+			err = more.UpgradeFromSource(p.name, p.remote, b.cfg)
+		} else if p.entry != nil && p.rec != nil {
+			err = more.UpgradeEntry(p.entry, p.rec, b.cfg)
+		} else {
+			err = more.Upgrade(p.name, b.cfg)
+		}
+
+		if err != nil {
+			ui.Msgf(b.cfg, ui.LevelError, "failed to upgrade %s: %v", p.name, err)
+			failed++
+		} else {
+			ui.Msg(b.cfg, ui.LevelOK, p.name+" upgraded.")
+			upgraded++
+		}
+	}
+
+	// Summary when upgrading multiple packages.
+	if len(previews) > 1 {
+		fmt.Println()
+		ui.Msgf(b.cfg, ui.LevelInfo, "Upgrade summary: %d upgraded, %d failed",
+			upgraded, failed)
+	}
+
+	if failed > 0 {
+		return fmt.Errorf("%d package(s) failed to upgrade", failed)
 	}
 	return nil
 }
