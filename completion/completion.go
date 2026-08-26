@@ -28,7 +28,6 @@ func Generate(shell string) {
 	}
 }
 
-
 // cacheDir returns the cache directory.
 func cacheDir() string {
 	if platform.IsTermux() {
@@ -205,11 +204,11 @@ complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" install in
 complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" remove rm purge pu; and test (count $t) -eq 2' \
     -a "(%s)" -d 'installed package'
 `, morePkgs, moreInstalled,
-	pkgList, aurNames,
-	aurNames,
-	aurInstalled,
-	pkgList,
-	installedList)
+		pkgList, aurNames,
+		aurNames,
+		aurInstalled,
+		pkgList,
+		installedList)
 }
 
 func genBash(cmds []string, backend string) {
@@ -439,11 +438,11 @@ _alps() {
 }
 
 _alps
-`,strings.Join(cmdList, "\n                "),
-	pkgList, installedList,
-	morePkgs, moreInstalled,
-	pkgList, aurNames, aurInstalled,
-	aurNames)
+`, strings.Join(cmdList, "\n                "),
+		pkgList, installedList,
+		morePkgs, moreInstalled,
+		pkgList, aurNames, aurInstalled,
+		aurNames)
 }
 
 // cmdDesc returns a description for a command.

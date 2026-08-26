@@ -360,7 +360,6 @@ func symReinstall() string {
 	return "⟳"
 }
 
-
 // isTTY checks for basic TTY.
 func isTTY() bool {
 	term := os.Getenv("TERM")
