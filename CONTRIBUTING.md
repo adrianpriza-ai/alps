@@ -29,7 +29,6 @@ alps/
 ├── extra/          # snap, flatpak, winget support
 ├── backend/        # backend selection/routing + native package managers
 ├── more/           # alps-more script repo
-├── moreplanner/    # alps-more planning, paths, and cache management
 ├── pack/           # package manager commands
 ├── priv/           # privilege escalation (sudo/su/root)
 ├── cli/            # CLI parsing and aliases

@@ -17,6 +17,8 @@
 
 ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and `apk`. It also handles AUR, Snap, Flatpak, and Winget, plus a custom script repo called alps-more. One command interface across distros — Linux, macOS, Termux on Android, WSL on Windows.
 
+This ~9k line codebase has all tests passing and `go vet` clean.
+
 ## Features
 
 | Feature | Description |
