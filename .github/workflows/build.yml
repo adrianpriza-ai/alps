@@ -115,26 +115,16 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Cross-compile every supported target. Output goes to /dev/null since
+      # we only care that compilation succeeds.
       - name: Compile all targets
         run: |
-          declare -A platforms=(
-            ["linux/amd64"]=""
-            ["linux/arm64"]=""
-            ["linux/arm/v7"]="7"
-            ["darwin/amd64"]=""
-            ["darwin/arm64"]=""
-          )
-          for pair in "${!platforms[@]}"; do
-            os="${pair%/*}"
-            arch="${pair#*/}"
-            arm="${platforms[$pair]}"
-            echo "==> Building $pair"
-            if [[ -n "$arm" ]]; then
-              GOOS="$os" GOARCH="$arch" GOARM="$arm" go build -v -o /dev/null .
-            else
-              GOOS="$os" GOARCH="$arch" go build -v -o /dev/null .
-            fi
-          done
+          set -x
+          GOOS=linux GOARCH=amd64 go build -o /dev/null .
+          GOOS=linux GOARCH=arm64 go build -o /dev/null .
+          GOOS=linux GOARCH=arm GOARM=7 go build -o /dev/null .
+          GOOS=darwin GOARCH=amd64 go build -o /dev/null .
+          GOOS=darwin GOARCH=arm64 go build -o /dev/null .
 
   security:
     name: Security Vulnerability Scan
