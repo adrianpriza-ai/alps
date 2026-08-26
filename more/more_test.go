@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/adrianpriza-ai/alps/config"
+	"github.com/adrianpriza-ai/alps/platform"
 )
 
 func TestDetectDistroVersion(t *testing.T) {
@@ -72,7 +73,7 @@ func TestDetectDistroVersionReal(t *testing.T) {
 	}
 
 	version := detectDistroVersion()
-	if isTermux() {
+	if platform.IsTermux() {
 		expected := os.Getenv("TERMUX_VERSION")
 		if expected == "" {
 			expected = "unknown"
@@ -80,7 +81,7 @@ func TestDetectDistroVersionReal(t *testing.T) {
 		if version != expected {
 			t.Errorf("expected termux version %q, got %q", expected, version)
 		}
-	} else if isMacOS() {
+	} else if platform.IsMacOS() {
 		// On macOS, sw_vers -productVersion should return a non-empty version string
 		if version == "" {
 			t.Errorf("expected non-empty macOS version, got empty string")
@@ -217,10 +218,10 @@ func TestOSMatches(t *testing.T) {
 		// On actual Linux (not Termux), "linux" should match
 		// On macOS or Termux, it should not
 		result := osMatches([]string{"linux"}, "ubuntu", []string{"debian"})
-		expectedResult := !isTermux() && runtime.GOOS != "darwin"
+		expectedResult := !platform.IsTermux() && runtime.GOOS != "darwin"
 		if result != expectedResult {
 			t.Logf("Note: 'linux' matching depends on runtime.GOOS (not Termux, not darwin)")
-			t.Logf("Current runtime.GOOS: %s, isTermux: %v", runtime.GOOS, isTermux())
+			t.Logf("Current runtime.GOOS: %s, isTermux: %v", runtime.GOOS, platform.IsTermux())
 		}
 	})
 
@@ -246,7 +247,7 @@ func TestOSMatchesReal(t *testing.T) {
 	}
 
 	// If the system is macOS, it should match "darwin" and "macos", but NOT "linux"
-	if isMacOS() {
+	if platform.IsMacOS() {
 		if !osMatches([]string{"darwin"}, "macos", []string{"darwin", "macos"}) {
 			t.Errorf("expected 'darwin' to match on macOS")
 		}
@@ -263,7 +264,7 @@ func TestOSMatchesReal(t *testing.T) {
 	// If the system is standard Linux, it should match "linux"
 	// If the system is Termux, it should NOT match "linux"
 	hasLinuxMatch := osMatches([]string{"linux"}, "ubuntu", []string{"debian"})
-	if isTermux() {
+	if platform.IsTermux() {
 		if hasLinuxMatch {
 			t.Errorf("expected 'linux' to NOT match on Termux")
 		}
@@ -275,7 +276,7 @@ func TestOSMatchesReal(t *testing.T) {
 
 	// If the system is WSL, it should match "wsl"
 	hasWSLMatch := osMatches([]string{"wsl"}, "ubuntu", []string{"debian", "wsl"})
-	if isWSL() {
+	if platform.IsWSL() {
 		if !hasWSLMatch {
 			t.Errorf("expected 'wsl' to match on WSL")
 		}
@@ -383,7 +384,7 @@ os = termux
 		t.Fatalf("expected package 'foo' to be found")
 	}
 
-	if isTermux() {
+	if platform.IsTermux() {
 		if entry.Desc != "Termux version" {
 			t.Errorf("expected Termux version to be chosen on Termux, got: %s", entry.Desc)
 		}
@@ -397,7 +398,7 @@ os = termux
 	// 2. Test case: multiple matching OS entries.
 	// If both match, we want to use the first one.
 	currentOS := "linux"
-	if isTermux() {
+	if platform.IsTermux() {
 		currentOS = "termux"
 	}
 
@@ -486,7 +487,7 @@ func skipUnlessMacOS(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real system call test in short mode")
 	}
-	if !isMacOS() {
+	if !platform.IsMacOS() {
 		t.Skip("skipping macOS-specific tests on non-macOS system")
 	}
 }
@@ -513,11 +514,11 @@ func TestMacOS(t *testing.T) {
 	})
 
 	t.Run("platformDirs", func(t *testing.T) {
-		cacheDir := getCacheDir()
+		cacheDir := platform.CacheDir()
 		if !strings.Contains(cacheDir, "Library/Caches") {
 			t.Errorf("expected cache dir to be under Library/Caches on macOS, got %q", cacheDir)
 		}
-		libDir := getLibDir()
+		libDir := platform.LibDir()
 		if !strings.Contains(libDir, "Library/Application Support") {
 			t.Errorf("expected lib dir to be under Library/Application Support on macOS, got %q", libDir)
 		}
@@ -910,9 +911,9 @@ func TestNormalizeArch(t *testing.T) {
 		{"386", "i686"},
 	}
 	for _, tc := range tests {
-		got := normalizeArch(tc.input)
+		got := platform.NormalizeArch(tc.input)
 		if got != tc.expected {
-			normalizeArch(tc.input)
+			platform.NormalizeArch(tc.input)
 			t.Errorf("normalizeArch(%q) = %q, want %q", tc.input, got, tc.expected)
 		}
 	}

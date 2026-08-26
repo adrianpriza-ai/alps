@@ -1,0 +1,240 @@
+package more
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/adrianpriza-ai/alps/config"
+)
+
+// Find looks up a package by name in the repo cache and returns its Entry.
+func Find(name string, cfg *config.Config) (*Entry, error) {
+	exists, expired := CacheStatus()
+	if !exists {
+		return nil, fmt.Errorf("no cache found, run: alps repo update")
+	}
+	if expired {
+		fmt.Printf("  %s  repo cache is expired (>90 days). Using old cache.\n", cfg.Style.SymWarn)
+		fmt.Println("        Run 'alps repo update' to refresh.")
+		fmt.Println()
+	}
+
+	data, err := ReadCache()
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse repo: %w", err)
+	}
+
+	distro, distroLike := detectDistro()
+
+	e, ok := entries[name]
+	if !ok {
+		return nil, fmt.Errorf("package %q not found in alps-more repo", name)
+	}
+
+	if !osMatches(e.OS, distro, distroLike) {
+		return nil, fmt.Errorf(
+			"package %q is not available for your distro (%s)\n  supported: %s",
+			name, distro, strings.Join(e.OS, ", "),
+		)
+	}
+
+	return e, nil
+}
+
+// List returns entries for the current distro, including GitHub-sourced installs.
+func List(cfg *config.Config) (map[string]*Entry, error) {
+	exists, expired := CacheStatus()
+	if !exists {
+		return nil, fmt.Errorf("no cache found, run: alps repo update")
+	}
+	if expired {
+		fmt.Printf("  %s  repo cache is expired (>90 days). Using old cache.\n", cfg.Style.SymWarn)
+		fmt.Println("        Run 'alps repo update' to refresh.")
+		fmt.Println()
+	}
+
+	data, err := ReadCache()
+	if err != nil {
+		return nil, err
+	}
+
+	all, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+
+	distro, distroLike := detectDistro()
+
+	filtered := make(map[string]*Entry)
+	for _, e := range all {
+		if osMatches(e.OS, distro, distroLike) {
+			filtered[e.Name] = e
+		}
+	}
+
+	// Append GitHub-sourced installs not in main.txt.
+	records, err := ReadInstalled()
+	if err == nil {
+		for name, rec := range records {
+			if !IsRemoteSource(rec.Source) {
+				continue
+			}
+			if _, exists := filtered[name]; exists {
+				continue
+			}
+			filtered[name] = &Entry{
+				Name:        name,
+				Version:     rec.Version,
+				RemoveLines: append([]string(nil), rec.RemoveLines...),
+				PurgeLines:  append([]string(nil), rec.PurgeLines...),
+				Servers:     append([]string(nil), rec.Servers...),
+				Safety:      rec.Safety,
+				Source:      rec.Source,
+			}
+		}
+	}
+
+	return filtered, nil
+}
+
+// Search returns entries whose name or description matches the query.
+func Search(query string, cfg *config.Config) ([]*Entry, error) {
+	entries, err := List(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	q := strings.ToLower(query)
+	var results []*Entry
+	for _, e := range entries {
+		if strings.Contains(strings.ToLower(e.Name), q) ||
+			strings.Contains(strings.ToLower(e.Desc), q) {
+			results = append(results, e)
+		}
+	}
+	return results, nil
+}
+
+// --- Installed package listing (from list.go) ---
+
+// ListInstalled prints all packages installed via alps-more or GitHub.
+func ListInstalled(cfg *config.Config) error {
+	records, err := ReadInstalled()
+	if err != nil {
+		return err
+	}
+	if len(records) == 0 {
+		fmt.Println("  No packages installed via alps-more.")
+		return nil
+	}
+
+	names := make([]string, 0, len(records))
+	for name := range records {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		rec := records[name]
+		ver := rec.Version
+		if ver == "" {
+			ver = "(no version)"
+		}
+		tag := ""
+		if IsRemoteSource(rec.Source) {
+			tag = "  [" + rec.Source + "]"
+		}
+		fmt.Printf("  %s  %s %s%s\n", cfg.Style.SymOK, name, ver, tag)
+		if rec.InstalledAt != "" {
+			fmt.Printf("         installed: %s\n", rec.InstalledAt)
+		}
+	}
+	return nil
+}
+
+// ListStale prints packages that are in installed.json but no longer in main.txt.
+// GitHub-sourced packages are not considered stale.
+func ListStale(cfg *config.Config) error {
+	records, err := ReadInstalled()
+	if err != nil {
+		return err
+	}
+	if len(records) == 0 {
+		fmt.Println("  No packages installed via alps-more.")
+		return nil
+	}
+
+	var stale []string
+	for name, rec := range records {
+		if IsRemoteSource(rec.Source) {
+			continue
+		}
+		_, findErr := Find(name, cfg)
+		if findErr != nil && strings.Contains(findErr.Error(), "not found in alps-more repo") {
+			stale = append(stale, name)
+		}
+	}
+
+	if len(stale) == 0 {
+		fmt.Printf("  %s  No stale packages found.\n", cfg.Style.SymOK)
+		return nil
+	}
+
+	sort.Strings(stale)
+	fmt.Printf("  %s  Packages no longer in alps-more repo:\n", cfg.Style.SymWarn)
+	for _, name := range stale {
+		fmt.Printf("    %s  %s\n", cfg.Style.SymBullet, name)
+		fmt.Printf("         to remove: alps repo remove %s\n", name)
+	}
+	return nil
+}
+
+// UpdateSummary holds upgrade and stale package info.
+type UpdateSummary struct {
+	Upgradeable []string // formatted: "name oldver → newver"
+	Stale       []string // package names absent from repo
+}
+
+// CheckUpdates checks for upgrades and stale packages.
+func CheckUpdates(cfg *config.Config) (*UpdateSummary, error) {
+	records, err := ReadInstalled()
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return nil, nil
+	}
+
+	summary := &UpdateSummary{}
+
+	for name, rec := range records {
+		// GitHub-sourced: skip stale detection, not applicable.
+		if IsRemoteSource(rec.Source) {
+			continue
+		}
+
+		e, findErr := Find(name, cfg)
+		if findErr != nil {
+			if strings.Contains(findErr.Error(), "not found in alps-more repo") {
+				summary.Stale = append(summary.Stale, name)
+				continue
+			}
+			return nil, findErr
+		}
+
+		if e.Version != "" && rec.Version != "" && e.Version != rec.Version {
+			summary.Upgradeable = append(summary.Upgradeable,
+				fmt.Sprintf("%s %s → %s", name, rec.Version, e.Version))
+		}
+	}
+
+	sort.Strings(summary.Upgradeable)
+	sort.Strings(summary.Stale)
+	return summary, nil
+}

@@ -1,9 +1,10 @@
 package pack
 
 import (
-	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/adrianpriza-ai/alps/platform"
 )
 
 // Backend describes a native package manager.
@@ -60,14 +61,10 @@ func DetectName() string {
 	return ""
 }
 
-func isTermux() bool {
-	return os.Getenv("TERMUX_VERSION") != "" ||
-		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
-}
 
 // NeedsSudo checks if backend requires sudo.
 func NeedsSudo(name string) bool {
-	if isTermux() {
+	if platform.IsTermux() {
 		return false
 	}
 	if b, ok := registry[name]; ok {

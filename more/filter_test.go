@@ -3,6 +3,8 @@ package more
 import (
 	"strings"
 	"testing"
+
+	"github.com/adrianpriza-ai/alps/platform"
 )
 
 // --- Filter() tests ---
@@ -20,7 +22,7 @@ func TestFilterSeparatesMacros(t *testing.T) {
 		"{INSTALL_BIN} mytool /usr/bin/",
 	}
 	ctx := testCtx()
-	manifest, err := Filter(lines, ctx, OperationInstall)
+	manifest, err := Filter(lines, ctx, platform.OperationInstall)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,7 +64,7 @@ func TestFilterSkipsCommentsAndEmptyLines(t *testing.T) {
 		"echo hello",
 	}
 	ctx := testCtx()
-	manifest, err := Filter(lines, ctx, OperationInstall)
+	manifest, err := Filter(lines, ctx, platform.OperationInstall)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -86,7 +88,7 @@ func TestFilterShellCommandsGoToBuildEnv(t *testing.T) {
 		"make -j4",
 	}
 	ctx := testCtx()
-	manifest, err := Filter(lines, ctx, OperationInstall)
+	manifest, err := Filter(lines, ctx, platform.OperationInstall)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,8 +109,8 @@ func TestFilterInstallMacrosSkippedDuringRemove(t *testing.T) {
 		"{ENABLE_SERVICE} myservice",
 	}
 	ctx := testCtx()
-	ctx.Op = OperationRemove
-	manifest, err := Filter(lines, ctx, OperationRemove)
+	ctx.Op = platform.OperationRemove
+	manifest, err := Filter(lines, ctx, platform.OperationRemove)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -124,8 +126,8 @@ func TestFilterInstallMacrosSkippedDuringPurge(t *testing.T) {
 		"{INSTALL_BIN} mytool /usr/bin/",
 	}
 	ctx := testCtx()
-	ctx.Op = OperationPurge
-	manifest, err := Filter(lines, ctx, OperationPurge)
+	ctx.Op = platform.OperationPurge
+	manifest, err := Filter(lines, ctx, platform.OperationPurge)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -138,7 +140,7 @@ func TestFilterInstallMacrosSkippedDuringPurge(t *testing.T) {
 func TestFilterEmptyLines(t *testing.T) {
 	lines := []string{}
 	ctx := testCtx()
-	manifest, err := Filter(lines, ctx, OperationInstall)
+	manifest, err := Filter(lines, ctx, platform.OperationInstall)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -155,8 +157,8 @@ func TestFilterDisableServiceNotSkippedDuringRemove(t *testing.T) {
 		"{DISABLE_SERVICE} myservice",
 	}
 	ctx := testCtx()
-	ctx.Op = OperationRemove
-	manifest, err := Filter(lines, ctx, OperationRemove)
+	ctx.Op = platform.OperationRemove
+	manifest, err := Filter(lines, ctx, platform.OperationRemove)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

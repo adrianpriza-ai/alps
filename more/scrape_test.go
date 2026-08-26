@@ -1,14 +1,17 @@
 package more
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/adrianpriza-ai/alps/platform"
 )
 
 // --- Scrape() tests ---
 
 func TestScrapeInstall(t *testing.T) {
 	e := &Entry{Name: "test-pkg", CmdLines: []string{"make", "make install"}}
-	lines, err := Scrape(e, OperationInstall)
+	lines, err := Scrape(e, platform.OperationInstall)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -24,11 +27,11 @@ func TestScrapeInstall(t *testing.T) {
 
 func TestScrapeInstallEmpty(t *testing.T) {
 	e := &Entry{Name: "empty-pkg"}
-	_, err := Scrape(e, OperationInstall)
+	_, err := Scrape(e, platform.OperationInstall)
 	if err == nil {
 		t.Fatal("expected error for entry with no CmdLines")
 	}
-	if !containsStr(err.Error(), "no install commands") {
+	if !strings.Contains(err.Error(), "no install commands") {
 		t.Errorf("expected 'no install commands' in error, got %q", err.Error())
 	}
 }
@@ -36,7 +39,7 @@ func TestScrapeInstallEmpty(t *testing.T) {
 func TestScrapeRemove(t *testing.T) {
 	// Remove lines defined on the entry
 	e := &Entry{Name: "rm-pkg", RemoveLines: []string{"rm -rf /opt/rm-pkg"}}
-	lines, err := Scrape(e, OperationRemove)
+	lines, err := Scrape(e, platform.OperationRemove)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -48,7 +51,7 @@ func TestScrapeRemove(t *testing.T) {
 func TestScrapeRemoveNotInstalled(t *testing.T) {
 	// No RemoveLines and not installed → error
 	e := &Entry{Name: "nonexistent-pkg"}
-	_, err := Scrape(e, OperationRemove)
+	_, err := Scrape(e, platform.OperationRemove)
 	if err == nil {
 		t.Fatal("expected error for non-installed package with no remove lines")
 	}
@@ -57,7 +60,7 @@ func TestScrapeRemoveNotInstalled(t *testing.T) {
 func TestScrapeUpgrade(t *testing.T) {
 	// UpgradeLines defined → use them
 	e := &Entry{Name: "up-pkg", UpgradeLines: []string{"git pull", "make"}}
-	lines, err := Scrape(e, OperationUpgrade)
+	lines, err := Scrape(e, platform.OperationUpgrade)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,7 +72,7 @@ func TestScrapeUpgrade(t *testing.T) {
 func TestScrapeUpgradeFallsBackToCmdLines(t *testing.T) {
 	// No UpgradeLines → fall back to CmdLines
 	e := &Entry{Name: "up-pkg-fb", CmdLines: []string{"make install"}}
-	lines, err := Scrape(e, OperationUpgrade)
+	lines, err := Scrape(e, platform.OperationUpgrade)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +84,7 @@ func TestScrapeUpgradeFallsBackToCmdLines(t *testing.T) {
 func TestScrapeUpgradeNoCommands(t *testing.T) {
 	// No UpgradeLines and no CmdLines → error
 	e := &Entry{Name: "up-empty"}
-	_, err := Scrape(e, OperationUpgrade)
+	_, err := Scrape(e, platform.OperationUpgrade)
 	if err == nil {
 		t.Fatal("expected error when both UpgradeLines and CmdLines are empty")
 	}
@@ -90,7 +93,7 @@ func TestScrapeUpgradeNoCommands(t *testing.T) {
 func TestScrapePurge(t *testing.T) {
 	// PurgeLines defined → use them
 	e := &Entry{Name: "pg-pkg", PurgeLines: []string{"rm -rf /etc/pg-pkg", "rm -rf /var/lib/pg-pkg"}}
-	lines, err := Scrape(e, OperationPurge)
+	lines, err := Scrape(e, platform.OperationPurge)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,7 +105,7 @@ func TestScrapePurge(t *testing.T) {
 func TestScrapePurgeNotInstalled(t *testing.T) {
 	// No PurgeLines and not installed → error
 	e := &Entry{Name: "pg-nonexistent"}
-	_, err := Scrape(e, OperationPurge)
+	_, err := Scrape(e, platform.OperationPurge)
 	if err == nil {
 		t.Fatal("expected error for non-installed package with no purge lines")
 	}
@@ -110,22 +113,9 @@ func TestScrapePurgeNotInstalled(t *testing.T) {
 
 func TestScrapeUnknownOp(t *testing.T) {
 	e := &Entry{Name: "test-pkg", CmdLines: []string{"echo hi"}}
-	_, err := Scrape(e, OperationType("unknown"))
+	_, err := Scrape(e, platform.OperationType("unknown"))
 	if err == nil {
 		t.Fatal("expected error for unknown operation type")
 	}
 }
 
-// containsStr is a simple helper to check if a string contains a substring.
-func containsStr(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}

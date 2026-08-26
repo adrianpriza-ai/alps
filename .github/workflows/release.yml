@@ -265,10 +265,113 @@ jobs:
           path: "*.deb"
           retention-days: 1
 
+  package-termux:
+    name: Build Termux Packages
+    runs-on: ubuntu-latest
+    needs: [build, build-termux]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install termux-create-package
+        run: pip install --break-system-packages termux-create-package
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Build Termux .deb packages
+        run: |
+          TAG=${{ inputs.tag || github.ref_name }}
+          VERSION=${TAG#v}
+
+          # Completions are shell scripts — identical for every arch.
+          # Generate them once from the native amd64 Linux binary, since the
+          # Termux binaries are built for Android and can't run on this runner.
+          chmod +x artifacts/alps-linux-amd64/alps-linux-amd64
+          mkdir -p /tmp/alps-completions
+          artifacts/alps-linux-amd64/alps-linux-amd64 completion fish > /tmp/alps-completions/alps.fish
+          artifacts/alps-linux-amd64/alps-linux-amd64 completion bash > /tmp/alps-completions/alps
+          artifacts/alps-linux-amd64/alps-linux-amd64 completion zsh > /tmp/alps-completions/_alps
+
+          mkdir -p termux-debs
+
+          # Maintainer script: registers the alps-apt repo inside Termux's own
+          # apt config, mirroring what the desktop .deb's postinst does, so
+          # `pkg update && pkg upgrade alps` keeps working after this install.
+          mkdir -p /tmp/termux-control
+          cat > /tmp/termux-control/postinst << 'EOF'
+          #!/data/data/com.termux/files/usr/bin/sh
+          set -e
+
+          PREFIX="/data/data/com.termux/files/usr"
+
+          if [ ! -f "$PREFIX/share/keyrings/alps-archive-keyring.gpg" ]; then
+            mkdir -p "$PREFIX/share/keyrings"
+            curl -fsSL https://adrianpriza-ai.github.io/alps-apt/alps-archive-keyring.gpg \
+              -o "$PREFIX/share/keyrings/alps-archive-keyring.gpg"
+          fi
+
+          mkdir -p "$PREFIX/etc/apt/sources.list.d"
+          echo "deb [signed-by=$PREFIX/share/keyrings/alps-archive-keyring.gpg] https://adrianpriza-ai.github.io/alps-apt stable main" \
+            > "$PREFIX/etc/apt/sources.list.d/alps.list"
+
+          apt update || true
+          exit 0
+          EOF
+          chmod 755 /tmp/termux-control/postinst
+
+          # Map our build output names to Termux's dpkg architecture names
+          # (aarch64 / arm / x86_64 / i686) — these are NOT the same as
+          # Debian's amd64 / arm64 / armhf used by the regular .deb job.
+          declare -A TERMUX_ARCH_MAP=(
+            [alps-termux-aarch64]=aarch64
+            [alps-termux-arm]=arm
+            [alps-termux-x86_64]=x86_64
+          )
+
+          for OUTPUT in "${!TERMUX_ARCH_MAP[@]}"; do
+            ARCH="${TERMUX_ARCH_MAP[$OUTPUT]}"
+            BIN="$(pwd)/artifacts/$OUTPUT/$OUTPUT"
+            chmod +x "$BIN"
+
+            cat > "termux-manifest-$ARCH.json" << EOF
+          {
+            "name": "alps",
+            "version": "$VERSION",
+            "homepage": "https://github.com/adrianpriza-ai/alps",
+            "maintainer": "@adrianpriza-ai",
+            "description": "Advanced Linux Package System (Termux build)",
+            "arch": "$ARCH",
+            "depends": [],
+            "control_files_dir": "/tmp/termux-control",
+            "files": {
+              "$BIN": "bin/alps",
+              "/tmp/alps-completions/alps.fish": "share/fish/vendor_completions.d/alps.fish",
+              "/tmp/alps-completions/alps": "share/bash-completion/completions/alps",
+              "/tmp/alps-completions/_alps": "share/zsh/site-functions/_alps"
+            }
+          }
+          EOF
+
+            termux-create-package "termux-manifest-$ARCH.json"
+            mv ./*.deb "termux-debs/alps-termux_${VERSION}_${ARCH}.deb"
+          done
+
+      - name: Upload Termux .deb artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: termux-debs
+          path: termux-debs/*.deb
+          retention-days: 1
+
   release:
     name: Publish Release
     runs-on: ubuntu-latest
-    needs: [build, build-termux, package]
+    needs: [build, build-termux, package, package-termux]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -307,6 +410,18 @@ jobs:
           - **Security**: HTTPS-only downloads, SHA-256 verification, GPG signature checks
           - **Platforms**: Linux (amd64/arm64/armv7), macOS (amd64/arm64), Termux (aarch64/arm/x86_64)
 
+          ### Termux
+
+          \`\`\`bash
+          curl -fsSL https://adrianpriza-ai.github.io/alps-apt/alps-archive-keyring.gpg \\
+            -o \$PREFIX/share/keyrings/alps-archive-keyring.gpg
+          echo "deb [signed-by=\$PREFIX/share/keyrings/alps-archive-keyring.gpg] https://adrianpriza-ai.github.io/alps-apt stable main" \\
+            > \$PREFIX/etc/apt/sources.list.d/alps.list
+          pkg update && pkg install alps
+          \`\`\`
+
+          Or install a single \`.deb\` directly with \`dpkg -i alps-termux_${TAG#v}_<arch>.deb\` (\`<arch>\` is \`aarch64\`, \`arm\`, or \`x86_64\`) — this also registers the repo automatically for future \`pkg upgrade\`s.
+
           ### Installation
 
           \`\`\`bash
@@ -335,14 +450,24 @@ jobs:
           mkdir -p pool/main/amd64
           mkdir -p pool/main/arm64
           mkdir -p pool/main/armhf
+          mkdir -p pool/main/aarch64
+          mkdir -p pool/main/arm
+          mkdir -p pool/main/x86_64
           mkdir -p dists/stable/main/binary-amd64
           mkdir -p dists/stable/main/binary-arm64
           mkdir -p dists/stable/main/binary-armhf
+          mkdir -p dists/stable/main/binary-aarch64
+          mkdir -p dists/stable/main/binary-arm
+          mkdir -p dists/stable/main/binary-x86_64
           mkdir -p dists/stable/main/binary-all
 
           cp ../binaries/alps_${TAG#v}_amd64.deb pool/main/amd64/
           cp ../binaries/alps_${TAG#v}_arm64.deb pool/main/arm64/
           cp ../binaries/alps_${TAG#v}_armhf.deb pool/main/armhf/
+          # Termux packages: same repo, different (non-conflicting) arch names.
+          cp ../binaries/alps-termux_${TAG#v}_aarch64.deb pool/main/aarch64/
+          cp ../binaries/alps-termux_${TAG#v}_arm.deb pool/main/arm/
+          cp ../binaries/alps-termux_${TAG#v}_x86_64.deb pool/main/x86_64/
 
           dpkg-scanpackages --multiversion pool/main/amd64 > dists/stable/main/binary-amd64/Packages
           gzip -kf dists/stable/main/binary-amd64/Packages
@@ -353,6 +478,15 @@ jobs:
           dpkg-scanpackages --multiversion pool/main/armhf > dists/stable/main/binary-armhf/Packages
           gzip -kf dists/stable/main/binary-armhf/Packages
 
+          dpkg-scanpackages --multiversion pool/main/aarch64 > dists/stable/main/binary-aarch64/Packages
+          gzip -kf dists/stable/main/binary-aarch64/Packages
+
+          dpkg-scanpackages --multiversion pool/main/arm > dists/stable/main/binary-arm/Packages
+          gzip -kf dists/stable/main/binary-arm/Packages
+
+          dpkg-scanpackages --multiversion pool/main/x86_64 > dists/stable/main/binary-x86_64/Packages
+          gzip -kf dists/stable/main/binary-x86_64/Packages
+
           touch dists/stable/main/binary-all/Packages
           gzip -kf dists/stable/main/binary-all/Packages
 
@@ -361,7 +495,7 @@ jobs:
           echo "  Label \"ALPS\";" >> apt.conf
           echo "  Suite \"stable\";" >> apt.conf
           echo "  Codename \"stable\";" >> apt.conf
-          echo "  Architectures \"amd64 arm64 armhf all\";" >> apt.conf
+          echo "  Architectures \"amd64 arm64 armhf aarch64 arm x86_64 all\";" >> apt.conf
           echo "  Components \"main\";" >> apt.conf
           echo "  Description \"ALPS APT Repository\";" >> apt.conf
           echo "};" >> apt.conf

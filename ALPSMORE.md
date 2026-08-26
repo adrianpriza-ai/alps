@@ -407,6 +407,10 @@ When using structured macros (`{INSTALL_BIN}`, `{INSTALL_LIB}`, etc.), ALPS writ
 
 No dangerous `rm -rf` commands in state files. Each item type uses the appropriate removal command. Failures on individual items don't halt the rest of the process.
 
+### Upgrade Behavior
+
+When upgrading a package, the new `owned_items` list replaces the old one. Any files the old version owned but the new version does not are automatically cleaned up during the upgrade — they won't be orphaned on disk.
+
 ### Example installed.json Structure
 ```json
 {

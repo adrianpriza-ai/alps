@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/adrianpriza-ai/alps/priv"
+	"github.com/adrianpriza-ai/alps/platform"
 )
 
 // Backend describes a container/flatpak-style package manager.
@@ -40,17 +41,6 @@ func Register(b Backend) {
 	registry[b.Name] = &cp
 }
 
-// isWSL checks if running on Windows Subsystem for Linux.
-func isWSL() bool {
-	if os.Getenv("WSL_DISTRO_NAME") != "" || os.Getenv("WSL_INTEROP") != "" {
-		return true
-	}
-	if data, err := os.ReadFile("/proc/version"); err == nil {
-		lower := strings.ToLower(string(data))
-		return strings.Contains(lower, "microsoft") || strings.Contains(lower, "wsl")
-	}
-	return false
-}
 
 // isWingetAvailable checks if winget.exe is available in WSL.
 func isWingetAvailable() bool {
@@ -231,7 +221,7 @@ func IsAvailable(backendName string) bool {
 		_, err := exec.LookPath("flatpak")
 		return err == nil
 	case "winget":
-		return isWSL() && isWingetAvailable()
+		return platform.IsWSL() && isWingetAvailable()
 	default:
 		return false
 	}

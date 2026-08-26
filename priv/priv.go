@@ -5,8 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	"runtime"
 	"strings"
+
+	"github.com/adrianpriza-ai/alps/platform"
 )
 
 // PrivilegeMethod represents the privilege escalation method.
@@ -29,16 +30,6 @@ type PrivilegeDecision struct {
 	Privileged bool            // Whether privilege escalation is required
 }
 
-// isTermux checks if running in Termux.
-func isTermux() bool {
-	return os.Getenv("TERMUX_VERSION") != "" ||
-		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
-}
-
-// isMacOS checks if running on macOS.
-func isMacOS() bool {
-	return runtime.GOOS == "darwin"
-}
 
 // IsRoot checks if running as root.
 func IsRoot() bool {
@@ -92,7 +83,7 @@ func DecidePrivilege(args ...string) (*PrivilegeDecision, error) {
 	}
 
 	// Termux owns its prefix — no escalation needed
-	if isTermux() {
+	if platform.IsTermux() {
 		return &PrivilegeDecision{
 			Method:     MethodNone,
 			Exec:       args[0],
@@ -103,7 +94,7 @@ func DecidePrivilege(args ...string) (*PrivilegeDecision, error) {
 	}
 
 	// macOS uses user directories for most operations
-	if isMacOS() {
+	if platform.IsMacOS() {
 		if HasSudo() {
 			return &PrivilegeDecision{
 				Method:     MethodSudo,
@@ -202,12 +193,12 @@ func Command(args ...string) (*exec.Cmd, error) {
 // Ensure gets a valid privilege token.
 func Ensure() error {
 	// Termux owns its prefix — no escalation needed or available
-	if isTermux() {
+	if platform.IsTermux() {
 		return nil
 	}
 
 	// macOS may need sudo for system operations
-	if isMacOS() {
+	if platform.IsMacOS() {
 		// If sudo is available, ensure it's authenticated
 		if HasSudo() {
 			if exec.Command("sudo", "-n", "true").Run() == nil {
@@ -265,11 +256,11 @@ func CommandSudoOnly(args ...string) (*exec.Cmd, error) {
 		return nil, fmt.Errorf("no command provided")
 	}
 
-	if isTermux() {
+	if platform.IsTermux() {
 		return exec.Command(args[0], args[1:]...), nil
 	}
 
-	if isMacOS() {
+	if platform.IsMacOS() {
 		// On macOS, allow sudo for system operations
 		if HasSudo() {
 			return exec.Command("sudo", args...), nil
@@ -299,11 +290,11 @@ func CommandModern(args ...string) (*exec.Cmd, error) {
 		return nil, fmt.Errorf("no command provided")
 	}
 
-	if isTermux() {
+	if platform.IsTermux() {
 		return exec.Command(args[0], args[1:]...), nil
 	}
 
-	if isMacOS() {
+	if platform.IsMacOS() {
 		// On macOS, prefer sudo if available
 		if HasSudo() {
 			return exec.Command("sudo", args...), nil
@@ -329,11 +320,11 @@ func CommandModern(args ...string) (*exec.Cmd, error) {
 
 // EnsureSudoOnly is like Ensure but never accepts su.
 func EnsureSudoOnly() error {
-	if isTermux() {
+	if platform.IsTermux() {
 		return nil
 	}
 
-	if isMacOS() {
+	if platform.IsMacOS() {
 		// On macOS, if sudo is available, ensure it's authenticated
 		if HasSudo() {
 			if exec.Command("sudo", "-n", "true").Run() == nil {
@@ -376,11 +367,11 @@ func EnsureSudoOnly() error {
 
 // EnsureModern ensures privilege access using modern methods (sudo/doas) only.
 func EnsureModern() error {
-	if isTermux() {
+	if platform.IsTermux() {
 		return nil
 	}
 
-	if isMacOS() {
+	if platform.IsMacOS() {
 		// On macOS, if sudo is available, ensure it's authenticated
 		if HasSudo() {
 			if exec.Command("sudo", "-n", "true").Run() == nil {
@@ -422,11 +413,11 @@ func EnsureModern() error {
 
 // Invalidate invalidates all available privilege escalation caches.
 func Invalidate() error {
-	if isTermux() {
+	if platform.IsTermux() {
 		return nil
 	}
 
-	if isMacOS() {
+	if platform.IsMacOS() {
 		// On macOS, invalidate sudo if available
 		if HasSudo() {
 			if err := exec.Command("sudo", "-k").Run(); err != nil {

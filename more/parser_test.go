@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/adrianpriza-ai/alps/platform"
 )
 
 // TestWriteManifestReadManifestRoundTrip verifies that a manifest written
@@ -67,7 +69,7 @@ func TestWriteManifestReadManifestEmptySections(t *testing.T) {
 	t.Setenv("TMPDIR", tmpDir)
 
 	cases := []struct {
-		name     string
+		name   string
 		manifest *ExecutionManifest
 	}{
 		{
@@ -218,7 +220,7 @@ func TestExecuteManifestEmpty(t *testing.T) {
 	}
 	e := &Entry{Name: "test-empty-pkg"}
 	ctx := NewMacroContext(e, "")
-	err := ExecuteManifest(manifest, e, OperationInstall, ctx)
+	err := ExecuteManifest(manifest, e, platform.OperationInstall, ctx)
 	if err != nil {
 		t.Fatalf("ExecuteManifest with empty manifest returned error: %v", err)
 	}
@@ -234,7 +236,7 @@ func TestExecuteManifestBuildEnvOnly(t *testing.T) {
 	}
 	e := &Entry{Name: "test-build-env-pkg", Safety: "free"}
 	ctx := NewMacroContext(e, "")
-	err := ExecuteManifest(manifest, e, OperationInstall, ctx)
+	err := ExecuteManifest(manifest, e, platform.OperationInstall, ctx)
 	if err != nil {
 		t.Fatalf("ExecuteManifest with build_env only returned error: %v", err)
 	}
@@ -249,7 +251,7 @@ func TestFilterBuildEnvMacros(t *testing.T) {
 		"{EXTRACT} file.tar.gz",
 		"{SH} ./configure",
 	}
-	manifest, err := Filter(lines, ctx, OperationInstall)
+	manifest, err := Filter(lines, ctx, platform.OperationInstall)
 	if err != nil {
 		t.Fatalf("Filter returned error: %v", err)
 	}
@@ -270,7 +272,7 @@ func TestFilterBuildEnvMacros(t *testing.T) {
 // TestFilterAfterEnvMacros verifies that after_env macros (INSTALL_SERVICE, ENABLE_SERVICE)
 // are placed in AfterEnv.
 func TestFilterAfterEnvMacros(t *testing.T) {
-	if isTermux() || isMacOS() {
+	if platform.IsTermux() || platform.IsMacOS() {
 		t.Skip("INSTALL_SERVICE is a no-op on Termux/macOS")
 	}
 	ctx := NewMacroContext(&Entry{Name: "pkg", Safety: "free"}, "")
@@ -278,7 +280,7 @@ func TestFilterAfterEnvMacros(t *testing.T) {
 		"{INSTALL_SERVICE} myapp.service",
 		"{ENABLE_SERVICE} myapp.service",
 	}
-	manifest, err := Filter(lines, ctx, OperationInstall)
+	manifest, err := Filter(lines, ctx, platform.OperationInstall)
 	if err != nil {
 		t.Fatalf("Filter returned error: %v", err)
 	}
@@ -303,7 +305,7 @@ func TestFilterMixedLines(t *testing.T) {
 		"make -j4",
 		"{INSTALL_SERVICE} myapp.service",
 	}
-	manifest, err := Filter(lines, ctx, OperationInstall)
+	manifest, err := Filter(lines, ctx, platform.OperationInstall)
 	if err != nil {
 		t.Fatalf("Filter returned error: %v", err)
 	}
@@ -321,7 +323,7 @@ func TestFilterMixedLines(t *testing.T) {
 // TestFilterRemoveOpSkipsInstallMacros verifies that during remove/purge operations,
 // install-only macros are skipped from AfterEnv.
 func TestFilterRemoveOpSkipsInstallMacros(t *testing.T) {
-	if isTermux() || isMacOS() {
+	if platform.IsTermux() || platform.IsMacOS() {
 		t.Skip("INSTALL_SERVICE is a no-op on Termux/macOS")
 	}
 	ctx := NewMacroContext(&Entry{Name: "pkg", Safety: "free"}, "")
@@ -330,7 +332,7 @@ func TestFilterRemoveOpSkipsInstallMacros(t *testing.T) {
 		"{ENABLE_SERVICE} myapp.service",
 		"{DISABLE_SERVICE} myapp.service",
 	}
-	manifest, err := Filter(lines, ctx, OperationRemove)
+	manifest, err := Filter(lines, ctx, platform.OperationRemove)
 	if err != nil {
 		t.Fatalf("Filter returned error: %v", err)
 	}
@@ -349,7 +351,7 @@ func TestFilterRemoveOpSkipsInstallMacros(t *testing.T) {
 func TestFilterPlaceholders(t *testing.T) {
 	ctx := NewMacroContext(&Entry{Name: "myapp", Version: "2.0.0"}, "https://mirror.example.com/")
 	lines := []string{"echo {PKGNAME} {VERSION} {SERVER}"}
-	manifest, err := Filter(lines, ctx, OperationInstall)
+	manifest, err := Filter(lines, ctx, platform.OperationInstall)
 	if err != nil {
 		t.Fatalf("Filter returned error: %v", err)
 	}

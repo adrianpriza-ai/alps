@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/adrianpriza-ai/alps/platform"
 )
 
 func TestRequireNextSha256(t *testing.T) {
@@ -124,7 +126,7 @@ func TestIsValidSha256(t *testing.T) {
 func TestValidatePkgNameComponent(t *testing.T) {
 	valid := []string{"mytool", "nodejs-lts", "my_pkg", "1password", "lib+plus", "a.b"}
 	for _, name := range valid {
-		if err := validatePkgNameComponent(name); err != nil {
+		if err := platform.ValidatePkgName(name); err != nil {
 			t.Errorf("expected %q to be valid, got: %v", name, err)
 		}
 	}
@@ -134,7 +136,7 @@ func TestValidatePkgNameComponent(t *testing.T) {
 		"a b", "a@b", string(make([]byte, 256)),
 	}
 	for _, name := range invalid {
-		if err := validatePkgNameComponent(name); err == nil {
+		if err := platform.ValidatePkgName(name); err == nil {
 			t.Errorf("expected %q to be rejected", name)
 		}
 	}
@@ -752,7 +754,7 @@ func TestExecuteDownloadSuccess(t *testing.T) {
 // TestExecuteInstallServiceValidation tests argument and path validation for executeInstallService.
 func TestExecuteInstallServiceValidation(t *testing.T) {
 	// Skip on Termux/macOS where the function returns empty.
-	if isTermux() || isMacOS() {
+	if platform.IsTermux() || platform.IsMacOS() {
 		t.Skip("INSTALL_SERVICE is a no-op on Termux/macOS")
 	}
 
@@ -789,7 +791,7 @@ func TestExecuteInstallServiceValidation(t *testing.T) {
 
 // TestExecuteInstallServiceDefaultDest verifies the default /etc/systemd/system destination.
 func TestExecuteInstallServiceDefaultDest(t *testing.T) {
-	if isTermux() || isMacOS() {
+	if platform.IsTermux() || platform.IsMacOS() {
 		t.Skip("INSTALL_SERVICE is a no-op on Termux/macOS")
 	}
 
@@ -819,7 +821,7 @@ func TestExecuteInstallServiceDefaultDest(t *testing.T) {
 
 // TestExecuteInstallServiceCustomDest verifies a custom destination path.
 func TestExecuteInstallServiceCustomDest(t *testing.T) {
-	if isTermux() || isMacOS() {
+	if platform.IsTermux() || platform.IsMacOS() {
 		t.Skip("INSTALL_SERVICE is a no-op on Termux/macOS")
 	}
 
@@ -844,7 +846,7 @@ func TestExecuteInstallServiceCustomDest(t *testing.T) {
 
 // TestExecuteInstallServiceDirDest verifies dest ending with / appends the filename.
 func TestExecuteInstallServiceDirDest(t *testing.T) {
-	if isTermux() || isMacOS() {
+	if platform.IsTermux() || platform.IsMacOS() {
 		t.Skip("INSTALL_SERVICE is a no-op on Termux/macOS")
 	}
 

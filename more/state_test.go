@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -79,7 +80,7 @@ func TestInstalledRecordEmptyFieldsRoundTrip(t *testing.T) {
 	// The JSON should not contain omitted fields.
 	jsonStr := string(data)
 	for _, omitted := range []string{"remove_lines", "purge_lines", "servers", "safety", "owned_items", "source"} {
-		if contains(jsonStr, omitted) {
+		if strings.Contains(jsonStr, omitted) {
 			t.Errorf("JSON should omit %q field when empty, but found in:\n%s", omitted, jsonStr)
 		}
 	}
@@ -188,9 +189,9 @@ func TestMarkInstalledRecordJSON(t *testing.T) {
 			},
 		},
 		"pkg-b": {
-			Version:     "2.1.0",
+			Version:    "2.1.0",
 			InstalledAt: "2026-08-23T15:00:00Z",
-			Safety:      "free",
+			Safety:     "free",
 		},
 	}
 
@@ -254,7 +255,3 @@ func TestInstalledRecordBackupOnCorrupt(t *testing.T) {
 	}
 }
 
-// contains is a simple string search helper for test assertions.
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}

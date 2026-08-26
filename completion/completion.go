@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/adrianpriza-ai/alps/platform"
 )
 
 // Generate prints a shell completion script.
@@ -26,26 +28,10 @@ func Generate(shell string) {
 	}
 }
 
-func isTermux() bool {
-	return os.Getenv("TERMUX_VERSION") != "" ||
-		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
-}
-
-// isWSL checks if running on Windows Subsystem for Linux.
-func isWSL() bool {
-	if os.Getenv("WSL_DISTRO_NAME") != "" || os.Getenv("WSL_INTEROP") != "" {
-		return true
-	}
-	if data, err := os.ReadFile("/proc/version"); err == nil {
-		lower := strings.ToLower(string(data))
-		return strings.Contains(lower, "microsoft") || strings.Contains(lower, "wsl")
-	}
-	return false
-}
 
 // cacheDir returns the cache directory.
 func cacheDir() string {
-	if isTermux() {
+	if platform.IsTermux() {
 		prefix := os.Getenv("PREFIX")
 		if prefix == "" {
 			prefix = "/data/data/com.termux/files/usr"
@@ -57,7 +43,7 @@ func cacheDir() string {
 
 // libDir returns the state directory.
 func libDir() string {
-	if isTermux() {
+	if platform.IsTermux() {
 		prefix := os.Getenv("PREFIX")
 		if prefix == "" {
 			prefix = "/data/data/com.termux/files/usr"
@@ -219,11 +205,11 @@ complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" install in
 complete -c alps -n 'set -l t (commandline -poc); contains -- "$t[2]" remove rm purge pu; and test (count $t) -eq 2' \
     -a "(%s)" -d 'installed package'
 `, morePkgs, moreInstalled,
-		pkgList, aurNames,
-		aurNames,
-		aurInstalled,
-		pkgList,
-		installedList)
+	pkgList, aurNames,
+	aurNames,
+	aurInstalled,
+	pkgList,
+	installedList)
 }
 
 func genBash(cmds []string, backend string) {
@@ -453,11 +439,11 @@ _alps() {
 }
 
 _alps
-`, strings.Join(cmdList, "\n                "),
-		pkgList, installedList,
-		morePkgs, moreInstalled,
-		pkgList, aurNames, aurInstalled,
-		aurNames)
+`,strings.Join(cmdList, "\n                "),
+	pkgList, installedList,
+	morePkgs, moreInstalled,
+	pkgList, aurNames, aurInstalled,
+	aurNames)
 }
 
 // cmdDesc returns a description for a command.
@@ -504,7 +490,7 @@ func effectiveCmds() []string {
 		"autoremove", "autoclean", "clean",
 	}
 
-	if isTermux() {
+	if platform.IsTermux() {
 		return base
 	}
 
@@ -523,7 +509,7 @@ func effectiveCmds() []string {
 }
 
 func detectDistroID() string {
-	if isTermux() {
+	if platform.IsTermux() {
 		return "termux"
 	}
 	data, err := os.ReadFile("/etc/os-release")

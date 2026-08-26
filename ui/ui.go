@@ -10,6 +10,7 @@ import (
 	"github.com/adrianpriza-ai/alps/config"
 	"github.com/adrianpriza-ai/alps/more"
 	"github.com/adrianpriza-ai/alps/pack"
+	"github.com/adrianpriza-ai/alps/platform"
 )
 
 type Level int
@@ -359,11 +360,6 @@ func symReinstall() string {
 	return "⟳"
 }
 
-// isTermux checks if running in Termux environment.
-func isTermux() bool {
-	return os.Getenv("TERMUX_VERSION") != "" ||
-		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
-}
 
 // isTTY checks for basic TTY.
 func isTTY() bool {
@@ -376,7 +372,7 @@ func PrintDiagnostic(cfg *config.Config) {
 	PrintHeader(cfg)
 
 	var distro string
-	if isTermux() {
+	if platform.IsTermux() {
 		distro = "Termux"
 		if v := os.Getenv("TERMUX_VERSION"); v != "" {
 			distro = "Termux " + v
@@ -409,7 +405,7 @@ func PrintDiagnostic(cfg *config.Config) {
 	moreCount := len(installed)
 
 	extras := []string{}
-	if !isTermux() {
+	if !platform.IsTermux() {
 		if _, err := exec.LookPath("flatpak"); err == nil {
 			extras = append(extras, "flatpak")
 		}

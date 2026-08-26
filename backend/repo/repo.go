@@ -332,12 +332,12 @@ func (b *Backend) Upgrade(pkgs []string) error {
 	// phase can call more.UpgradeEntry / more.UpgradeFromSource directly
 	// without re-reading the installed DB or re-checking versions.
 	type pkgPreview struct {
-		name     string
+		name    string
 		from, to string
-		err      string // non-empty if the package can't be upgraded
-		entry    *more.Entry
-		rec      *more.InstalledRecord
-		remote   string // non-empty if sourced from github/gitlab
+		err     string // non-empty if the package can't be upgraded
+		entry   *more.Entry
+		rec     *more.InstalledRecord
+		remote  string // non-empty if sourced from github/gitlab
 	}
 
 	var previews []pkgPreview
@@ -522,7 +522,7 @@ func (b *Backend) Upgrade(pkgs []string) error {
 
 // Clean removes the repo cache
 func (b *Backend) Clean(dryRun bool) error {
-	cacheDir := more.CacheDir()
+	cacheDir := more.BuildCacheDir()
 	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
 		ui.Msg(b.cfg, ui.LevelInfo, "No repo cache found.")
 		return nil

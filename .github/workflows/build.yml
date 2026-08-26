@@ -102,24 +102,9 @@ jobs:
           retention-days: 7
 
   cross-compile:
-    name: Build (${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('/v{0}', matrix.goarm) || '' }})
+    name: Build
     runs-on: ubuntu-latest
     needs: [format]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: linux
-            goarch: arm
-            goarm: 7
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -130,12 +115,26 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Compile target
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm }}
-        run: go build -v -o /dev/null .
+      - name: Compile all targets
+        run: |
+          declare -A platforms=(
+            ["linux/amd64"]=""
+            ["linux/arm64"]=""
+            ["linux/arm/v7"]="7"
+            ["darwin/amd64"]=""
+            ["darwin/arm64"]=""
+          )
+          for pair in "${!platforms[@]}"; do
+            os="${pair%/*}"
+            arch="${pair#*/}"
+            arm="${platforms[$pair]}"
+            echo "==> Building $pair"
+            if [[ -n "$arm" ]]; then
+              GOOS="$os" GOARCH="$arch" GOARM="$arm" go build -v -o /dev/null .
+            else
+              GOOS="$os" GOARCH="$arch" go build -v -o /dev/null .
+            fi
+          done
 
   security:
     name: Security Vulnerability Scan

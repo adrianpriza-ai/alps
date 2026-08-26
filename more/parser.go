@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/adrianpriza-ai/alps/config"
+	"github.com/adrianpriza-ai/alps/platform"
 	"github.com/adrianpriza-ai/alps/runner"
 )
 
@@ -52,16 +53,6 @@ func stripUnknownTokens(s string) string {
 	return result.String()
 }
 
-// OperationType represents the type of operation being performed
-type OperationType string
-
-const (
-	OperationInstall OperationType = "install"
-	OperationRemove  OperationType = "remove"
-	OperationUpgrade OperationType = "upgrade"
-	OperationPurge   OperationType = "purge"
-)
-
 // ExecutionManifest represents the execution plan stored in the temp dir
 // (/tmp/.alps_runner.txt on Linux, $PREFIX/tmp/.alps_runner.txt on Termux)
 type ExecutionManifest struct {
@@ -71,16 +62,16 @@ type ExecutionManifest struct {
 }
 
 // Scrape extracts command blocks from an Entry based on the operation type
-func Scrape(e *Entry, op OperationType) ([]string, error) {
+func Scrape(e *Entry, op platform.OperationType) ([]string, error) {
 	var lines []string
 
 	switch op {
-	case OperationInstall:
+	case platform.OperationInstall:
 		if len(e.CmdLines) == 0 {
 			return nil, fmt.Errorf("package %q has no install commands (cmd_begin/cmd_end)", e.Name)
 		}
 		lines = append([]string(nil), e.CmdLines...)
-	case OperationRemove:
+	case platform.OperationRemove:
 		// Try to get remove lines from entry first
 		if len(e.RemoveLines) > 0 {
 			lines = append([]string(nil), e.RemoveLines...)
@@ -95,7 +86,7 @@ func Scrape(e *Entry, op OperationType) ([]string, error) {
 			}
 			lines = append([]string(nil), rec.RemoveLines...)
 		}
-	case OperationUpgrade:
+	case platform.OperationUpgrade:
 		if len(e.UpgradeLines) > 0 {
 			lines = append([]string(nil), e.UpgradeLines...)
 		} else {
@@ -105,7 +96,7 @@ func Scrape(e *Entry, op OperationType) ([]string, error) {
 			}
 			lines = append([]string(nil), e.CmdLines...)
 		}
-	case OperationPurge:
+	case platform.OperationPurge:
 		// Try to get purge lines from entry first
 		if len(e.PurgeLines) > 0 {
 			lines = append([]string(nil), e.PurgeLines...)
@@ -160,7 +151,7 @@ var AfterEnvMacros = map[string]bool{
 //     are executed by Go with Go-level process privileges during manifest execution.
 //   - Plain shell commands placed into temp scripts are wrapped in fakeroot when running under strict safety
 //     (install/upgrade on Linux as non-root), and any inner sudo/doas/pkexec commands are stripped by stripSudo.
-func Filter(lines []string, ctx *MacroContext, op OperationType) (*ExecutionManifest, error) {
+func Filter(lines []string, ctx *MacroContext, op platform.OperationType) (*ExecutionManifest, error) {
 	manifest := &ExecutionManifest{
 		BuildEnv:  []string{},
 		AfterEnv:  []string{},
@@ -174,10 +165,10 @@ func Filter(lines []string, ctx *MacroContext, op OperationType) (*ExecutionMani
 }
 
 // shouldStripEscalation determines if privilege escalation should be stripped
-func shouldStripEscalation(op OperationType, ctx *MacroContext) bool {
-	return (op == OperationInstall || op == OperationUpgrade) &&
+func shouldStripEscalation(op platform.OperationType, ctx *MacroContext) bool {
+	return (op == platform.OperationInstall || op == platform.OperationUpgrade) &&
 		(ctx.Safety == "strict" || ctx.Safety == "") &&
-		!isTermux() && !isMacOS() && !isRoot()
+		!platform.IsTermux() && !platform.IsMacOS() && !platform.IsRoot()
 }
 
 // expandPlaceholdersGlobally expands placeholders in all lines
@@ -189,9 +180,12 @@ func expandPlaceholdersGlobally(lines []string, ctx *MacroContext) []string {
 	return expandedLines
 }
 
-// processLines processes expanded lines and categorizes them into the manifest
-func processLines(lines []string, stripEsc bool, manifest *ExecutionManifest, op OperationType) (*ExecutionManifest, error) {
+// processLines processes expanded lines and categorizes them into the manifest.
+// It tracks which manifest section (buildEnv/afterEnv) the current buffer belongs to
+// so that plain commands between macros land in the correct section.
+func processLines(lines []string, stripEsc bool, manifest *ExecutionManifest, op platform.OperationType) (*ExecutionManifest, error) {
 	var currentBuffer []string
+	currentSection := "buildEnv" // tracks which manifest section the buffer targets
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -202,12 +196,20 @@ func processLines(lines []string, stripEsc bool, manifest *ExecutionManifest, op
 		macro, _, isMacro := ParseMacro(line)
 
 		if isMacro {
-			if err := flushBuffer(currentBuffer, manifest); err != nil {
+			if err := flushBuffer(currentBuffer, currentSection, manifest); err != nil {
 				return nil, err
 			}
 			currentBuffer = []string{}
 
 			categorizeMacro(line, macro, manifest, op)
+
+			// Update section tracker: if the macro landed in AfterEnv, subsequent
+			// plain commands should also buffer into AfterEnv.
+			if AfterEnvMacros[macro.Name] {
+				currentSection = "afterEnv"
+			} else if BuildEnvMacros[macro.Name] {
+				currentSection = "buildEnv"
+			}
 		} else {
 			processedLine := processShellCommand(line, stripEsc)
 			if processedLine != "" {
@@ -216,15 +218,16 @@ func processLines(lines []string, stripEsc bool, manifest *ExecutionManifest, op
 		}
 	}
 
-	if err := flushBuffer(currentBuffer, manifest); err != nil {
+	if err := flushBuffer(currentBuffer, currentSection, manifest); err != nil {
 		return nil, err
 	}
 
 	return manifest, nil
 }
 
-// flushBuffer writes buffered commands to a temp script and adds to manifest
-func flushBuffer(buffer []string, manifest *ExecutionManifest) error {
+// flushBuffer writes buffered commands to a temp script and adds to the
+// appropriate manifest section (buildEnv or afterEnv).
+func flushBuffer(buffer []string, section string, manifest *ExecutionManifest) error {
 	if len(buffer) == 0 {
 		return nil
 	}
@@ -235,7 +238,13 @@ func flushBuffer(buffer []string, manifest *ExecutionManifest) error {
 	}
 
 	shell := detectShell()
-	manifest.BuildEnv = append(manifest.BuildEnv, fmt.Sprintf("%s %s", shell, scriptPath))
+	cmd := fmt.Sprintf("%s %s", shell, scriptPath)
+	switch section {
+	case "afterEnv":
+		manifest.AfterEnv = append(manifest.AfterEnv, cmd)
+	default:
+		manifest.BuildEnv = append(manifest.BuildEnv, cmd)
+	}
 	manifest.ScriptNum++
 	return nil
 }
@@ -249,8 +258,8 @@ func detectShell() string {
 }
 
 // categorizeMacro adds a macro to the appropriate manifest section
-func categorizeMacro(line string, macro Macro, manifest *ExecutionManifest, op OperationType) {
-	if (op == OperationRemove || op == OperationPurge) && isInstallOnlyMacro(macro.Name) {
+func categorizeMacro(line string, macro Macro, manifest *ExecutionManifest, op platform.OperationType) {
+	if (op == platform.OperationRemove || op == platform.OperationPurge) && isInstallOnlyMacro(macro.Name) {
 		return // Skip install/creation macros during remove or purge
 	}
 	if BuildEnvMacros[macro.Name] {
@@ -376,16 +385,16 @@ func currentStyle() config.Style {
 
 // envStepLabel maps an operation to a user-facing label for the after_env
 // phase: installs/upgrades run "post-install" steps, removals run "cleanup".
-func envStepLabel(op OperationType) string {
-	if op == OperationRemove || op == OperationPurge {
+func envStepLabel(op platform.OperationType) string {
+	if op == platform.OperationRemove || op == platform.OperationPurge {
 		return "cleanup"
 	}
 	return "post-install"
 }
 
 // Executes execution manifest with proper error handling, wraps build_env and after_env with fakeroot if safety=strict, and avoids automatic cleanup/removal.
-func ExecuteManifest(manifest *ExecutionManifest, e *Entry, op OperationType, ctx *MacroContext) error {
-	afterEnvSudo := !isTermux() && !isMacOS()
+func ExecuteManifest(manifest *ExecutionManifest, e *Entry, op platform.OperationType, ctx *MacroContext) error {
+	afterEnvSudo := !platform.IsTermux() && !platform.IsMacOS()
 
 	// Get build directory for macro context and change to it
 	pkgDir, err := getBuildDir(e.Name)
@@ -418,7 +427,7 @@ func ExecuteManifest(manifest *ExecutionManifest, e *Entry, op OperationType, ct
 }
 
 // executeBuildEnv executes all build_env commands with proper privilege handling
-func executeBuildEnv(commands []string, op OperationType, ctx *MacroContext) error {
+func executeBuildEnv(commands []string, op platform.OperationType, ctx *MacroContext) error {
 	if len(commands) == 0 {
 		return nil
 	}
@@ -441,10 +450,10 @@ func executeBuildEnv(commands []string, op OperationType, ctx *MacroContext) err
 }
 
 // executeAfterEnv executes all after_env commands with proper privilege handling
-func executeAfterEnv(commands []string, useSudo bool, ctx *MacroContext, op OperationType) error {
+func executeAfterEnv(commands []string, useSudo bool, ctx *MacroContext, op platform.OperationType) error {
 	// Filter out install/creation macros during remove or purge operations.
 	// This is a safety net in case categorizeMacro let them through.
-	if op == OperationRemove || op == OperationPurge {
+	if op == platform.OperationRemove || op == platform.OperationPurge {
 		filtered := make([]string, 0, len(commands))
 		for _, cmd := range commands {
 			macro, _, isMacro := ParseMacro(strings.TrimSpace(cmd))
@@ -481,7 +490,7 @@ func executeAfterEnv(commands []string, useSudo bool, ctx *MacroContext, op Oper
 }
 
 // expandAndWrapCommand expands macros and wraps command with fakeroot if needed
-func expandAndWrapCommand(cmd string, op OperationType, ctx *MacroContext) (string, error) {
+func expandAndWrapCommand(cmd string, op platform.OperationType, ctx *MacroContext) (string, error) {
 	expanded, err := ExpandMacros([]string{cmd}, ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to expand build macro: %w", err)
@@ -494,8 +503,8 @@ func expandAndWrapCommand(cmd string, op OperationType, ctx *MacroContext) (stri
 
 	// Wraps build_env and after_env with fakeroot for install/upgrade operations, removing permissions and purge system files.
 	// On macOS, fakeroot is not available, so this is skipped.
-	if (op == OperationInstall || op == OperationUpgrade) &&
-		(ctx.Safety == "strict" || ctx.Safety == "") && !isTermux() && !isMacOS() && !isRoot() {
+	if (op == platform.OperationInstall || op == platform.OperationUpgrade) &&
+		(ctx.Safety == "strict" || ctx.Safety == "") && !platform.IsTermux() && !platform.IsMacOS() && !platform.IsRoot() {
 		if err := requireFakeroot(); err != nil {
 			return "", err
 		}
@@ -513,7 +522,7 @@ func expandAndWrapCommand(cmd string, op OperationType, ctx *MacroContext) (stri
 func executeCommand(cmd string, useSudo bool) error {
 	r := runner.NewDefaultRunner(false)
 	shellCmd := runner.BuildShellCommand(cmd)
-	if useSudo && !isTermux() {
+	if useSudo && !platform.IsTermux() {
 		shellCmd = shellCmd.WithPrivilege()
 	}
 	return r.Run(context.Background(), shellCmd)
