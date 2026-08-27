@@ -47,11 +47,7 @@ func ReadInstalled() (map[string]InstalledRecord, error) {
 		// Corrupt JSON — back up and reset so alps keeps working
 		backup := filepath.Clean(getInstalledFile() + ".bak")
 		_ = os.WriteFile(backup, data, 0644) // #nosec G703
-		warn := "⚠"
-		if t := os.Getenv("TERM"); t == "linux" || t == "dumb" || t == "" {
-			warn = "!!"
-		}
-		fmt.Printf("  %s  installed.json is corrupt — backed up to %s, resetting.\n", warn, backup)
+		fmt.Printf("  %s  installed.json is corrupt — backed up to %s, resetting.\n", currentStyle().SymWarn, backup)
 		return make(map[string]InstalledRecord), nil
 	}
 	return records, nil
