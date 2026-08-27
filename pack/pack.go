@@ -61,7 +61,6 @@ func DetectName() string {
 	return ""
 }
 
-
 // NeedsSudo checks if backend requires sudo.
 func NeedsSudo(name string) bool {
 	if platform.IsTermux() {

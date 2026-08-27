@@ -331,7 +331,7 @@ func TestIsForgeHostHuggingFace(t *testing.T) {
 			}
 		})
 	}
-}// TestFetchALPSMORERemoteHuggingFace verifies that the full fetch path for
+} // TestFetchALPSMORERemoteHuggingFace verifies that the full fetch path for
 // a Hugging Face source constructs the correct URL and rejects non-allowlisted
 // hosts. The actual HTTP download is tested by integration tests since the
 // isForgeHost allowlist blocks test server hosts by design.

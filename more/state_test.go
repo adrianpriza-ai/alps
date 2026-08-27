@@ -189,9 +189,9 @@ func TestMarkInstalledRecordJSON(t *testing.T) {
 			},
 		},
 		"pkg-b": {
-			Version:    "2.1.0",
+			Version:     "2.1.0",
 			InstalledAt: "2026-08-23T15:00:00Z",
-			Safety:     "free",
+			Safety:      "free",
 		},
 	}
 
@@ -254,4 +254,3 @@ func TestInstalledRecordBackupOnCorrupt(t *testing.T) {
 		t.Errorf("expected empty map after reset, got %d records", len(records))
 	}
 }
-

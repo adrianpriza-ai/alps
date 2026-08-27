@@ -44,7 +44,6 @@ var defaultServers = []string{
 // Security: Removed branch fallbacks - require explicit branch specification
 // to prevent reliance on mutable references like HEAD, main, master
 
-
 func getCacheFile() string     { return filepath.Join(platform.CacheDir(), "main.txt") }
 func getLastSyncFile() string  { return filepath.Join(platform.CacheDir(), "last_sync") }
 func getInstalledFile() string { return filepath.Join(platform.LibDir(), "installed.json") }
