@@ -6,8 +6,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/adrianpriza-ai/alps/platform"
 	"github.com/adrianpriza-ai/alps/priv"
+	"github.com/adrianpriza-ai/alps/platform"
 )
 
 // Backend describes a container/flatpak-style package manager.
@@ -40,6 +40,7 @@ func Register(b Backend) {
 	cp := b
 	registry[b.Name] = &cp
 }
+
 
 // isWingetAvailable checks if winget.exe is available in WSL.
 func isWingetAvailable() bool {

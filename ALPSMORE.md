@@ -47,7 +47,6 @@ cmd_end
 | Host | Platform | Install example |
 |-|-|-|
 | `github.com` | GitHub | `alps repo install github.com/user/repo@main` |
-| `raw.githubusercontent.com` | GitHub | (used internally for raw content) |
 | `codeberg.org` | Codeberg | `alps repo install codeberg.org/user/repo@main` |
 | `gitlab.com` | GitLab | `alps repo install gitlab.com/user/repo@main` |
 | `gitea.com` | Gitea | `alps repo install gitea.com/user/repo@main` |
@@ -62,6 +61,7 @@ cmd_end
 | `gitee.com` | Gitee | `alps repo install gitee.com/user/repo@main` |
 | `gitcode.com` | GitCode | `alps repo install gitcode.com/user/repo@main` |
 | `atomgit.com` | AtomGit | `alps repo install atomgit.com/user/repo@main` |
+| `huggingface.co` | Hugging Face | `alps repo install huggingface.co/user/repo@main` |
 
 Branch must always be explicit (`@main`, `@master`, `@dev`, etc.) — no mutable HEAD/main/master fallback.
 

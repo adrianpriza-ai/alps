@@ -61,15 +61,15 @@ type MacroContext struct {
 	Version        string
 	Server         string
 	Arch           string
-	OS             string                 // Operating system (linux, darwin, etc.)
-	Distro         string                 // Linux distribution ID (ubuntu, debian, etc.)
-	Safety         string                 // "strict" or "free"
-	SHA256Sums     []string               // SHA-256 checksums for downloads
-	SHA256Index    int                    // Current index for SHA256 sum assignment
-	Op             platform.OperationType // current operation (install/upgrade/remove/purge)
-	InstalledPaths []InstalledPath        // Track installed files for auto-uninstall (internal)
-	DeferredOps    []DeferredOperation    // Deferred file operations
-	BuildDir       string                 // Build directory for source files
+	OS             string              // Operating system (linux, darwin, etc.)
+	Distro         string              // Linux distribution ID (ubuntu, debian, etc.)
+	Safety         string              // "strict" or "free"
+	SHA256Sums     []string                 // SHA-256 checksums for downloads
+	SHA256Index    int                      // Current index for SHA256 sum assignment
+	Op             platform.OperationType   // current operation (install/upgrade/remove/purge)
+	InstalledPaths []InstalledPath          // Track installed files for auto-uninstall (internal)
+	DeferredOps    []DeferredOperation      // Deferred file operations
+	BuildDir       string              // Build directory for source files
 	DistroVersion  string
 }
 

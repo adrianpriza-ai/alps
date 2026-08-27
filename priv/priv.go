@@ -30,6 +30,7 @@ type PrivilegeDecision struct {
 	Privileged bool            // Whether privilege escalation is required
 }
 
+
 // IsRoot checks if running as root.
 func IsRoot() bool {
 	return os.Getuid() == 0

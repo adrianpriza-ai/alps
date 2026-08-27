@@ -232,12 +232,12 @@ func (b *Backend) Orphans() error {
 		ui.Msgf(b.cfg, ui.LevelError, "%v", err)
 		return err
 	}
-
+	
 	if len(orphans) == 0 {
 		ui.Msg(b.cfg, ui.LevelInfo, "No AUR orphan packages found.")
 		return nil
 	}
-
+	
 	ui.Msgf(b.cfg, ui.LevelInfo, "Found %d AUR orphan package(s):", len(orphans))
 	for _, orphan := range orphans {
 		fmt.Printf("  - %s\n", orphan)

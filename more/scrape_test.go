@@ -118,3 +118,4 @@ func TestScrapeUnknownOp(t *testing.T) {
 		t.Fatal("expected error for unknown operation type")
 	}
 }
+

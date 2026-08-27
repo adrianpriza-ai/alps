@@ -332,12 +332,12 @@ func (b *Backend) Upgrade(pkgs []string) error {
 	// phase can call more.UpgradeEntry / more.UpgradeFromSource directly
 	// without re-reading the installed DB or re-checking versions.
 	type pkgPreview struct {
-		name     string
+		name    string
 		from, to string
-		err      string // non-empty if the package can't be upgraded
-		entry    *more.Entry
-		rec      *more.InstalledRecord
-		remote   string // non-empty if sourced from github/gitlab
+		err     string // non-empty if the package can't be upgraded
+		entry   *more.Entry
+		rec     *more.InstalledRecord
+		remote  string // non-empty if sourced from github/gitlab
 	}
 
 	var previews []pkgPreview

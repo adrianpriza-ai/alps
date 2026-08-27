@@ -44,6 +44,7 @@ var defaultServers = []string{
 // Security: Removed branch fallbacks - require explicit branch specification
 // to prevent reliance on mutable references like HEAD, main, master
 
+
 func getCacheFile() string     { return filepath.Join(platform.CacheDir(), "main.txt") }
 func getLastSyncFile() string  { return filepath.Join(platform.CacheDir(), "last_sync") }
 func getInstalledFile() string { return filepath.Join(platform.LibDir(), "installed.json") }
@@ -369,6 +370,8 @@ func isForgeHost(rawURL string) bool {
 		"atomgit.com", // AtomGit — open-source by China
 		// Gitea / Forgejo instances
 		"gitea.com", // Gitea official SaaS
+		// AI/ML platform with Git-hosted repos
+		"huggingface.co", // Hugging Face Model Hub + Datasets
 		// Official alps-more manifest mirrors (GitHub/Codeberg Pages).
 		// Exact-host entries only — other *.github.io / *.codeberg.page
 		// sites remain rejected.
@@ -471,6 +474,8 @@ func remoteRawURL(ref RemoteRef, branch string) string {
 	case "sourcehut":
 		// SourceHut serves raw content on git.sr.ht, not sr.ht
 		return fmt.Sprintf("https://git.sr.ht/%s/raw/branch/%s/ALPSMORE", ref.RepoPath, branch)
+	case "huggingface":
+		return fmt.Sprintf("https://%s/%s/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
 	default:
 		return fmt.Sprintf("https://%s/%s/-/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
 	}
@@ -586,6 +591,8 @@ func defaultHost(provider string) string {
 		return "gitlab.com"
 	case "codeberg":
 		return "codeberg.org"
+	case "huggingface":
+		return "huggingface.co"
 	default:
 		return ""
 	}
@@ -608,6 +615,8 @@ func providerFromHost(host string) string {
 		return "gitea"
 	case host == "sr.ht" || strings.HasSuffix(host, ".sr.ht"):
 		return "sourcehut"
+	case host == "huggingface.co":
+		return "huggingface"
 	default:
 		// Self-hosted GitLab and other GitLab-compatible forges.
 		return "gitlab"

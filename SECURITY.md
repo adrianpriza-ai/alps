@@ -1,8 +1,10 @@
-# Security Policy
-
 ## Reporting a Vulnerability
 
-Report vulnerabilities by email to **coreygit1@gmail.com**. Do not use public GitHub issues or discussions.
+Security vulnerabilities can be reported by email to **coreygit1@gmail.com**.
+
+alps-more is a trust-based system. ALPS only accepts repositories from supported Git forges, but being hosted on a supported forge does **not** imply that the repository or its ALPSMORE files are trustworthy or safe. Users are responsible for deciding which repositories they trust.
+
+Email is preferred for security reports so potentially sensitive details can be discussed privately when appropriate.
 
 Include:
 - What the vulnerability is
@@ -10,8 +12,8 @@ Include:
 - What impact it could have
 - Any fixes you have in mind
 
-Reports get reviewed promptly.
+Reports will be reviewed when possible.
 
 ## Supported Versions
 
-Only the latest release gets security updates.
+Only the latest release receives security updates.

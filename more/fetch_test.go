@@ -181,3 +181,188 @@ func TestCacheStatus(t *testing.T) {
 	_ = expired
 	fmt.Println("  CacheStatus ran without panic")
 }
+
+// --- Hugging Face provider tests ---
+
+// TestRemoteRawURLHuggingFace verifies that remoteRawURL generates the correct
+// raw content URL for Hugging Face repositories.
+func TestRemoteRawURLHuggingFace(t *testing.T) {
+	ref := RemoteRef{
+		Provider: "huggingface",
+		Host:     "huggingface.co",
+		RepoPath: "user/myrepo",
+	}
+	got := remoteRawURL(ref, "main")
+	want := "https://huggingface.co/user/myrepo/raw/main/ALPSMORE"
+	if got != want {
+		t.Errorf("remoteRawURL() = %q, want %q", got, want)
+	}
+}
+
+// TestRemoteRawURLHuggingFaceNested verifies URL generation for Hugging Face
+// repos with nested namespace paths (e.g. org/model repos).
+func TestRemoteRawURLHuggingFaceNested(t *testing.T) {
+	ref := RemoteRef{
+		Provider: "huggingface",
+		Host:     "huggingface.co",
+		RepoPath: "org-org/my-model",
+	}
+	got := remoteRawURL(ref, "dev")
+	want := "https://huggingface.co/org-org/my-model/raw/dev/ALPSMORE"
+	if got != want {
+		t.Errorf("remoteRawURL() = %q, want %q", got, want)
+	}
+}
+
+// TestProviderFromHostHuggingFace verifies that providerFromHost correctly
+// maps huggingface.co to the "huggingface" provider.
+func TestProviderFromHostHuggingFace(t *testing.T) {
+	got := providerFromHost("huggingface.co")
+	if got != "huggingface" {
+		t.Errorf("providerFromHost(%q) = %q, want %q", "huggingface.co", got, "huggingface")
+	}
+}
+
+// TestProviderFromHostHuggingFaceCaseInsensitive verifies case-insensitive
+// host matching for Hugging Face.
+func TestProviderFromHostHuggingFaceCaseInsensitive(t *testing.T) {
+	got := providerFromHost("HuggingFace.Co")
+	if got != "huggingface" {
+		t.Errorf("providerFromHost(%q) = %q, want %q", "HuggingFace.Co", got, "huggingface")
+	}
+}
+
+// TestDefaultHostHuggingFace verifies that defaultHost returns huggingface.co
+// for the "huggingface" provider.
+func TestDefaultHostHuggingFace(t *testing.T) {
+	got := defaultHost("huggingface")
+	if got != "huggingface.co" {
+		t.Errorf("defaultHost(%q) = %q, want %q", "huggingface", got, "huggingface.co")
+	}
+}
+
+// TestParseRemoteURLHuggingFace verifies that ParseRemoteURL correctly parses
+// a huggingface.co URL into a RemoteRef with the right provider and fields.
+func TestParseRemoteURLHuggingFace(t *testing.T) {
+	ref, err := ParseRemoteURL("huggingface.co/user/myrepo@main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ref.Provider != "huggingface" {
+		t.Errorf("Provider = %q, want %q", ref.Provider, "huggingface")
+	}
+	if ref.Host != "huggingface.co" {
+		t.Errorf("Host = %q, want %q", ref.Host, "huggingface.co")
+	}
+	if ref.RepoPath != "user/myrepo" {
+		t.Errorf("RepoPath = %q, want %q", ref.RepoPath, "user/myrepo")
+	}
+	if ref.Branch != "main" {
+		t.Errorf("Branch = %q, want %q", ref.Branch, "main")
+	}
+}
+
+// TestParseSourceHuggingFace verifies that ParseSource correctly decodes a
+// stored Hugging Face source string.
+func TestParseSourceHuggingFace(t *testing.T) {
+	ref, err := ParseSource("huggingface:user/myrepo@main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ref.Provider != "huggingface" {
+		t.Errorf("Provider = %q, want %q", ref.Provider, "huggingface")
+	}
+	if ref.Host != "huggingface.co" {
+		t.Errorf("Host = %q, want %q", ref.Host, "huggingface.co")
+	}
+	if ref.RepoPath != "user/myrepo" {
+		t.Errorf("RepoPath = %q, want %q", ref.RepoPath, "user/myrepo")
+	}
+	if ref.Branch != "main" {
+		t.Errorf("Branch = %q, want %q", ref.Branch, "main")
+	}
+}
+
+// TestSourceRoundTripHuggingFace verifies that a RemoteRef for Hugging Face
+// round-trips through Source() and ParseSource() without losing data.
+func TestSourceRoundTripHuggingFace(t *testing.T) {
+	original := RemoteRef{
+		Provider: "huggingface",
+		Host:     "huggingface.co",
+		RepoPath: "user/myrepo",
+		Branch:   "main",
+	}
+	source := original.Source()
+	parsed, err := ParseSource(source)
+	if err != nil {
+		t.Fatalf("ParseSource(%q) failed: %v", source, err)
+	}
+	if parsed.Provider != original.Provider {
+		t.Errorf("Provider = %q, want %q", parsed.Provider, original.Provider)
+	}
+	if parsed.Host != original.Host {
+		t.Errorf("Host = %q, want %q", parsed.Host, original.Host)
+	}
+	if parsed.RepoPath != original.RepoPath {
+		t.Errorf("RepoPath = %q, want %q", parsed.RepoPath, original.RepoPath)
+	}
+	if parsed.Branch != original.Branch {
+		t.Errorf("Branch = %q, want %q", parsed.Branch, original.Branch)
+	}
+}
+
+// TestIsForgeHostHuggingFace verifies that huggingface.co is accepted by
+// the forge host allowlist.
+func TestIsForgeHostHuggingFace(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{"https huggingface.co", "https://huggingface.co/user/repo/raw/main/ALPSMORE", true},
+		{"http rejected", "http://huggingface.co/user/repo/raw/main/ALPSMORE", false},
+		{"subdomain rejected", "https://evil.huggingface.co/user/repo/raw/main/ALPSMORE", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isForgeHost(tc.url)
+			if got != tc.want {
+				t.Errorf("isForgeHost(%q) = %v, want %v", tc.url, got, tc.want)
+			}
+		})
+	}
+}// TestFetchALPSMORERemoteHuggingFace verifies that the full fetch path for
+// a Hugging Face source constructs the correct URL and rejects non-allowlisted
+// hosts. The actual HTTP download is tested by integration tests since the
+// isForgeHost allowlist blocks test server hosts by design.
+func TestFetchALPSMORERemoteHuggingFace(t *testing.T) {
+	ref, err := ParseSource("huggingface:user/myrepo@main")
+	if err != nil {
+		t.Fatalf("ParseSource failed: %v", err)
+	}
+
+	// Verify the URL is constructed correctly for the real huggingface.co host.
+	gotURL := remoteRawURL(*ref, "main")
+	wantURL := "https://huggingface.co/user/myrepo/raw/main/ALPSMORE"
+	if gotURL != wantURL {
+		t.Errorf("remoteRawURL() = %q, want %q", gotURL, wantURL)
+	}
+
+	// Verify isForgeHost accepts the constructed URL.
+	if !isForgeHost(gotURL) {
+		t.Errorf("isForgeHost(%q) = false, want true", gotURL)
+	}
+
+	// Verify fetchRemoteRef produces a meaningful error when the host is
+	// overridden to something not in the allowlist (e.g. a test server).
+	ref.Host = "127.0.0.1:9999"
+	_, _, fetchErr := fetchRemoteRef(*ref)
+	if fetchErr == nil {
+		t.Fatal("expected error for non-allowlisted host")
+	}
+	// The error should come from isForgeHost rejecting the URL, not from
+	// a missing branch or other unrelated check.
+	if !strings.Contains(fetchErr.Error(), "disallowed host/scheme") && !strings.Contains(fetchErr.Error(), "could not fetch ALPSMORE") {
+		t.Errorf("unexpected error for non-allowlisted host: %v", fetchErr)
+	}
+}

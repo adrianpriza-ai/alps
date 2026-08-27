@@ -29,7 +29,7 @@ This ~9k line codebase has all tests passing and `go vet` clean.
 | **WSL support** | Works on WSL; alps-more entries can target `os = wsl` |
 | **Built-in AUR** | Full recursive dep resolution, PKGBUILD review, yay/paru fallback |
 | **Extra packages** | Snap, Flatpak, and Winget — same command shape across all three |
-| **alps-more** | Cross-distro script repo with version tracking, mirror failover, and remote installs from GitHub/GitLab |
+| **alps-more** | Cross-distro script repo with version tracking, mirror failover, and remote installs from GitHub/GitLab/Hugging Face |
 | **Security** | HTTPS-only downloads, SHA-256 verification, signed APT repositories, response size limits |
 | **Customizable** | Colors, symbols, header, aliases — all via config file |
 | **Completion** | fish, bash, zsh — distro-aware, AUR name cache, live package completion |

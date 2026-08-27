@@ -10,10 +10,10 @@ import (
 
 // installParams configures executeInstallGeneric for each INSTALL_* macro.
 type installParams struct {
-	macroName     string        // e.g. "INSTALL_BIN" — used in error messages
-	perm          string        // file permission (e.g. "755", "644")
-	installedType string        // "file" or "service"
-	defaultDir    func() string // returns the platform-specific default directory
+	macroName string // e.g. "INSTALL_BIN" — used in error messages
+	perm      string // file permission (e.g. "755", "644")
+	installedType string // "file" or "service"
+	defaultDir func() string // returns the platform-specific default directory
 }
 
 // defaultBinDir returns the default binary directory for the current platform.

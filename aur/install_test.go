@@ -473,3 +473,4 @@ func TestUnprivilegedCommandNonRoot(t *testing.T) {
 		t.Errorf("expected command 'echo', got %q", cmd.Args[0])
 	}
 }
+
