@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -261,6 +262,10 @@ func TestRevisionUpToDate(t *testing.T) {
 	}{
 		{"matching short hash", "git", "1.0.r15.g8c0f4a6", "8c0f4a6d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b", true, true},
 		{"moved upstream", "git", "1.0.r15.g8c0f4a6", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", false, true},
+		// Reverse prefix: installed hash is LONGER than the remote. This is
+		// not a valid abbreviation (the remote can't be a prefix of a longer
+		// installed hash in normal operation), so it must NOT match.
+		{"installed longer than remote", "git", "1.0.r15.g8c0f4a6d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b", "8c0f4a6", false, true},
 		{"hg node match", "hg", "r3.aabbccddeeff", "aabbccddeeff00112233445566778899aabbccdd", true, true},
 		{"no hash in version", "git", "20240613", "8c0f4a6d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b", false, false},
 		{"svn matching rev", "svn", "r1234", "1234", true, true},
@@ -300,5 +305,32 @@ func TestCheckVCSPinnedTag(t *testing.T) {
 	}
 	if !errors.Is(ErrVCSPinned, ErrVCSPinned) { // sentinel exists and is comparable via errors.Is
 		t.Error("ErrVCSPinned sentinel broken")
+	}
+}
+
+// TestBzrParsedButUnsupported verifies that bzr sources are parsed by
+// splitVCSEntry but latestRevision returns the expected "not supported"
+// error. This documents the intentional bzr gap: Bazaar is effectively
+// dead and not worth maintaining a probe for.
+func TestBzrParsedButUnsupported(t *testing.T) {
+	src := splitVCSEntry("bzr+lp:foo")
+	if src == nil {
+		t.Fatal("splitVCSEntry(bzr+lp:foo): expected non-nil source")
+	}
+	if src.Kind != "bzr" {
+		t.Errorf("expected kind=bzr, got %q", src.Kind)
+	}
+	if src.URL != "lp:foo" {
+		t.Errorf("expected URL=lp:foo, got %q", src.URL)
+	}
+
+	// latestRevision must fail with a clear "not supported" message,
+	// not crash or return an empty string.
+	_, err := src.latestRevision()
+	if err == nil {
+		t.Fatal("expected error for bzr latestRevision, got nil")
+	}
+	if !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("expected 'not supported' in error, got: %v", err)
 	}
 }

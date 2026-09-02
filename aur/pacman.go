@@ -50,7 +50,18 @@ func hasInPath(name string) bool {
 	return err == nil
 }
 
-// pkgCache caches pacman query results.
+// pkgCache caches pacman query results to avoid redundant shell-outs.
+// Each lookup uses a lock-release-acquire pattern: read the map under
+// the lock, release it while running the expensive pacman subprocess,
+// then re-lock to publish the result. This is the standard
+// "double-checked locking" pattern in Go and is safe because the map
+// is only ever written under the lock.
+//
+// NOTE: newPkgCache() is called fresh in buildInstallPlan, BuildLocal,
+// and checkDeps, so cross-invocation caching does not happen. If two
+// packages share deps, the second runs pacman -Qi/-Si for the same
+// names again. Hoisting the cache to the package level (or to aurCache)
+// would fix this, but contention is low in practice.
 type pkgCache struct {
 	mu        sync.Mutex
 	installed map[string]bool
@@ -66,6 +77,9 @@ func newPkgCache() *pkgCache {
 	}
 }
 
+// IsInstalled returns whether name is installed, caching the result.
+// The lock is held only for map reads/writes; the pacman subprocess
+// runs without the lock to avoid blocking concurrent goroutines.
 func (c *pkgCache) IsInstalled(name string) bool {
 	c.mu.Lock()
 	if v, ok := c.installed[name]; ok {
@@ -80,6 +94,7 @@ func (c *pkgCache) IsInstalled(name string) bool {
 	return v
 }
 
+// InRepo returns whether name is in the official pacman repositories.
 func (c *pkgCache) InRepo(name string) bool {
 	c.mu.Lock()
 	if v, ok := c.inRepo[name]; ok {
@@ -94,6 +109,7 @@ func (c *pkgCache) InRepo(name string) bool {
 	return v
 }
 
+// HasProvider returns whether name is satisfied by any installed package.
 func (c *pkgCache) HasProvider(name string) bool {
 	c.mu.Lock()
 	if v, ok := c.provided[name]; ok {
@@ -160,6 +176,17 @@ func isInstalled(name string) bool {
 	return exec.Command("pacman", "-Qi", name).Run() == nil
 }
 
+// parsePacmanQLine splits a single "name version" line from `pacman -Q`
+// output. Returns name and version, or empty strings if the line is empty
+// or malformed.
+func parsePacmanQLine(line string) (name, version string) {
+	parts := strings.Fields(strings.TrimSpace(line))
+	if len(parts) < 2 {
+		return "", ""
+	}
+	return parts[0], parts[1]
+}
+
 // pkgInstalledVersion returns the installed version of a package, or an empty string if not installed.
 // Uses pacman -Q (not -Qi) to get the raw name-version string.
 func pkgInstalledVersion(name string) string {
@@ -167,11 +194,8 @@ func pkgInstalledVersion(name string) string {
 	if err != nil {
 		return ""
 	}
-	parts := strings.Fields(strings.TrimSpace(string(out)))
-	if len(parts) < 2 {
-		return ""
-	}
-	return parts[1]
+	_, ver := parsePacmanQLine(string(out))
+	return ver
 }
 
 // Vercmp compares two Arch Linux version strings using the vercmp binary.
@@ -218,7 +242,9 @@ func splitVersion(v string) (epoch int, pkgver, pkgrel string) {
 	// Strip leading/trailing whitespace
 	v = strings.TrimSpace(v)
 
-	// Epoch: everything before the first ':'
+	// Epoch: everything before the first ':'.
+	// Sscanf error is intentionally ignored: non-numeric epochs (e.g.
+	// "abc:1.0") leave epoch=0, matching pacman's lenient tolerance.
 	if idx := strings.Index(v, ":"); idx >= 0 {
 		fmt.Sscanf(v[:idx], "%d", &epoch)
 		v = v[idx+1:]
@@ -446,9 +472,9 @@ func Remove(pkgName string, noConfirm bool) error {
 	// the user may have intentionally cancelled. Instead, tell them
 	// what happened and let them decide.
 	if isInstalled(pkgName) {
-		fmt.Printf("  :: pacman -R failed for %s (dependency conflict or user cancellation).\n", pkgName)
-		fmt.Printf("     To force removal including unneeded deps, run:\n")
-		fmt.Printf("       sudo pacman -Rns %s\n", pkgName)
+		warnStderr("pacman -R failed for %s (dependency conflict or user cancellation).", pkgName)
+		warnStderr("To force removal including unneeded deps, run:")
+		warnStderr("  sudo pacman -Rns %s", pkgName)
 		return fmt.Errorf("removal of %s failed", pkgName)
 	}
 
@@ -465,9 +491,9 @@ func GetInstalledAUR() (map[string]string, error) {
 	}
 	installed := make(map[string]string)
 	for _, line := range strings.Split(string(out), "\n") {
-		parts := strings.Fields(line)
-		if len(parts) == 2 {
-			installed[parts[0]] = parts[1]
+		name, ver := parsePacmanQLine(line)
+		if name != "" {
+			installed[name] = ver
 		}
 	}
 	return installed, nil

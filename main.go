@@ -585,7 +585,7 @@ func runPacmanSearch(args []string, cfg *config.Config) {
 	}
 
 	for i, p := range res.pkgs {
-		aur.PrintSearchResult(i+1, p, "aur")
+		aur.PrintSearchResult(os.Stdout, i+1, p, "aur")
 	}
 	fmt.Println()
 	appendAURNamesCache(res.pkgs)
@@ -645,7 +645,7 @@ func runAUR(args []string, cfg *config.Config) {
 			fmt.Println()
 			for _, pkg := range pkgs {
 				if info, err2 := aur.Info(pkg); err2 == nil {
-					aur.PrintPackageInfo(info)
+					aur.PrintPackageInfo(os.Stdout, info)
 				} else {
 					ui.Msgf(cfg, ui.LevelWarn, "%s: not found in AUR", pkg)
 				}
@@ -709,7 +709,7 @@ func runAUR(args []string, cfg *config.Config) {
 			if info, err := aur.Info(pkg); err != nil {
 				ui.Msgf(cfg, ui.LevelError, "%s: not found in AUR", pkg)
 			} else {
-				aur.PrintPackageInfo(info)
+				aur.PrintPackageInfo(os.Stdout, info)
 			}
 		}
 

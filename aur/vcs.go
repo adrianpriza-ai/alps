@@ -136,8 +136,10 @@ func ensureFreshPKGBUILD(pkgName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Quiet mode keeps update scans readable; failures still surface through
-	// the returned error so callers can warn instead of guessing.
+	// Quiet mode (quiet=true) keeps VCS update scans readable; failures
+	// still surface through the returned error so callers can warn instead
+	// of guessing. cloneAUR (the install path) intentionally passes
+	// quiet=false so the user sees clone/fetch progress.
 	if err := syncAURRepo(pkgName, pkgDir, true); err != nil {
 		return "", err
 	}
@@ -231,6 +233,9 @@ func splitVCSEntry(entry string) *vcsSource {
 		{"git+", "git"},
 		{"svn+", "svn"},
 		{"hg+", "hg"},
+		// bzr is recognised here so splitVCSEntry can parse it, but
+		// latestRevision returns an error — Bazaar is effectively dead
+		// and not worth maintaining a probe for.
 		{"bzr+", "bzr"},
 	} {
 		if strings.HasPrefix(strings.ToLower(rawURL), scheme.prefix) {
@@ -394,9 +399,12 @@ func revisionUpToDate(kind, installedVer, rev string) (bool, bool) {
 		if installed == "" {
 			return false, false
 		}
-		// Prefix match both ways handles different abbreviation lengths
-		// between the local pkgver() output and the full remote hash.
-		return strings.HasPrefix(rev, installed) || strings.HasPrefix(installed, rev), true
+		// Only check if the remote hash starts with the installed abbreviation
+		// (short→long). The reverse direction (installed longer than rev) would
+		// mean the installed version contains more hash bits than upstream,
+		// which is not a normal state — it implies a truncated remote hash or
+		// a proxy issue, not a legitimate abbreviation.
+		return strings.HasPrefix(rev, installed), true
 	case "svn":
 		installed := extractSVNRevision(installedVer)
 		if installed == "" {

@@ -96,35 +96,10 @@ Expire-Date: 0
 		t.Fatalf("gpg --detach-sign failed: %v\n%s", err, string(out))
 	}
 
-	// Verify should succeed — but gpg --verify checks against the default
-	// keyring. We need to import the key first or use --keyring.
-	// Since verifyPGPSignature calls gpg without --homedir, we import the
-	// test key into the user's temporary keyring. Instead, let's import
-	// the key into the default keyring for this test (using --homedir on
-	// verify is not how the production code works). So we export the public
-	// key and import it into the default keyring, then clean up after.
-
-	// Export the public key
-	export := exec.Command("gpg", "--homedir", gpgHome, "--armor", "--export", "test@example.com")
-	pubKey, err := export.Output()
-	if err != nil {
-		t.Fatalf("gpg --export failed: %v", err)
-	}
-
-	// Import into default keyring
-	importCmd := exec.Command("gpg", "--import")
-	importCmd.Stdin = strings.NewReader(string(pubKey))
-	if out, err := importCmd.CombinedOutput(); err != nil {
-		t.Logf("gpg --import note: %v\n%s (may already be imported)", err, string(out))
-	}
-	defer func() {
-		// Clean up: delete the imported key from the default keyring
-		exec.Command("gpg", "--batch", "--yes", "--delete-keys", "test@example.com").Run()
-	}()
-
-	// Now verify should succeed
-	err = verifyPGPSignature(pkgPath)
-	if err != nil {
+	// Use GNUPGHOME so verifyPGPSignature checks against the isolated test
+	// keyring instead of the user's default keyring. No import/cleanup needed.
+	t.Setenv("GNUPGHOME", gpgHome)
+	if err := verifyPGPSignature(pkgPath); err != nil {
 		t.Errorf("expected valid signature to pass verification, got: %v", err)
 	}
 }
@@ -344,6 +319,58 @@ func TestFindBuiltPackagesNonexistent(t *testing.T) {
 	_, err := findBuiltPackages("/nonexistent/path/12345")
 	if err == nil {
 		t.Error("expected error for nonexistent directory, got nil")
+	}
+}
+
+// TestValidatePackageArchive covers the magic-byte gate that decides whether a
+// cached .pkg.tar.* from ~/.cache/alps/aur/ is worth re-inspecting. A valid
+// file must start with the zstd, xz, or gzip magic; anything else (including
+// the empty file or a truncated download) is rejected.
+func TestValidatePackageArchive(t *testing.T) {
+	dir := t.TempDir()
+
+	write := func(name string, data []byte) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, data, 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return p
+	}
+
+	tests := []struct {
+		name    string
+		content []byte
+		wantErr bool
+	}{
+		{"zstd", []byte{0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x01}, false},
+		{"zstd_with_payload", append([]byte{0x28, 0xB5, 0x2F, 0xFD}, []byte("frame-data")...), false},
+		{"xz", []byte{0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00, 0x01}, false},
+		{"xz_with_payload", append([]byte{0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00}, []byte("stream")...), false},
+		{"gzip", []byte{0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00}, false},
+		{"empty", []byte{}, true},
+		{"plain_text", []byte("this is not a package"), true},
+		{"truncated_zstd", []byte{0x28, 0xB5, 0x2F}, true},
+		{"wrong_xz_eos", []byte{0xFD, 0x37, 0x7A, 0x58, 0x5A, 0xFF}, true},
+		{"single_byte_zstd", []byte{0x28}, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := write("pkg-"+tc.name+".pkg.tar.zst", tc.content)
+			err := validatePackageArchive(path)
+			if tc.wantErr && err == nil {
+				t.Errorf("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("expected nil, got %v", err)
+			}
+		})
+	}
+
+	// Nonexistent path should surface the underlying os.Open error.
+	if err := validatePackageArchive(filepath.Join(dir, "does-not-exist")); err == nil {
+		t.Error("expected error for missing file, got nil")
 	}
 }
 

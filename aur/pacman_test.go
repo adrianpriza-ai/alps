@@ -1,6 +1,7 @@
 package aur
 
 import (
+	"os"
 	"testing"
 )
 
@@ -98,6 +99,31 @@ func TestVercmpArchSpecific(t *testing.T) {
 			got := vercmp(tt.a, tt.b)
 			if got != tt.expected {
 				t.Errorf("vercmp(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestVercmpFallbackMalformedEpoch verifies that the pure-Go fallback
+// handles malformed epoch strings gracefully. The Sscanf error from a
+// non-numeric epoch (e.g. "abc:1.0-1") is silently ignored, leaving
+// epoch=0 — matching pacman's own lenient tolerance. This test documents
+// that chosen behaviour so it isn't accidentally broken.
+func TestVercmpFallbackMalformedEpoch(t *testing.T) {
+	tests := []struct {
+		name     string
+		a, b     string
+		expected int
+	}{
+		{"non-numeric epoch defaults to 0", "abc:1.0-1", "1.0-1", 0},
+		{"empty epoch string defaults to 0", ":1.0-1", "1.0-1", 0},
+		{"epoch with spaces defaults to 0", "  :1.0-1", "1.0-1", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := vercmpFallback(tt.a, tt.b)
+			if got != tt.expected {
+				t.Errorf("vercmpFallback(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.expected)
 			}
 		})
 	}
@@ -224,4 +250,36 @@ func TestPkgInstalledVersionFormat(t *testing.T) {
 		return // pass after first success
 	}
 	t.Skip("no known installed package found — skipping format test")
+}
+
+// TestVercmpFallbackViaVercmp verifies that calling the public Vercmp function
+// falls back to the pure-Go comparator when the vercmp binary is not on PATH.
+func TestVercmpFallbackViaVercmp(t *testing.T) {
+	// Save and restore the original PATH.
+	origPath := os.Getenv("PATH")
+	defer os.Setenv("PATH", origPath)
+	// Set PATH to empty so exec.Command("vercmp", ...) cannot find the binary,
+	// forcing the fallback path inside Vercmp.
+	os.Setenv("PATH", "")
+
+	pairs := [][3]string{
+		{"1.0.0", "1.0.0", "0"},
+		{"2.0.0", "1.0.0", "1"},
+		{"1.0.0", "2.0.0", "-1"},
+		{"1:1.0", "1.0", "1"},
+		{"1.0-2", "1.0-1", "1"},
+	}
+	for _, tc := range pairs {
+		got := Vercmp(tc[0], tc[1])
+		want := 0
+		switch tc[2] {
+		case "1":
+			want = 1
+		case "-1":
+			want = -1
+		}
+		if got != want {
+			t.Errorf("Vercmp(%q, %q) = %d, want %d (fallback via empty PATH)", tc[0], tc[1], got, want)
+		}
+	}
 }

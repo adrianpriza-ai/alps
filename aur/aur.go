@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -34,6 +35,9 @@ const (
 )
 
 // aurHTTPClient is a shared HTTP client for AUR requests.
+// Tests can replace this variable to inject a mock transport or point at a
+// fake RPC server: save the original, swap in a test client, and defer
+// restoring it.
 var aurHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 // Package represents an AUR package.
@@ -124,9 +128,18 @@ func fetchRPC(rawURL string) (*rpcResponse, error) {
 	return nil, fmt.Errorf("AUR request failed after %d attempts (%s): %w", aurMaxRetries, rawURL, lastErr)
 }
 
+// maxQueryLen is the soft limit on the search query length passed to the
+// AUR RPC. The AUR endpoint has a documented max arg length; queries
+// exceeding this would produce a malformed URL and HTTP 400.
+const maxQueryLen = 200
+
 // Search searches AUR sorted by votes.
 func Search(query string) ([]Package, error) {
-	if err := validatePkgName(strings.TrimSpace(query)); err != nil {
+	query = strings.TrimSpace(query)
+	if len(query) > maxQueryLen {
+		return nil, fmt.Errorf("search query too long (%d chars, max %d)", len(query), maxQueryLen)
+	}
+	if err := validatePkgName(query); err != nil {
 		return nil, fmt.Errorf("invalid search query: %w", err)
 	}
 	u, err := url.JoinPath(aurRPCBase, "search", query)
@@ -186,6 +199,10 @@ func fieldContains(field []string, term string) bool {
 	return false
 }
 
+// ErrPkgNotFound is returned by Info when a package does not exist in AUR.
+// Callers should use errors.Is to check for this condition.
+var ErrPkgNotFound = fmt.Errorf("not found in AUR")
+
 // Info fetches package info by name.
 func Info(name string) (*Package, error) {
 	if err := validatePkgName(name); err != nil {
@@ -200,12 +217,18 @@ func Info(name string) (*Package, error) {
 		return nil, err
 	}
 	if len(result.Results) == 0 {
-		return nil, fmt.Errorf("package %q not found in AUR", name)
+		return nil, fmt.Errorf("%w: package %q", ErrPkgNotFound, name)
 	}
 	return &result.Results[0], nil
 }
 
-// InfoBatch fetches info for multiple packages in parallel.
+// maxInfoBatchWorkers caps concurrent AUR info lookups to avoid
+// overwhelming the AUR RPC endpoint with unbounded parallel requests.
+const maxInfoBatchWorkers = 8
+
+// InfoBatch fetches info for multiple packages in parallel using a bounded
+// worker pool. NotFound results are silently skipped (the caller can check
+// per-package); other errors abort the batch.
 func InfoBatch(names []string) (map[string]*Package, error) {
 	if err := validatePkgNames(names); err != nil {
 		return nil, err
@@ -214,17 +237,21 @@ func InfoBatch(names []string) (map[string]*Package, error) {
 	results := make(map[string]*Package)
 	var wg sync.WaitGroup
 	var firstErr error
+	sem := make(chan struct{}, min(maxInfoBatchWorkers, len(names)))
 
 	for _, name := range names {
 		wg.Add(1)
 		go func(n string) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
 			pkg, err := Info(n)
 
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				if !strings.Contains(err.Error(), "not found in AUR") && firstErr == nil {
+				if !errors.Is(err, ErrPkgNotFound) && firstErr == nil {
 					firstErr = err
 				}
 				return
@@ -246,8 +273,8 @@ func Exists(name string) bool {
 	return err == nil
 }
 
-// PrintSearchResult prints a search result.
-func PrintSearchResult(idx int, p Package, source string) {
+// PrintSearchResult writes a search result to w.
+func PrintSearchResult(w io.Writer, idx int, p Package, source string) {
 	ood := ""
 	if p.OutOfDate != 0 {
 		ood = " [out-of-date]"
@@ -256,39 +283,39 @@ func PrintSearchResult(idx int, p Package, source string) {
 	if p.Maintainer == "" {
 		orphan = " (orphaned)"
 	}
-	fmt.Printf("%s/%s %s%s%s\n    %s\n",
+	fmt.Fprintf(w, "%s/%s %s%s%s\n    %s\n",
 		source, p.Name, p.Version, ood, orphan, p.Description)
 }
 
-// PrintPackageInfo prints package details.
-func PrintPackageInfo(p *Package) {
+// PrintPackageInfo writes package details to w.
+func PrintPackageInfo(w io.Writer, p *Package) {
 	ood := ""
 	if p.OutOfDate != 0 {
 		ood = " [out-of-date]"
 	}
-	fmt.Printf("\naur/%s %s%s\n", p.Name, p.Version, ood)
+	fmt.Fprintf(w, "\naur/%s %s%s\n", p.Name, p.Version, ood)
 	if p.Description != "" {
-		fmt.Printf("    %s\n", p.Description)
+		fmt.Fprintf(w, "    %s\n", p.Description)
 	}
 	if len(p.License) > 0 {
-		fmt.Printf("    License     : %s\n", strings.Join(p.License, ", "))
+		fmt.Fprintf(w, "    License     : %s\n", strings.Join(p.License, ", "))
 	}
 	if p.Maintainer != "" {
-		fmt.Printf("    Maintainer  : %s\n", p.Maintainer)
+		fmt.Fprintf(w, "    Maintainer  : %s\n", p.Maintainer)
 	} else {
-		fmt.Printf("    Maintainer  : (orphaned)\n")
+		fmt.Fprintf(w, "    Maintainer  : (orphaned)\n")
 	}
-	fmt.Printf("    Votes       : %d\n", p.Votes)
+	fmt.Fprintf(w, "    Votes       : %d\n", p.Votes)
 	if p.URL != "" {
-		fmt.Printf("    URL         : %s\n", p.URL)
+		fmt.Fprintf(w, "    URL         : %s\n", p.URL)
 	}
 	if len(p.Depends) > 0 {
-		fmt.Printf("    Depends     : %s\n", strings.Join(p.Depends, "  "))
+		fmt.Fprintf(w, "    Depends     : %s\n", strings.Join(p.Depends, "  "))
 	}
 	if len(p.MakeDepends) > 0 {
-		fmt.Printf("    MakeDepends : %s\n", strings.Join(p.MakeDepends, "  "))
+		fmt.Fprintf(w, "    MakeDepends : %s\n", strings.Join(p.MakeDepends, "  "))
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 }
 
 // Utilities — validation, I/O, caching helpers
@@ -353,8 +380,10 @@ func readLine() string {
 	return strings.TrimSpace(line)
 }
 
-// readYesNo prompts for yes/no.
-func readYesNo(prompt string, defaultYes bool) (bool, error) {
+// readYesNo prompts for yes/no. Empty input uses the default.
+// After one invalid answer it re-prompts; persistent non-y/n input
+// defaults to false (safe/conservative).
+func readYesNo(prompt string, defaultYes bool) bool {
 	if defaultYes {
 		fmt.Printf("%s [Y/n] ", prompt)
 	} else {
@@ -362,25 +391,28 @@ func readYesNo(prompt string, defaultYes bool) (bool, error) {
 	}
 	line := readLine()
 	if line == "" {
-		return defaultYes, nil
+		return defaultYes
 	}
 	switch strings.ToLower(line) {
 	case "y", "yes":
-		return true, nil
+		return true
 	case "n", "no":
-		return false, nil
+		return false
 	default:
 		fmt.Printf("  Please enter y or n: ")
 		line = readLine()
 		switch strings.ToLower(line) {
 		case "y", "yes":
-			return true, nil
+			return true
 		default:
-			return false, nil
+			return false
 		}
 	}
 }
 
+// stripVerConstraint removes version constraints from a dependency string.
+// Arch package names are case-sensitive, so this function does not
+// normalise case — "Foo" and "foo" are distinct packages.
 func stripVerConstraint(dep string) string {
 	for _, op := range []string{">=", "<=", "!=", ">", "<", "="} {
 		if idx := strings.Index(dep, op); idx != -1 {
@@ -390,6 +422,13 @@ func stripVerConstraint(dep string) string {
 	return dep
 }
 
+// dedup removes duplicate strings from in, preserving the order of first
+// occurrence. The output order matches input order because we iterate `in`
+// sequentially and mark entries in `seen` as we go — a future refactor that
+// iterates `seen` instead would break this guarantee.
+//
+// Case is preserved as-is (Arch package names are case-sensitive), so
+// "Foo" and "foo" are treated as distinct entries.
 func dedup(in []string) []string {
 	seen := make(map[string]bool)
 	var out []string
@@ -402,6 +441,8 @@ func dedup(in []string) []string {
 	return out
 }
 
+// aurCacheDir returns the build cache directory for a specific AUR package,
+// performing path-traversal validation to prevent escaping the cache root.
 func aurCacheDir(pkgName string) (string, error) {
 	root, err := AURCacheRoot()
 	if err != nil {
@@ -415,6 +456,10 @@ func aurCacheDir(pkgName string) (string, error) {
 	return clean, nil
 }
 
+// AURCacheRoot returns the root directory for AUR build caches.
+// When running under sudo or doas, it resolves the invoking user's home
+// directory so cache files are not written into /root/.cache/alps/aur with
+// root ownership.
 func AURCacheRoot() (string, error) {
 	// If running under sudo or doas, resolve the invoking user's home directory
 	// so cache files are not written into /root/.cache/alps/aur with root ownership.

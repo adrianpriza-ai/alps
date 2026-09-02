@@ -98,7 +98,7 @@ func (b *Backend) Search(query string) error {
 		return nil
 	}
 	for i, p := range results {
-		aur.PrintSearchResult(i+1, p, "aur")
+		aur.PrintSearchResult(os.Stdout, i+1, p, "aur")
 	}
 	fmt.Println()
 	return nil

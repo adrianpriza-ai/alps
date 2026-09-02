@@ -31,15 +31,28 @@ type builtPackage struct {
 	ModTime time.Time
 }
 
+// detectHelperOnce ensures DetectHelper only calls exec.LookPath once.
+// The result is cached for the lifetime of the process — AUR helpers
+// don't appear or disappear mid-run, and this avoids redundant PATH
+// scans on repeated Install() calls.
+var (
+	detectHelperOnce sync.Once
+	detectedHelper   string
+)
+
 // DetectHelper returns the name of an installed AUR helper — "paru" or "yay" —
 // or "" if neither is available. paru is preferred when both are installed.
+// The result is memoized after the first call.
 func DetectHelper() string {
-	for _, helper := range []string{"paru", "yay"} {
-		if _, err := exec.LookPath(helper); err == nil {
-			return helper
+	detectHelperOnce.Do(func() {
+		for _, helper := range []string{"paru", "yay"} {
+			if _, err := exec.LookPath(helper); err == nil {
+				detectedHelper = helper
+				return
+			}
 		}
-	}
-	return ""
+	})
+	return detectedHelper
 }
 
 // Install installs AUR packages.
@@ -249,9 +262,7 @@ func printInstallSummary(plan *installPlan, warn string) {
 // PKGBUILD again — much harder to miss a malicious change in a diff.
 // Fresh installs (no prior checkout) fall back to the full-file review.
 func reviewAURPKGBUILDs(plan *installPlan, arrow string) error {
-	if ok, err := readYesNo(fmt.Sprintf("  %s Review PKGBUILDs before building?", arrow), false); err != nil {
-		return err
-	} else if ok {
+	if readYesNo(fmt.Sprintf("  %s Review PKGBUILDs before building?", arrow), false) {
 		for _, p := range plan.AURPackages {
 			pkgDir, err := aurCacheDir(p.Name)
 			if err != nil {
@@ -308,10 +319,7 @@ func reviewPKGBUILDUpdate(pkgDir, oldHead, arrow string) (bool, error) {
 		fmt.Printf("     %s\n", line)
 	}
 
-	viewDiff, err := readYesNo(fmt.Sprintf("  %s View the PKGBUILD diff? (recommended)", arrow), true)
-	if err != nil {
-		return false, err
-	}
+	viewDiff := readYesNo(fmt.Sprintf("  %s View the PKGBUILD diff? (recommended)", arrow), true)
 	if !viewDiff {
 		return true, nil // declined the detailed view; treat as reviewed
 	}
@@ -355,16 +363,13 @@ func collectUserInputs(plan *installPlan, noConfirm bool) error {
 	if len(plan.AURPackages) > 1 {
 		label = fmt.Sprintf("Proceed with all %d builds?", len(plan.AURPackages))
 	}
-	ok, err := readYesNo(fmt.Sprintf("  %s %s", arrow, label), true)
-	if err != nil {
-		return err
-	}
-	if !ok {
+	if !readYesNo(fmt.Sprintf("  %s %s", arrow, label), true) {
 		return fmt.Errorf("install cancelled by user")
 	}
 	return nil
 }
 
+// installRepoDeps installs pacman repository dependencies before building.
 func installRepoDeps(deps []string, noConfirm bool, arrow string) error {
 	if len(deps) == 0 {
 		return nil
@@ -388,6 +393,8 @@ func installRepoDeps(deps []string, noConfirm bool, arrow string) error {
 	return nil
 }
 
+// removeMakeDeps offers to remove build dependencies that were installed
+// during the build process but are not needed at runtime.
 func removeMakeDeps(makeDeps []string, noConfirm bool, okStr string) error {
 	if len(makeDeps) == 0 {
 		return nil
@@ -403,11 +410,7 @@ func removeMakeDeps(makeDeps []string, noConfirm bool, okStr string) error {
 	}
 	fmt.Printf("\n  :: Build dependencies installed during build: %s\n", strings.Join(toRemove, "  "))
 	if !noConfirm {
-		rmOK, err := readYesNo("  Remove build dependencies?", false)
-		if err != nil {
-			return err
-		}
-		if !rmOK {
+		if !readYesNo("  Remove build dependencies?", false) {
 			return nil
 		}
 	}
@@ -430,6 +433,7 @@ func removeMakeDeps(makeDeps []string, noConfirm bool, okStr string) error {
 	return nil
 }
 
+// cleanupBuildCaches offers to remove build directories after installation.
 func cleanupBuildCaches(builtDirs []string, noConfirm bool, okStr string) {
 	if noConfirm || len(builtDirs) == 0 {
 		return
@@ -438,8 +442,7 @@ func cleanupBuildCaches(builtDirs []string, noConfirm bool, okStr string) {
 	for _, dir := range builtDirs {
 		fmt.Printf("     %s\n", dir)
 	}
-	keep, err := readYesNo("  Keep build caches?", false)
-	if err == nil && !keep {
+	if !readYesNo("  Keep build caches?", false) {
 		for _, dir := range builtDirs {
 			os.RemoveAll(dir)
 		}
@@ -463,6 +466,10 @@ func executeInstallPlan(plan *installPlan, noConfirm bool) error {
 	}
 
 	var builtDirs []string
+	// Builds are intentionally sequential: each makepkg invocation may
+	// consume significant CPU and I/O, and running multiple in parallel
+	// can cause resource contention without sandboxing. Parallel builds
+	// could be added behind a flag in the future.
 	for _, pkg := range plan.AURPackages {
 		pkgDir, err := buildAndInstall(pkg, noConfirm)
 		if err != nil {
@@ -559,12 +566,16 @@ func verifyPGPSignature(pkgPath string) error {
 		// No .sig file — AUR packages often don't ship signatures.
 		// Print a warning but allow the install to proceed, since most
 		// AUR PKGBUILDs don't produce detached signatures.
-		fmt.Printf("  :: No GPG signature found for %s\n", filepath.Base(pkgPath))
-		fmt.Printf("     (this is common for AUR packages — proceed with caution)\n")
+		warnStderr("no GPG signature found for %s (this is common for AUR packages — proceed with caution)", filepath.Base(pkgPath))
 		return nil
 	}
-	// Verify the .sig against the package
+	// Verify the .sig against the package.
+	// Respect GNUPGHOME so tests can isolate verification to a temp keyring
+	// without polluting the user's default keyring.
 	cmd := exec.Command("gpg", "--verify", sigPath, pkgPath)
+	if gnupgHome := os.Getenv("GNUPGHOME"); gnupgHome != "" {
+		cmd = exec.Command("gpg", "--homedir", gnupgHome, "--verify", sigPath, pkgPath)
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("GPG verification FAILED for %s:\n%s\n\nRefusing to install a package with an invalid signature.",
 			filepath.Base(pkgPath), string(out))
@@ -619,62 +630,27 @@ func installBuiltPackages(pkgPaths []string, noConfirm bool) error {
 }
 
 // buildAndInstall clones and builds pkg.
-func buildAndInstall(pkg *Package, noConfirm bool) (string, error) {
-	ok, _, arrow := configSymbols()
-
-	if err := validatePkgName(pkg.Name); err != nil {
-		return "", fmt.Errorf("refusing to build package with invalid name %q: %w", pkg.Name, err)
+// versionSatisfied checks whether the installed version of pkg already
+// satisfies the AUR target. VCS packages are always exempt because their
+// versions encode upstream commits and must go through VCS detection.
+func versionSatisfied(pkg *Package) (string, bool) {
+	if IsVCSPackage(pkg.Name) {
+		return "", false
 	}
-
-	// --needed: skip building if the installed version already satisfies the target.
-	// Pacman's --needed skips when installed >= target. We mirror that: if the
-	// installed version is greater than or equal to the AUR version, no rebuild
-	// is needed. Using vercmp <= 0 (instead of == 0) also avoids unnecessary
-	// downgrades when a user has a newer local build installed.
-	//
-	// VCS packages (-git, -svn, …) are exempt: their versions encode upstream
-	// commits (e.g. r1234.abc5678), so the AUR RPC version typically equals the
-	// installed one even when upstream has moved ahead. The upgrade path relies
-	// on precise VCS detection to queue these rebuilds, so comparing static
-	// versions here would silently cancel them.
-	if !IsVCSPackage(pkg.Name) {
-		if installedVer := pkgInstalledVersion(pkg.Name); installedVer != "" {
-			if vercmp(pkg.Version, installedVer) <= 0 {
-				fmt.Printf("  %s  %s %s is already installed (satisfies %s)\n", ok, pkg.Name, installedVer, pkg.Version)
-				return "", nil
-			}
-		}
+	installedVer := pkgInstalledVersion(pkg.Name)
+	if installedVer == "" {
+		return "", false
 	}
+	return installedVer, vercmp(pkg.Version, installedVer) <= 0
+}
 
-	pkgDir, err := aurCacheDir(pkg.Name)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve cache dir: %w", err)
-	}
-
-	if cached, err := findReusableBuiltPackage(pkg, pkgDir); err != nil {
-		return "", err
-	} else if cached != nil {
-		useCached := true
-		if !noConfirm {
-			fmt.Printf("\n  :: Found built package for aur/%s %s\n", pkg.Name, pkg.Version)
-			fmt.Printf("     %s\n", cached.Path)
-			var promptErr error
-			useCached, promptErr = readYesNo(fmt.Sprintf("  %s Install this existing build instead of rebuilding?", arrow), true)
-			if promptErr != nil {
-				return "", promptErr
-			}
-		}
-		if useCached {
-			if err := installBuiltPackage(cached.Path, noConfirm); err != nil {
-				return "", err
-			}
-			fmt.Printf("  %s  %s installed from existing build\n", ok, pkg.Name)
-			return pkgDir, nil
-		}
-	}
+// buildPackage clones the AUR source, runs makepkg, verifies GPG
+// signatures, and installs the resulting packages.
+func buildPackage(pkg *Package, pkgDir string, noConfirm bool) error {
+	_, _, arrow := configSymbols()
 
 	if err := cloneAUR(pkg, pkgDir); err != nil {
-		return "", err
+		return err
 	}
 
 	fmt.Printf("\n  %s building %s %s...\n\n", arrow, pkg.Name, pkg.Version)
@@ -689,7 +665,7 @@ func buildAndInstall(pkg *Package, noConfirm bool) (string, error) {
 	}
 	makepkg, err := unprivilegedCommand("makepkg", makepkgArgs...)
 	if err != nil {
-		return "", err
+		return err
 	}
 	makepkg.Env = safeMakepkgEnv()
 	makepkg.Dir = pkgDir
@@ -697,22 +673,58 @@ func buildAndInstall(pkg *Package, noConfirm bool) (string, error) {
 	makepkg.Stderr = os.Stderr
 	makepkg.Stdin = os.Stdin
 	if err := makepkg.Run(); err != nil {
-		return "", fmt.Errorf("makepkg failed: %w", err)
+		return fmt.Errorf("makepkg failed: %w", err)
 	}
 
-	// Verify GPG signatures on all built packages before installing
 	builtPkgs, err := findBuiltPackages(pkgDir)
 	if err != nil {
-		return "", fmt.Errorf("failed to list built packages: %w", err)
+		return fmt.Errorf("failed to list built packages: %w", err)
 	}
 	if len(builtPkgs) == 0 {
-		return "", fmt.Errorf("makepkg produced no packages in %s", pkgDir)
+		return fmt.Errorf("makepkg produced no packages in %s", pkgDir)
 	}
-	if err := installBuiltPackages(builtPkgs, noConfirm); err != nil {
+	return installBuiltPackages(builtPkgs, noConfirm)
+}
+
+func buildAndInstall(pkg *Package, noConfirm bool) (string, error) {
+	ok, _, arrow := configSymbols()
+
+	if err := validatePkgName(pkg.Name); err != nil {
+		return "", fmt.Errorf("refusing to build package with invalid name %q: %w", pkg.Name, err)
+	}
+
+	if installedVer, satisfied := versionSatisfied(pkg); satisfied {
+		fmt.Printf("  %s  %s %s is already installed (satisfies %s)\n", ok, pkg.Name, installedVer, pkg.Version)
+		return "", nil
+	}
+
+	pkgDir, err := aurCacheDir(pkg.Name)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve cache dir: %w", err)
+	}
+
+	if cached, err := findReusableBuiltPackage(pkg, pkgDir); err != nil {
+		return "", err
+	} else if cached != nil {
+		useCached := true
+		if !noConfirm {
+			fmt.Printf("\n  :: Found built package for aur/%s %s\n", pkg.Name, pkg.Version)
+			fmt.Printf("     %s\n", cached.Path)
+			useCached = readYesNo(fmt.Sprintf("  %s Install this existing build instead of rebuilding?", arrow), true)
+		}
+		if useCached {
+			if err := installBuiltPackage(cached.Path, noConfirm); err != nil {
+				return "", err
+			}
+			fmt.Printf("  %s  %s installed from existing build\n", ok, pkg.Name)
+			return pkgDir, nil
+		}
+	}
+
+	if err := buildPackage(pkg, pkgDir, noConfirm); err != nil {
 		return "", err
 	}
 	fmt.Printf("  %s  %s installed\n", ok, pkg.Name)
-
 	return pkgDir, nil
 }
 
@@ -735,10 +747,14 @@ func findReusableBuiltPackage(pkg *Package, pkgDir string) (*builtPackage, error
 			continue
 		}
 		path := filepath.Join(pkgDir, name)
-		// Verify package integrity before reusing cached package
-		// pacman -Qkp checks if the package file is valid and readable
-		if err := exec.Command("pacman", "-Qkp", path).Run(); err != nil {
-			fmt.Printf("  :: Warning: cached package %s is corrupted, skipping\n", filepath.Base(path))
+		// Verify package integrity before reusing cached package.
+		// pacman -Qkp does not exist on stock pacman, and shelling out
+		// to `tar -tf` adds a fork+exec per candidate file. Checking the
+		// archive's magic bytes (zstd / xz / gzip) is cheaper, requires
+		// no external tool, and is sufficient for "this looks like a
+		// real .pkg.tar.*".
+		if err := validatePackageArchive(path); err != nil {
+			warnStderr("cached package %s is corrupted (%v), skipping", filepath.Base(path), err)
 			continue
 		}
 		built, err := inspectBuiltPackage(path)
@@ -794,6 +810,42 @@ func inspectBuiltPackage(path string) (*builtPackage, error) {
 		Name:    fields[0],
 		Version: fields[1],
 	}, nil
+}
+
+// validatePackageArchive checks that path looks like a real tar-compressed
+// package by reading its leading magic bytes. It accepts zstd (.pkg.tar.zst,
+// the modern default), xz (.pkg.tar.xz, still common), and gzip (.pkg.tar.gz,
+// legacy). Anything else — including the empty file, a directory, or a
+// truncated/corrupt download — is rejected without shelling out. This is the
+// cheap "is this a real package file?" gate used when reusing a cached build
+// from ~/.cache/alps/aur/; full integrity (per-file checksum vs the local DB)
+// is still pacman's job at install time.
+func validatePackageArchive(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var head [6]byte
+	n, err := io.ReadFull(f, head[:])
+	if err != nil {
+		return fmt.Errorf("unreadable (%d bytes): %w", n, err)
+	}
+
+	// Magic bytes per format spec:
+	//   zstd: 28 B5 2F FD
+	//   xz:   FD 37 7A 58 5A 00
+	//   gzip: 1F 8B
+	switch {
+	case n >= 4 && head[0] == 0x28 && head[1] == 0xB5 && head[2] == 0x2F && head[3] == 0xFD:
+		return nil
+	case n >= 6 && head[0] == 0xFD && head[1] == 0x37 && head[2] == 0x7A && head[3] == 0x58 && head[4] == 0x5A && head[5] == 0x00:
+		return nil
+	case n >= 2 && head[0] == 0x1F && head[1] == 0x8B:
+		return nil
+	}
+	return fmt.Errorf("not a recognised tar archive (magic=% x)", head[:n])
 }
 
 func installBuiltPackage(path string, noConfirm bool) error {
@@ -957,9 +1009,12 @@ func syncAURRepo(pkgName, pkgDir string, quiet bool) error {
 
 // stderrFor returns the destination for subprocess diagnostics: visible
 // during normal installs, suppressed during quiet background syncs.
+// We use io.Discard rather than nil so callers always get a valid
+// io.Writer — nil works by accident on *os.File but is an undocumented
+// contract that breaks on any wrapper type.
 func stderrFor(quiet bool) io.Writer {
 	if quiet {
-		return nil
+		return io.Discard
 	}
 	return os.Stderr
 }
@@ -998,11 +1053,7 @@ func reviewAndConfirmLocalBuild(pkgbuildPath string, noConfirm bool, arrow strin
 	if err := reviewPKGBUILD(pkgbuildPath); err != nil {
 		return err
 	}
-	proceed, err := readYesNo(fmt.Sprintf("  %s Proceed with build?", arrow), true)
-	if err != nil {
-		return err
-	}
-	if !proceed {
+	if !readYesNo(fmt.Sprintf("  %s Proceed with build?", arrow), true) {
 		return fmt.Errorf("build cancelled by user")
 	}
 	return nil
@@ -1079,6 +1130,27 @@ func BuildLocal(dir string, noConfirm bool) error {
 
 	if err := installRepoDeps(repoDeps, noConfirm, arrow); err != nil {
 		return err
+	}
+
+	// Check for conflicts with installed packages before building AUR deps.
+	// This mirrors the conflict check in buildInstallPlan so that BuildLocal
+	// users get the same upfront warning instead of discovering conflicts
+	// at pacman -U time.
+	var allConflicts []string
+	for _, pkg := range aurOrdered {
+		if conflicts := checkConflicts(pkg.Conflicts); len(conflicts) > 0 {
+			for _, conflict := range conflicts {
+				allConflicts = append(allConflicts, fmt.Sprintf("%s conflicts with %s", pkg.Name, conflict))
+			}
+		}
+	}
+	if len(allConflicts) > 0 {
+		fmt.Printf("  :: WARNING: The following conflicts were detected:\n")
+		for _, conflict := range allConflicts {
+			fmt.Printf("     - %s\n", conflict)
+		}
+		fmt.Printf("  :: These conflicts will cause pacman -U to fail after compilation.\n")
+		fmt.Printf("  :: You may need to manually remove conflicting packages first.\n")
 	}
 
 	var builtDirs []string
@@ -1158,7 +1230,19 @@ func FetchABS(pkgName string) (string, error) {
 	return outDir, nil
 }
 
-// parsePKGBUILD extracts info from a PKGBUILD.
+// parsePKGBUILD extracts deps, makedeps, and pkgname from a PKGBUILD.
+//
+// Limitations (line-based heuristic, not a bash parser):
+//   - Multi-line quoted values (pkgname='foo\nbar') are not handled.
+//   - Array elements containing spaces inside single quotes
+//     (depends=('foo bar')) are split on the space; only double-quoted
+//     or unquoted tokens survive.
+//   - Indirect variable references (depends=(${_myarray[@]})) are not
+//     resolved.
+//
+// These are acceptable for the local-build use case where we just need
+// a rough dep list for the conflict/repo check — not for full PKGBUILD
+// semantics.
 func parsePKGBUILD(path string) (deps, makedeps []string, pkgname string, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1243,28 +1327,55 @@ func reviewPKGBUILD(path string) error {
 			}
 		}
 	}
+
+	// Scan for common red flags that indicate the PKGBUILD may be
+	// downloading or executing untrusted code. This is a lightweight
+	// heuristic — it does not replace human review, but catches the
+	// most obvious patterns for users who skip the full file inspection.
+	redFlags := []string{
+		"curl ", "wget ", // fetching remote content
+		"| sh", "| bash", // piping to a shell
+		"eval ",      // dynamic code execution
+		"/dev/stdin", // reading arbitrary stdin
+		"rm -rf /",   // catastrophic removal (unlikely but free to flag)
+	}
+	var flagged []string
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		lower := strings.ToLower(t)
+		for _, flag := range redFlags {
+			if strings.Contains(lower, flag) {
+				flagged = append(flagged, t)
+				break // one flag per line is enough
+			}
+		}
+	}
+	if len(flagged) > 0 {
+		fmt.Println()
+		fmt.Printf("  ⚠ Potential red flags (%d):\n", len(flagged))
+		for _, f := range flagged {
+			fmt.Printf("     %s\n", f)
+		}
+		fmt.Printf("  These patterns can indicate remote code execution. Review carefully.\n")
+	}
+
 	fmt.Println("  " + strings.Repeat("-", 44))
 
 	editor := os.Getenv("EDITOR")
 	if editor == "" || !editorIsSafe(editor) {
 		editor = "nano"
 	}
-	openEd, err := readYesNo(fmt.Sprintf("  Open PKGBUILD in editor (%s)?", editor), false)
-	if err != nil {
-		return err
-	}
-	if openEd {
+	if readYesNo(fmt.Sprintf("  Open PKGBUILD in editor (%s)?", editor), false) {
 		cmd := exec.Command(editor, path)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Run()
 	} else {
-		view, err := readYesNo("  View full PKGBUILD in terminal?", false)
-		if err != nil {
-			return err
-		}
-		if view {
+		if readYesNo("  View full PKGBUILD in terminal?", false) {
 			fmt.Println()
 			for _, line := range lines {
 				fmt.Printf("  %s\n", line)
@@ -1296,6 +1407,12 @@ func originalUser() string {
 // unprivilegedCommand creates an exec.Cmd configured to run as a non-root user.
 // If the process is running as root under sudo or doas, it executes the command
 // via sudo -u $SUDO_USER -H (or doas -u $DOAS_USER).
+//
+// The -H flag sets HOME to the invoking user's home directory so that makepkg
+// and git can write to ~/.cache and ~/.config. If the user's home directory is
+// read-only for the dropped user (e.g. NFS mount with restricted permissions),
+// the build may fail — this is expected to be resolved by the user, not the tool.
+//
 // If running as pure root (no invoking user), it returns an error because makepkg
 // strictly forbids root execution.
 func unprivilegedCommand(name string, args ...string) (*exec.Cmd, error) {
@@ -1344,6 +1461,13 @@ func isSensitiveEnvKey(key string) bool {
 // safeMakepkgEnv returns a minimal, sanitized environment for makepkg and git.
 // Only variables needed for building are kept; everything else (especially
 // tokens and secrets) is stripped.
+//
+// Some allowed vars (BUILDDIR, PKGEXT, SRCPKGNAME, etc.) are read by makepkg's
+// own C code but also accessible to PKGBUILD shell functions (build(), package()).
+// We allow them because they are safe in practice and useful for custom builds,
+// but this is a deliberate tradeoff: PKGBUILDs could theoretically read them to
+// make build decisions. The alternative — only allowing vars makepkg's C code
+// reads — would break common PKGBUILD patterns without a clear security win.
 func safeMakepkgEnv() []string {
 	allowed := map[string]bool{
 		"PATH":            true,
@@ -1391,16 +1515,12 @@ func safeMakepkgEnv() []string {
 		"arch":            true,
 		"MAKEPKG_CONF":    true,
 		"PACMAN_CONF":     true,
-		"http_proxy":      true,
-		"https_proxy":     true,
-		"ftp_proxy":       true,
-		"all_proxy":       true,
-		"no_proxy":        true,
-		"HTTP_PROXY":      true,
-		"HTTPS_PROXY":     true,
-		"FTP_PROXY":       true,
-		"ALL_PROXY":       true,
-		"NO_PROXY":        true,
+	}
+	// Proxy env vars come in case-folded pairs: some tools honour lowercase,
+	// others uppercase. Populate both forms from a single source list.
+	for _, p := range []string{"http_proxy", "https_proxy", "ftp_proxy", "all_proxy", "no_proxy"} {
+		allowed[p] = true
+		allowed[strings.ToUpper(p)] = true
 	}
 
 	var env []string
