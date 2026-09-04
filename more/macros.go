@@ -304,11 +304,24 @@ func isInstallOnlyMacro(name string) bool {
 	}
 }
 
+// isRemovalOp reports whether an operation tears a package down.
+func isRemovalOp(op platform.OperationType) bool {
+	return op == platform.OperationRemove || op == platform.OperationPurge
+}
+
+// skipMacroForOp reports whether a macro must not run for the given operation:
+// install/creation macros are dropped during remove and purge, everything else
+// runs. Manifest categorization, after_env execution and macro dispatch all
+// ask this one function, so the three filters cannot disagree.
+func skipMacroForOp(name string, op platform.OperationType) bool {
+	return isRemovalOp(op) && isInstallOnlyMacro(name)
+}
+
 // executeMacro executes a single macro and returns the shell command.
 // Unknown macro names are silently ignored (return "", nil) so that typos
 // or unrecognised macros never reach the shell.
 func executeMacro(macro Macro, ctx *MacroContext) (string, error) {
-	if ctx != nil && (ctx.Op == platform.OperationRemove || ctx.Op == platform.OperationPurge) && isInstallOnlyMacro(macro.Name) {
+	if ctx != nil && skipMacroForOp(macro.Name, ctx.Op) {
 		return "", nil // Skip install/creation macros during remove or purge
 	}
 	handler, ok := macroRegistry[macro.Name]
@@ -325,10 +338,14 @@ func executeBashRun(macro Macro, ctx *MacroContext) (string, error) {
 	}
 
 	script := macro.Args[0]
-	args := ""
-	if len(macro.Args) > 1 {
-		args = strings.Join(macro.Args[1:], " ")
+	// Quote each trailing argument so it reaches the script as one literal
+	// word — these come from third-party ALPSMORE files and could otherwise
+	// smuggle shell metacharacters into the executed command line.
+	quotedArgs := make([]string, 0, len(macro.Args)-1)
+	for _, a := range macro.Args[1:] {
+		quotedArgs = append(quotedArgs, shellQuote(a))
 	}
+	args := strings.Join(quotedArgs, " ")
 
 	// If URL, download first using Go's HTTP client
 	if strings.HasPrefix(script, "http://") || strings.HasPrefix(script, "https://") {
@@ -343,8 +360,13 @@ func executeBashRun(macro Macro, ctx *MacroContext) (string, error) {
 			return "", err
 		}
 
-		// Download with size limit and security checks via the hardened fetcher.
-		bodyBytes, err := downloadScriptWithLimit(script, maxScriptSize)
+		// Download with size limit and security checks via the shared capped fetcher.
+		bodyBytes, err := fetchBytes(script, scriptDownloadTimeout, maxScriptSize, func(u string) error {
+			if !isSafeDownloadURL(u) {
+				return fmt.Errorf("script download requires HTTPS: %s", u)
+			}
+			return nil
+		})
 		if err != nil {
 			return "", fmt.Errorf("failed to download %s: %w", script, err)
 		}
@@ -370,12 +392,12 @@ func executeBashRun(macro Macro, ctx *MacroContext) (string, error) {
 			return "", fmt.Errorf("failed to write file %s: %w", localScript, err)
 		}
 
-		// Return command to execute the script
+		// Return command to execute the script (path quoted).
 		if args != "" {
-			cmd := fmt.Sprintf("bash %s %s", localScript, args)
+			cmd := fmt.Sprintf("bash %s %s", shellQuote(localScript), args)
 			return wrapWithFakeroot(cmd, ctx), nil
 		}
-		cmd := fmt.Sprintf("bash %s", localScript)
+		cmd := fmt.Sprintf("bash %s", shellQuote(localScript))
 		return wrapWithFakeroot(cmd, ctx), nil
 	}
 
@@ -385,10 +407,10 @@ func executeBashRun(macro Macro, ctx *MacroContext) (string, error) {
 	}
 
 	if args != "" {
-		cmd := fmt.Sprintf("bash %s %s", script, args)
+		cmd := fmt.Sprintf("bash %s %s", shellQuote(script), args)
 		return wrapWithFakeroot(cmd, ctx), nil
 	}
-	cmd := fmt.Sprintf("bash %s", script)
+	cmd := fmt.Sprintf("bash %s", shellQuote(script))
 	return wrapWithFakeroot(cmd, ctx), nil
 }
 
@@ -413,7 +435,7 @@ func executeSH(macro Macro, ctx *MacroContext) (string, error) {
 		shell = "bash"
 	}
 
-	cmd := fmt.Sprintf("%s %s", shell, scriptPath)
+	cmd := fmt.Sprintf("%s %s", shell, shellQuote(scriptPath))
 	return wrapWithFakeroot(cmd, ctx), nil
 }
 
@@ -455,7 +477,7 @@ func executeEnableService(macro Macro, ctx *MacroContext) (string, error) {
 		Generated: true,
 	})
 
-	return fmt.Sprintf("systemctl enable %s", service), nil
+	return fmt.Sprintf("systemctl enable %s", shellQuote(service)), nil
 }
 
 // executeDisableService disables a systemd service.
@@ -469,7 +491,7 @@ func executeDisableService(macro Macro, ctx *MacroContext) (string, error) {
 	}
 
 	service := macro.Args[0]
-	return fmt.Sprintf("systemctl disable %s", service), nil
+	return fmt.Sprintf("systemctl disable %s", shellQuote(service)), nil
 }
 
 // executeStartService starts a systemd service.
@@ -483,7 +505,7 @@ func executeStartService(macro Macro, ctx *MacroContext) (string, error) {
 	}
 
 	service := macro.Args[0]
-	return fmt.Sprintf("systemctl start %s", service), nil
+	return fmt.Sprintf("systemctl start %s", shellQuote(service)), nil
 }
 
 // executeStopService stops a systemd service.
@@ -497,7 +519,7 @@ func executeStopService(macro Macro, ctx *MacroContext) (string, error) {
 	}
 
 	service := macro.Args[0]
-	return fmt.Sprintf("systemctl stop %s", service), nil
+	return fmt.Sprintf("systemctl stop %s", shellQuote(service)), nil
 }
 
 // executeRestartService restarts a systemd service.
@@ -511,7 +533,7 @@ func executeRestartService(macro Macro, ctx *MacroContext) (string, error) {
 	}
 
 	service := macro.Args[0]
-	return fmt.Sprintf("systemctl restart %s", service), nil
+	return fmt.Sprintf("systemctl restart %s", shellQuote(service)), nil
 }
 
 // --- User macros (CREATE_USER / REMOVE_USER) ---
@@ -531,7 +553,7 @@ func executeCreateUser(macro Macro, ctx *MacroContext) (string, error) {
 	// Don't track users for automatic removal - they may be shared between packages
 	// Users should be removed manually if needed
 
-	return fmt.Sprintf("useradd -r -s /bin/false %s", username), nil
+	return fmt.Sprintf("useradd -r -s /bin/false %s", shellQuote(username)), nil
 }
 
 // executeRemoveUser removes a system user.
@@ -545,5 +567,5 @@ func executeRemoveUser(macro Macro, ctx *MacroContext) (string, error) {
 	}
 
 	username := macro.Args[0]
-	return fmt.Sprintf("userdel %s", username), nil
+	return fmt.Sprintf("userdel %s", shellQuote(username)), nil
 }

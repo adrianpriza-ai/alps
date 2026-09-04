@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -168,6 +169,41 @@ func TestHasValidEntries(t *testing.T) {
 				t.Errorf("hasValidEntries(%q) = %v, want %v", tc.data, got, tc.valid)
 			}
 		})
+	}
+}
+
+// TestPickEntryDeterministic verifies that pickEntry returns a stable entry
+// for a multi-section ALPSMORE file instead of one chosen at random by map
+// iteration order. A section named after the repository wins; otherwise the
+// lexicographically first name is chosen.
+func TestPickEntryDeterministic(t *testing.T) {
+	entries, err := Parse([]byte("[bravo]\n[alpha]\n"))
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("Parse = %v, %v; want two distinct entries", entries, err)
+	}
+
+	if got := pickEntry(entries, "bravo"); got == nil || got.Name != "bravo" {
+		t.Errorf("pickEntry should prefer the section matching the repo name, got %v", got)
+	}
+	if got := pickEntry(entries, "not-in-file"); got == nil || got.Name != "alpha" {
+		t.Errorf("pickEntry should fall back deterministically to the first sorted name, got %v", got)
+	}
+	if got := pickEntry(map[string]*Entry{}, "anything"); got != nil {
+		t.Errorf("pickEntry on an empty map should return nil, got %v", got)
+	}
+
+	// parseALPSMORE exposes the same deterministic choice end to end.
+	sorted := make([]string, 0, len(entries))
+	for name := range entries {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
+	e, err := parseALPSMORE([]byte("[bravo]\ndesc=b\n[alpha]\ndesc=a\n"), "user/repo")
+	if err != nil {
+		t.Fatalf("parseALPSMORE error: %v", err)
+	}
+	if e.Name != sorted[0] {
+		t.Errorf("parseALPSMORE name = %q, want the deterministic first entry %q", e.Name, sorted[0])
 	}
 }
 

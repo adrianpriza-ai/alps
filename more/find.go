@@ -8,16 +8,24 @@ import (
 	"github.com/adrianpriza-ai/alps/config"
 )
 
-// Find looks up a package by name in the repo cache and returns its Entry.
-func Find(name string, cfg *config.Config) (*Entry, error) {
+// checkCacheStatus verifies the cache exists and prints a warning if expired.
+func checkCacheStatus(cfg *config.Config) error {
 	exists, expired := CacheStatus()
 	if !exists {
-		return nil, fmt.Errorf("no cache found, run: alps repo update")
+		return fmt.Errorf("no cache found, run: alps repo update")
 	}
 	if expired {
 		fmt.Printf("  %s  repo cache is expired (>90 days). Using old cache.\n", cfg.Style.SymWarn)
 		fmt.Println("        Run 'alps repo update' to refresh.")
 		fmt.Println()
+	}
+	return nil
+}
+
+// loadCacheEntries verifies cache status, reads, and parses the repo cache.
+func loadCacheEntries(cfg *config.Config) (map[string]*Entry, error) {
+	if err := checkCacheStatus(cfg); err != nil {
+		return nil, err
 	}
 
 	data, err := ReadCache()
@@ -30,8 +38,11 @@ func Find(name string, cfg *config.Config) (*Entry, error) {
 		return nil, fmt.Errorf("failed to parse repo: %w", err)
 	}
 
-	distro, distroLike := detectDistro()
+	return entries, nil
+}
 
+// findEntry looks up a package by name in entries and validates distro compatibility.
+func findEntry(entries map[string]*Entry, name string, distro string, distroLike []string) (*Entry, error) {
 	e, ok := entries[name]
 	if !ok {
 		return nil, fmt.Errorf("package %q not found in alps-more repo", name)
@@ -47,24 +58,20 @@ func Find(name string, cfg *config.Config) (*Entry, error) {
 	return e, nil
 }
 
-// List returns entries for the current distro, including GitHub-sourced installs.
-func List(cfg *config.Config) (map[string]*Entry, error) {
-	exists, expired := CacheStatus()
-	if !exists {
-		return nil, fmt.Errorf("no cache found, run: alps repo update")
-	}
-	if expired {
-		fmt.Printf("  %s  repo cache is expired (>90 days). Using old cache.\n", cfg.Style.SymWarn)
-		fmt.Println("        Run 'alps repo update' to refresh.")
-		fmt.Println()
-	}
-
-	data, err := ReadCache()
+// Find looks up a package by name in the repo cache and returns its Entry.
+func Find(name string, cfg *config.Config) (*Entry, error) {
+	entries, err := loadCacheEntries(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	all, err := Parse(data)
+	distro, distroLike := detectDistro()
+	return findEntry(entries, name, distro, distroLike)
+}
+
+// List returns entries for the current distro, including GitHub-sourced installs.
+func List(cfg *config.Config) (map[string]*Entry, error) {
+	all, err := loadCacheEntries(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +110,8 @@ func List(cfg *config.Config) (map[string]*Entry, error) {
 	return filtered, nil
 }
 
-// Search returns entries whose name or description matches the query.
+// Search returns entries whose name, description, author, or dependencies
+// match the query (case-insensitive).
 func Search(query string, cfg *config.Config) ([]*Entry, error) {
 	entries, err := List(cfg)
 	if err != nil {
@@ -113,12 +121,27 @@ func Search(query string, cfg *config.Config) ([]*Entry, error) {
 	q := strings.ToLower(query)
 	var results []*Entry
 	for _, e := range entries {
-		if strings.Contains(strings.ToLower(e.Name), q) ||
-			strings.Contains(strings.ToLower(e.Desc), q) {
+		if entryMatchesQuery(e, q) {
 			results = append(results, e)
 		}
 	}
 	return results, nil
+}
+
+// entryMatchesQuery reports whether the query appears in the entry's name,
+// description, author, or any of its dependencies, all case-insensitive.
+func entryMatchesQuery(e *Entry, q string) bool {
+	if strings.Contains(strings.ToLower(e.Name), q) ||
+		strings.Contains(strings.ToLower(e.Desc), q) ||
+		strings.Contains(strings.ToLower(e.Author), q) {
+		return true
+	}
+	for _, dep := range e.Deps {
+		if strings.Contains(strings.ToLower(dep), q) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Installed package listing (from list.go) ---
@@ -170,12 +193,30 @@ func ListStale(cfg *config.Config) error {
 		return nil
 	}
 
+	var hasLocal bool
+	for _, rec := range records {
+		if !IsRemoteSource(rec.Source) {
+			hasLocal = true
+			break
+		}
+	}
+	if !hasLocal {
+		fmt.Printf("  %s  No stale packages found.\n", cfg.Style.SymOK)
+		return nil
+	}
+
+	entries, err := loadCacheEntries(cfg)
+	if err != nil {
+		return err
+	}
+	distro, distroLike := detectDistro()
+
 	var stale []string
 	for name, rec := range records {
 		if IsRemoteSource(rec.Source) {
 			continue
 		}
-		_, findErr := Find(name, cfg)
+		_, findErr := findEntry(entries, name, distro, distroLike)
 		if findErr != nil && strings.Contains(findErr.Error(), "not found in alps-more repo") {
 			stale = append(stale, name)
 		}
@@ -211,6 +252,23 @@ func CheckUpdates(cfg *config.Config) (*UpdateSummary, error) {
 		return nil, nil
 	}
 
+	var hasLocal bool
+	for _, rec := range records {
+		if !IsRemoteSource(rec.Source) {
+			hasLocal = true
+			break
+		}
+	}
+	if !hasLocal {
+		return &UpdateSummary{}, nil
+	}
+
+	entries, err := loadCacheEntries(cfg)
+	if err != nil {
+		return nil, err
+	}
+	distro, distroLike := detectDistro()
+
 	summary := &UpdateSummary{}
 
 	for name, rec := range records {
@@ -219,7 +277,7 @@ func CheckUpdates(cfg *config.Config) (*UpdateSummary, error) {
 			continue
 		}
 
-		e, findErr := Find(name, cfg)
+		e, findErr := findEntry(entries, name, distro, distroLike)
 		if findErr != nil {
 			if strings.Contains(findErr.Error(), "not found in alps-more repo") {
 				summary.Stale = append(summary.Stale, name)

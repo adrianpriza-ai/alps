@@ -1,6 +1,6 @@
 # Contributing to ALPS
 
-Thanks for taking the time to contribute!
+Thanks for contributing.
 
 ## Setup
 

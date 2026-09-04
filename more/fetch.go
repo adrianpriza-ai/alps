@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,6 +34,8 @@ const (
 	maxManifestSize = 10 * 1024 * 1024
 	// Security: maximum response size for script downloads (100MB)
 	maxScriptSize = 100 * 1024 * 1024
+	// Security: maximum response size for {DOWNLOAD} macro downloads (100MB)
+	maxDownloadSize = 100 * 1024 * 1024
 )
 
 // defaultServers are the official alps-more mirrors.
@@ -46,7 +49,18 @@ var defaultServers = []string{
 
 func getCacheFile() string     { return filepath.Join(platform.CacheDir(), "main.txt") }
 func getLastSyncFile() string  { return filepath.Join(platform.CacheDir(), "last_sync") }
-func getInstalledFile() string { return filepath.Join(platform.LibDir(), "installed.json") }
+
+// installedFileOverride redirects the installed state file to another path.
+// It exists for tests, which point state at a temp dir so they never touch
+// (or need privileges for) the real /var/lib/alps/installed.json.
+var installedFileOverride string
+
+func getInstalledFile() string {
+	if installedFileOverride != "" {
+		return installedFileOverride
+	}
+	return filepath.Join(platform.LibDir(), "installed.json")
+}
 
 // ensureCacheDir creates the cache directory.
 // Uses the runner package for consistent privilege escalation instead of
@@ -65,6 +79,11 @@ func ensureCacheDir() error {
 // (e.g. no escalation on Termux, sudo/doas/pkexec on Linux).
 func ensureLibDir() error {
 	dir := platform.LibDir()
+	if installedFileOverride != "" {
+		// A test redirected the state file into a temp dir; create that dir
+		// directly instead of escalating to create the real lib dir.
+		return os.MkdirAll(filepath.Dir(installedFileOverride), 0755)
+	}
 	r := runner.NewDefaultRunner(false)
 	cmd := runner.BuildCommand("mkdir", "-p", dir).WithPrivilege()
 	return r.Run(context.Background(), cmd)
@@ -84,7 +103,10 @@ func ensureLibDir() error {
 // work goes through the runner package for consistent sudo/doas/pkexec/su
 // escalation instead of hardcoded `sudo`.
 func writeCacheFile(path string, data []byte) error {
-	if platform.IsTermux() || platform.IsMacOS() {
+	// Termux and macOS keep state in user-owned directories. A redirected
+	// installed state path (installedFileOverride, tests) is a temp dir owned
+	// by the current user as well — all three can write directly.
+	if platform.IsTermux() || platform.IsMacOS() || installedFileOverride != "" {
 		return writeFileDurable(path, data, 0644)
 	}
 
@@ -193,13 +215,7 @@ func isCacheValid() bool {
 	if err != nil {
 		return false
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") && len(line) > 2 {
-			return true
-		}
-	}
-	return false
+	return hasValidEntries(data)
 }
 
 // fetchResult holds download outcome.
@@ -301,25 +317,33 @@ func FetchAndCache(cfg *config.Config) error {
 	return nil
 }
 
-// getBuildCacheRoot returns the root of the per-package build cache (~/.cache/alps/more).
-func getBuildCacheRoot() string {
+// getBuildCacheRoot returns the root of the per-package build cache
+// (~/.cache/alps/more), or an error when the home directory cannot be
+// determined. Guessing a home directory here would point the build cache at
+// another account's files — /root for a non-root user — so callers surface the
+// failure instead.
+func getBuildCacheRoot() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join("/root", ".cache", "alps", "more")
+		return "", fmt.Errorf("cannot determine home directory for the build cache: %w", err)
 	}
-	return filepath.Join(home, ".cache", "alps", "more")
+	return filepath.Join(home, ".cache", "alps", "more"), nil
 }
 
 // CleanCache removes the build cache directory (~/.cache/alps/more).
 // The index cache (/var/cache/alps/more) is NOT touched.
 func CleanCache() error {
-	return os.RemoveAll(getBuildCacheRoot())
+	root, err := getBuildCacheRoot()
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(root)
 }
 
 // BuildCacheDir returns the path of the per-package build cache root
 // (~/.cache/alps/more). Note: this is NOT platform.CacheDir(), which returns
 // the index cache (/var/cache/alps/more).
-func BuildCacheDir() string {
+func BuildCacheDir() (string, error) {
 	return getBuildCacheRoot()
 }
 
@@ -412,10 +436,25 @@ func downloadOnce(rawURL string) ([]byte, error) {
 }
 
 func downloadOnceWithSizeLimit(rawURL string, maxSize int64) ([]byte, error) {
-	if !isForgeHost(rawURL) {
-		return nil, fmt.Errorf("ALPSMORE fetch: disallowed host/scheme: %s", rawURL)
+	return fetchBytes(rawURL, downloadTimeout, maxSize, func(u string) error {
+		if !isForgeHost(u) {
+			return fmt.Errorf("ALPSMORE fetch: disallowed host/scheme: %s", u)
+		}
+		return nil
+	})
+}
+
+// fetchBytes is the single capped HTTP fetch for the package. Every remote
+// fetch funnels through it — manifest/ALPSMORE downloads, script downloads
+// and macro downloads — so the read-with-size-limit logic lives in one place
+// instead of drifting between call sites (the source of the unbounded
+// DOWNLOAD regression). validate enforces the caller's URL policy (e.g.
+// HTTPS-only or a forge host allowlist) before any request is made.
+func fetchBytes(rawURL string, timeout time.Duration, maxSize int64, validate func(string) error) ([]byte, error) {
+	if err := validate(rawURL); err != nil {
+		return nil, err
 	}
-	client := &http.Client{Timeout: downloadTimeout}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get(rawURL)
 	if err != nil {
 		return nil, err
@@ -426,10 +465,10 @@ func downloadOnceWithSizeLimit(rawURL string, maxSize int64) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, rawURL)
 	}
 
-	// Security: Limit response size to prevent denial of service.
-	// Read one extra byte so an exactly-maxSize body is accepted while a
-	// larger one is detected as oversized (a plain LimitReader(maxSize) would
-	// make the two indistinguishable and reject valid max-size responses).
+	// Security: limit response size to prevent denial of service. Read one
+	// extra byte so an exactly-maxSize body is accepted while a larger one is
+	// detected as oversized (a plain LimitReader(maxSize) would make the two
+	// indistinguishable and reject valid max-size responses).
 	limitedReader := io.LimitReader(resp.Body, maxSize+1)
 	body, err := io.ReadAll(limitedReader)
 	if err != nil {
@@ -548,28 +587,46 @@ func parseALPSMORE(data []byte, repoPath string) (*Entry, error) {
 		return nil, fmt.Errorf("failed to parse ALPSMORE from %s: %w", repoPath, err)
 	}
 
-	// Entry has a [name] header — return it directly.
-	if len(entries) > 0 {
-		for _, e := range entries {
-			return e, nil
-		}
-	}
-
-	// No [name] header — inject repo name as fallback.
 	repoName := repoPath
 	if idx := strings.LastIndex(repoPath, "/"); idx >= 0 {
 		repoName = repoPath[idx+1:]
 	}
+
+	// Entry has a [name] header — return it directly.
+	if e := pickEntry(entries, repoName); e != nil {
+		return e, nil
+	}
+
+	// No [name] header — inject repo name as fallback.
 	injected := append([]byte("["+repoName+"]\n"), data...)
 	entries, err = Parse(injected)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse ALPSMORE from %s: %w", repoPath, err)
 	}
-	for _, e := range entries {
+	if e := pickEntry(entries, repoName); e != nil {
 		return e, nil
 	}
 
 	return nil, fmt.Errorf("ALPSMORE file from github.com/%s is empty or has no valid content", repoPath)
+}
+
+// pickEntry selects the single entry an ALPSMORE file describes, returning nil
+// for an empty map. A file with several [name] sections would otherwise resolve
+// to a random one, since Go randomizes map iteration order: the section named
+// after the repository wins, and any other tie is broken by sorting the names.
+func pickEntry(entries map[string]*Entry, repoName string) *Entry {
+	if len(entries) == 0 {
+		return nil
+	}
+	if e, ok := entries[repoName]; ok {
+		return e
+	}
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return entries[names[0]]
 }
 
 // --- Remote reference parsing (from remote.go) ---

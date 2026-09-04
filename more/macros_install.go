@@ -91,17 +91,20 @@ func resolveInstallDest(args []string, p installParams) (string, error) {
 }
 
 // buildInstallCmd returns the shell command string for a file install.
-// When a custom dir is provided, mkdir -p $(dirname dest) is used;
-// when using the default dir, mkdir -p <dir> is used instead.
+// The parent directory is computed in Go and every interpolated path is
+// single-quoted, so macro-supplied paths with spaces or shell metacharacters
+// can neither break the command nor inject extra commands (the old
+// "mkdir -p $(dirname ...)" shell-ism would run whatever $(...) found).
 func buildInstallCmd(source, dest string, p installParams) string {
-	symOK := getSymOK()
+	// When dest includes a custom path, create its parent dir; otherwise mkdir
+	// the platform default dir up front (mkdir -p is idempotent either way).
+	parent := p.defaultDir()
 	if strings.Contains(dest, "/") {
-		// When dest includes a custom path, create its parent dir.
-		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod %s %s && echo \"  %s  installed %s to %s\"",
-			dest, source, dest, p.perm, dest, symOK, source, dest)
+		parent = filepath.Dir(dest)
 	}
-	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod %s %s && echo \"  %s  installed %s to %s\"",
-		p.defaultDir(), source, dest, p.perm, dest, symOK, source, dest)
+	msg := fmt.Sprintf("  %s  installed %s to %s", getSymOK(), source, dest)
+	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod %s %s && echo %s",
+		shellQuote(parent), shellQuote(source), shellQuote(dest), p.perm, shellQuote(dest), shellQuote(msg))
 }
 
 // executeInstallBin installs a binary to /usr/bin (or Termux equivalent) or specified directory.
@@ -158,11 +161,13 @@ func executeInstallMan(macro Macro, ctx *MacroContext) (string, error) {
 		Type:      "file",
 		Generated: true,
 	})
-	// Copy without .gz suffix first, then gzip in-place
+	// Copy without .gz suffix first, then gzip in-place. All paths are
+	// single-quoted so macro-supplied file names stay one literal word.
 	uncompressedDest := strings.TrimSuffix(dest, ".gz")
-	symOK := getSymOK()
-	return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s && gzip -f %s && echo \"  %s  installed %s to %s\"",
-		uncompressedDest, macro.Args[0], uncompressedDest, uncompressedDest, uncompressedDest, symOK, macro.Args[0], dest), nil
+	msg := fmt.Sprintf("  %s  installed %s to %s", getSymOK(), macro.Args[0], dest)
+	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 644 %s && gzip -f %s && echo %s",
+		shellQuote(filepath.Dir(uncompressedDest)), shellQuote(macro.Args[0]), shellQuote(uncompressedDest),
+		shellQuote(uncompressedDest), shellQuote(uncompressedDest), shellQuote(msg)), nil
 }
 
 // executeInstallService installs a systemd service file.
@@ -196,8 +201,11 @@ func executeInstallService(macro Macro, ctx *MacroContext) (string, error) {
 			Type:      "service",
 			Generated: true,
 		})
-		// Return install command using mkdir, cp, chmod, and echo
-		return fmt.Sprintf("mkdir -p $(dirname %s) && cp %s %s && chmod 644 %s && echo \"  %s  installed %s to %s\"", dest, macro.Args[0], dest, dest, symOK, macro.Args[0], dest), nil
+		// Return install command using mkdir, cp, chmod, and echo. The parent
+		// dir is computed in Go and all paths are single-quoted.
+		msg := fmt.Sprintf("  %s  installed %s to %s", symOK, macro.Args[0], dest)
+		return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 644 %s && echo %s",
+			shellQuote(filepath.Dir(dest)), shellQuote(macro.Args[0]), shellQuote(dest), shellQuote(dest), shellQuote(msg)), nil
 	}
 	// Default to /etc/systemd/system directory, store just the service name
 	serviceName := filepath.Base(macro.Args[0])
@@ -207,8 +215,10 @@ func executeInstallService(macro Macro, ctx *MacroContext) (string, error) {
 		Type:      "service",
 		Generated: true,
 	})
-	// Return install command using mkdir, cp, chmod, and echo
-	return fmt.Sprintf("mkdir -p /etc/systemd/system && cp %s %s && chmod 644 %s && echo \"  %s  installed %s to %s\"", macro.Args[0], dest, dest, symOK, macro.Args[0], dest), nil
+	// Return install command using mkdir, cp, chmod, and echo.
+	msg := fmt.Sprintf("  %s  installed %s to %s", symOK, macro.Args[0], dest)
+	return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 644 %s && echo %s",
+		shellQuote("/etc/systemd/system"), shellQuote(macro.Args[0]), shellQuote(dest), shellQuote(dest), shellQuote(msg)), nil
 }
 
 // executeInstallDir creates a directory with standard permissions.
@@ -228,8 +238,8 @@ func executeInstallDir(macro Macro, ctx *MacroContext) (string, error) {
 		Generated: true,
 	})
 
-	symOK := getSymOK()
-	return fmt.Sprintf("mkdir -p %s && echo \"  %s  installed directory %s\"", dir, symOK, dir), nil
+	msg := fmt.Sprintf("  %s  installed directory %s", getSymOK(), dir)
+	return fmt.Sprintf("mkdir -p %s && echo %s", shellQuote(dir), shellQuote(msg)), nil
 }
 
 // executeSymlink creates a symbolic link.
@@ -254,8 +264,8 @@ func executeSymlink(macro Macro, ctx *MacroContext) (string, error) {
 		Generated: true,
 	})
 
-	symOK := getSymOK()
-	return fmt.Sprintf("ln -sf %s %s && echo \"  %s  installed symlink %s -> %s\"", target, link, symOK, link, target), nil
+	msg := fmt.Sprintf("  %s  installed symlink %s -> %s", getSymOK(), link, target)
+	return fmt.Sprintf("ln -sf %s %s && echo %s", shellQuote(target), shellQuote(link), shellQuote(msg)), nil
 }
 
 // executeExtract extracts an archive.
@@ -269,18 +279,19 @@ func executeExtract(macro Macro, ctx *MacroContext) (string, error) {
 		return "", fmt.Errorf("EXTRACT invalid archive path: %w", err)
 	}
 
-	// Detect archive type and extract accordingly
+	// Detect archive type and extract accordingly. The archive name is
+	// single-quoted so spaces or metacharacters in it cannot inject commands.
 	var cmd string
 	if strings.HasSuffix(archive, ".tar.gz") || strings.HasSuffix(archive, ".tgz") {
-		cmd = fmt.Sprintf("tar -xzf %s", archive)
+		cmd = fmt.Sprintf("tar -xzf %s", shellQuote(archive))
 	} else if strings.HasSuffix(archive, ".tar.xz") || strings.HasSuffix(archive, ".txz") {
-		cmd = fmt.Sprintf("tar -xJf %s", archive)
+		cmd = fmt.Sprintf("tar -xJf %s", shellQuote(archive))
 	} else if strings.HasSuffix(archive, ".tar.bz2") || strings.HasSuffix(archive, ".tbz") {
-		cmd = fmt.Sprintf("tar -xjf %s", archive)
+		cmd = fmt.Sprintf("tar -xjf %s", shellQuote(archive))
 	} else if strings.HasSuffix(archive, ".zip") {
-		cmd = fmt.Sprintf("unzip %s", archive)
+		cmd = fmt.Sprintf("unzip %s", shellQuote(archive))
 	} else {
-		cmd = fmt.Sprintf("tar -xf %s", archive)
+		cmd = fmt.Sprintf("tar -xf %s", shellQuote(archive))
 	}
 
 	return wrapWithFakeroot(cmd, ctx), nil

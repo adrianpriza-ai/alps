@@ -9,12 +9,45 @@ import (
 	"github.com/adrianpriza-ai/alps/platform"
 )
 
+// TestCurrentStyleReloadsAfterReset verifies that currentStyle reads the user
+// configuration lazily and that resetStyleCache drops the memoized value so a
+// config change takes effect on the next call.
+func TestCurrentStyleReloadsAfterReset(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color") // avoid the TTY symbol override in config.Load
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	t.Cleanup(resetStyleCache) // re-read real config for later tests
+
+	cfgPath := filepath.Join(cfgDir, "alps", "config")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("sym_ok=AAA\n"), 0644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	resetStyleCache()
+	if got := currentStyle().SymOK; got != "AAA" {
+		t.Errorf("currentStyle().SymOK = %q, want %q after first config load", got, "AAA")
+	}
+
+	// Change the config and reset — the next read must see the new value.
+	if err := os.WriteFile(cfgPath, []byte("sym_ok=BBB\n"), 0644); err != nil {
+		t.Fatalf("failed to rewrite config: %v", err)
+	}
+	resetStyleCache()
+	if got := currentStyle().SymOK; got != "BBB" {
+		t.Errorf("currentStyle().SymOK = %q, want %q after config reload", got, "BBB")
+	}
+}
+
 // TestWriteManifestReadManifestRoundTrip verifies that a manifest written
 // by WriteManifest can be read back by ReadManifest with identical content.
 func TestWriteManifestReadManifestRoundTrip(t *testing.T) {
 	// Redirect os.TempDir() for this test so we don't interfere with other tests.
 	tmpDir := t.TempDir()
 	t.Setenv("TMPDIR", tmpDir)
+	cleanupTempFiles() // drop any scratch dir cached from a previous test's TMPDIR
 
 	original := &ExecutionManifest{
 		BuildEnv: []string{
@@ -32,8 +65,11 @@ func TestWriteManifestReadManifestRoundTrip(t *testing.T) {
 		t.Fatalf("WriteManifest failed: %v", err)
 	}
 
-	// Verify the file was created.
-	manifestPath := filepath.Join(tmpDir, ".alps_runner.txt")
+	// Verify the file was created inside the per-run scratch dir.
+	if runScratchDir == "" {
+		t.Fatal("run scratch dir was not created")
+	}
+	manifestPath := filepath.Join(runScratchDir, ".alps_runner.txt")
 	if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
 		t.Fatal("manifest file was not created")
 	}
@@ -67,6 +103,7 @@ func TestWriteManifestReadManifestRoundTrip(t *testing.T) {
 func TestWriteManifestReadManifestEmptySections(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("TMPDIR", tmpDir)
+	cleanupTempFiles() // drop any scratch dir cached from a previous test's TMPDIR
 
 	cases := []struct {
 		name     string
@@ -97,10 +134,7 @@ func TestWriteManifestReadManifestEmptySections(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Clean up between sub-tests since they all write to the same path.
-			manifestPath := filepath.Join(tmpDir, ".alps_runner.txt")
-			_ = os.Remove(manifestPath)
-
+			// WriteManifest truncates, so sub-tests can share the run's scratch dir.
 			if err := WriteManifest(tc.manifest); err != nil {
 				t.Fatalf("WriteManifest failed: %v", err)
 			}
@@ -125,6 +159,7 @@ func TestWriteManifestReadManifestEmptySections(t *testing.T) {
 func TestWriteManifestReadManifestOverwrite(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("TMPDIR", tmpDir)
+	cleanupTempFiles() // drop any scratch dir cached from a previous test's TMPDIR
 
 	first := &ExecutionManifest{
 		BuildEnv: []string{"first build command"},
@@ -161,14 +196,11 @@ func TestWriteManifestReadManifestOverwrite(t *testing.T) {
 func TestReadManifestMissingFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("TMPDIR", tmpDir)
-
-	// Ensure no manifest file exists.
-	manifestPath := filepath.Join(tmpDir, ".alps_runner.txt")
-	_ = os.Remove(manifestPath)
+	cleanupTempFiles() // no manifest written in this run
 
 	_, err := ReadManifest()
 	if err == nil {
-		t.Fatal("expected error when manifest file is missing, got nil")
+		t.Fatal("expected error when no manifest exists for this run, got nil")
 	}
 }
 
@@ -177,6 +209,7 @@ func TestReadManifestMissingFile(t *testing.T) {
 func TestWriteManifestReadManifestSpecialChars(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("TMPDIR", tmpDir)
+	cleanupTempFiles() // drop any scratch dir cached from a previous test's TMPDIR
 
 	manifest := &ExecutionManifest{
 		BuildEnv: []string{
@@ -208,6 +241,103 @@ func TestWriteManifestReadManifestSpecialChars(t *testing.T) {
 		if cmd != manifest.AfterEnv[i] {
 			t.Errorf("AfterEnv[%d] = %q, want %q", i, cmd, manifest.AfterEnv[i])
 		}
+	}
+}
+
+// TestRunScratchDirIsolation verifies that each run's temp artifacts live in a
+// fresh private scratch directory and that cleanup removes only that run's
+// directory — sequential/concurrent runs cannot clobber each other's files.
+func TestRunScratchDirIsolation(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
+	cleanupTempFiles()
+
+	// First run: the manifest and a temp script both land inside the scratch dir.
+	m1 := &ExecutionManifest{BuildEnv: []string{"echo one"}}
+	if err := WriteManifest(m1); err != nil {
+		t.Fatalf("WriteManifest failed: %v", err)
+	}
+	dir1 := runScratchDir
+	if dir1 == "" {
+		t.Fatal("run scratch dir was not created")
+	}
+	script1, err := writeTempScript([]string{"true"}, 0)
+	if err != nil {
+		t.Fatalf("writeTempScript failed: %v", err)
+	}
+	if filepath.Dir(script1) != dir1 {
+		t.Errorf("temp script %s is not inside scratch dir %s", script1, dir1)
+	}
+
+	// cleanup removes only that run's directory.
+	cleanupTempFiles()
+	if _, err := os.Stat(dir1); !os.IsNotExist(err) {
+		t.Errorf("scratch dir %s should be removed by cleanup", dir1)
+	}
+	if runScratchDir != "" {
+		t.Errorf("runScratchDir should reset after cleanup, got %q", runScratchDir)
+	}
+
+	// A second run gets a fresh scratch directory, not a reused one.
+	m2 := &ExecutionManifest{BuildEnv: []string{"echo two"}}
+	if err := WriteManifest(m2); err != nil {
+		t.Fatalf("WriteManifest failed: %v", err)
+	}
+	if runScratchDir == dir1 {
+		t.Error("a new run should get a fresh scratch dir")
+	}
+	got, err := ReadManifest()
+	if err != nil {
+		t.Fatalf("ReadManifest failed: %v", err)
+	}
+	if len(got.BuildEnv) != 1 || got.BuildEnv[0] != "echo two" {
+		t.Errorf("second run manifest = %v, want [echo two]", got.BuildEnv)
+	}
+}
+
+// TestWriteManifestIgnoresSymlinkAtFixedPath verifies the manifest is written
+// inside the private per-run scratch dir, so a symlink planted by another user
+// at the old fixed /tmp/.alps_runner.txt path is never written through.
+func TestWriteManifestIgnoresSymlinkAtFixedPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
+	cleanupTempFiles()
+
+	// Another user pre-plants a symlink at the old fixed path pointing at a
+	// victim file, mimicking the /tmp symlink attack.
+	victim := filepath.Join(tmpDir, "victim.txt")
+	if err := os.WriteFile(victim, []byte("do not clobber"), 0600); err != nil {
+		t.Fatalf("cannot write victim file: %v", err)
+	}
+	planted := filepath.Join(tmpDir, ".alps_runner.txt")
+	if err := os.Symlink(victim, planted); err != nil {
+		t.Fatalf("cannot plant symlink: %v", err)
+	}
+
+	m := &ExecutionManifest{BuildEnv: []string{"echo hi"}}
+	if err := WriteManifest(m); err != nil {
+		t.Fatalf("WriteManifest failed: %v", err)
+	}
+
+	// The victim file must be untouched.
+	data, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("cannot read victim file: %v", err)
+	}
+	if string(data) != "do not clobber" {
+		t.Errorf("victim file was written through the symlink: got %q", data)
+	}
+
+	// The real manifest lives in the scratch dir, not at the planted path.
+	if runScratchDir == "" || runScratchDir == tmpDir {
+		t.Fatalf("expected a private scratch dir, got %q", runScratchDir)
+	}
+	got, err := ReadManifest()
+	if err != nil {
+		t.Fatalf("ReadManifest failed: %v", err)
+	}
+	if len(got.BuildEnv) != 1 || got.BuildEnv[0] != "echo hi" {
+		t.Errorf("manifest = %v, want [echo hi]", got.BuildEnv)
 	}
 }
 

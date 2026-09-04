@@ -207,8 +207,8 @@ func TestExecuteInstallBinWithSourceAndDest(t *testing.T) {
 	if !strings.Contains(cmd, "mkdir") {
 		t.Errorf("expected command to contain mkdir, got %q", cmd)
 	}
-	if !strings.Contains(cmd, "cp mytool /usr/local/bin/mytool") {
-		t.Errorf("expected command to contain cp, got %q", cmd)
+	if !strings.Contains(cmd, "cp 'mytool' '/usr/local/bin/mytool'") {
+		t.Errorf("expected command to contain quoted cp, got %q", cmd)
 	}
 	if !strings.Contains(cmd, "chmod 755") {
 		t.Errorf("expected command to contain chmod 755, got %q", cmd)

@@ -2,7 +2,7 @@
 
 Security vulnerabilities can be reported by email to **coreygit1@gmail.com**.
 
-alps-more is a trust-based system. ALPS only accepts repositories from supported Git forges, but being hosted on a supported forge does **not** imply that the repository or its ALPSMORE files are trustworthy or safe. Users are responsible for deciding which repositories they trust.
+alps-more is a trust-based system. ALPS only accepts repositories from supported Git forges, but being hosted on a supported forge does **not** make the repository or its ALPSMORE files trustworthy. Users decide which repositories to trust.
 
 Email is preferred for security reports so potentially sensitive details can be discussed privately when appropriate.
 

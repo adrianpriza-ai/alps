@@ -522,7 +522,11 @@ func (b *Backend) Upgrade(pkgs []string) error {
 
 // Clean removes the repo cache
 func (b *Backend) Clean(dryRun bool) error {
-	cacheDir := more.BuildCacheDir()
+	cacheDir, err := more.BuildCacheDir()
+	if err != nil {
+		ui.Msgf(b.cfg, ui.LevelError, "%v", err)
+		return err
+	}
 	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
 		ui.Msg(b.cfg, ui.LevelInfo, "No repo cache found.")
 		return nil

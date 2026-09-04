@@ -477,7 +477,7 @@ Safety features:
 - Full preview before execution
 - Snapshot saved to `installed.json` even if the repo disappears later
 - Owned items tracked for safe removal
-- Downloads are HTTPS-only, SHA-256 verified, size-limited (10MB manifests, 100MB scripts)
+- Downloads are HTTPS-only, SHA-256 verified, size-limited (10MB manifests, 100MB scripts and `{DOWNLOAD}` payloads)
 - Atomic cache writes prevent partial corruption
 - Host whitelist only — no broad suffix matching
 - Generated scripts shown before they run
@@ -517,6 +517,18 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 - [ ] Set appropriate `safety` mode
 
 ---
+
+## Hardening Notes
+
+The `more/` package has gone through a review pass. The behavior that matters when writing or installing ALPSMORE files:
+
+- `{DOWNLOAD}` is capped at 100 MB (same as `{BASH_RUN}` scripts). A bad mirror can't make alps slurp arbitrary amounts of data.
+- Manifests and scripts run from a private per-run scratch directory (`0700`, mode `0600` for the manifest). Two concurrent alps runs no longer clobber each other, and the old fixed `.alps_runner.txt` symlink-attack surface is gone.
+- All download paths share one capped fetcher and one streaming/atomic writer, so the size limit and digest check can't regress.
+- Macro-generated shell commands now quote `source`/`dest`/`service`/`dir` via `shellQuote`, and parent directories are computed in Go (`filepath.Dir`) instead of `$(dirname …)` in the shell. Paths with spaces no longer break installs, and `$(…)` in a macro argument is no longer executed.
+- `installed.json` read-modify-write is serialized across goroutines and processes via a mutex plus an advisory flock on a `.lock` file.
+- `alps repo search` also matches `Author` and `Deps`, not just name/description.
+- The progress bar hides its `\r`/`\033[K` control characters when stdout isn't a TTY.
 
 ## Best Practices
 

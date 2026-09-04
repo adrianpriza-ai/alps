@@ -15,9 +15,9 @@
 
 ---
 
-ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and `apk`. It also handles AUR, Snap, Flatpak, and Winget, plus a custom script repo called alps-more. One command interface across distros — Linux, macOS, Termux on Android, WSL on Windows.
+ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and `apk`, plus AUR, Snap, Flatpak, Winget, and a custom script repo called alps-more. One command interface across Linux, macOS, Termux on Android, and WSL on Windows.
 
-This ~9k line codebase has all tests passing and `go vet` clean.
+The codebase is ~9k lines. Tests pass and `go vet` is clean.
 
 ## Features
 
@@ -333,13 +333,16 @@ alps repo clean                           # remove build cache (~/.cache/alps/mo
 ### Validation & Safety
 
 - Platform checks prevent mismatched installs
-- `deps` validated via `exec.LookPath`
+- `exec.LookPath` validates `deps` binaries before install
 - Install preview + explicit confirmation required (no `-y` for repo installs)
 - **Security-hardened downloads:**
   - HTTPS-only requirement for all remote content
   - SHA-256 digest verification for all script downloads
-  - Response size limits (10MB for manifests, 100MB for scripts)
+  - Response size limits (10MB for manifests, 100MB for `{BASH_RUN}` scripts and `{DOWNLOAD}` payloads)
   - Signed APT repository with GPG key verification
+  - Per-run private scratch directory (mode `0700`) for manifests and scripts; manifest is mode `0600`
+  - Macro-generated shell args are shell-quoted; parent directories are computed in Go, not via `$(dirname …)`
+  - File-locked `installed.json` updates (in-process mutex + advisory flock) for concurrent installs
   - Atomic cache writes to prevent partial corruption
   - Explicit host whitelist (no broad suffix matching)
   - Display of generated scripts before execution

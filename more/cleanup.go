@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/adrianpriza-ai/alps/platform"
 	"github.com/adrianpriza-ai/alps/runner"
@@ -107,19 +106,13 @@ func removeService(service string) error {
 	return nil
 }
 
-// cleanupTempFiles removes temporary files created during package operations.
-// This includes .alps_runner.txt and .alps_run*.sh files in the temp dir
-// (os.TempDir(); /tmp on Linux, $PREFIX/tmp on Termux).
+// cleanupTempFiles removes the per-run scratch directory holding the
+// execution manifest and its temp scripts. Only this run's directory is
+// touched, so a concurrent alps run's manifest/scripts are never clobbered.
 func cleanupTempFiles() {
-	tmpDir := os.TempDir()
-
-	runnerFile := filepath.Join(tmpDir, ".alps_runner.txt")
-	_ = os.Remove(runnerFile)
-
-	matches, err := filepath.Glob(filepath.Join(tmpDir, ".alps_run*.sh"))
-	if err == nil {
-		for _, match := range matches {
-			_ = os.Remove(match)
-		}
+	if runScratchDir == "" {
+		return
 	}
+	_ = os.RemoveAll(runScratchDir)
+	runScratchDir = ""
 }

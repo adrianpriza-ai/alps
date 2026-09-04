@@ -10,12 +10,38 @@ import (
 	"github.com/adrianpriza-ai/alps/platform"
 )
 
-// wrapWithFakeroot wraps a command with fakeroot if the operation is install/upgrade, safety mode is strict, not in Termux, and fakeroot is available.
-// Remove/purge are never wrapped — they need real privileges to delete files.
-// On macOS, fakeroot is not available, so this is a no-op.
-func wrapWithFakeroot(cmd string, ctx *MacroContext) string {
+// shellQuote wraps s in single quotes so the shell treats it as one literal
+// argument, escaping any embedded single quote ('\'' is the POSIX idiom).
+//
+// Macro-supplied paths and names come from third-party ALPSMORE files, so
+// interpolating them unquoted would let spaces split a path into several
+// words and let metacharacters like $(), backticks or ; execute injected
+// commands. Quoting every interpolated value keeps the whole command inert.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// isAlreadyFakeroot reports whether the command already starts with fakeroot.
+func isAlreadyFakeroot(cmd string) bool {
+	trimmed := strings.TrimSpace(cmd)
+	return strings.HasPrefix(trimmed, "fakeroot ") || strings.HasPrefix(trimmed, "/usr/bin/fakeroot ")
+}
+
+// shouldWrapWithFakeroot reports whether commands should be wrapped with fakeroot
+// based on the operation, safety setting, and host platform.
+func shouldWrapWithFakeroot(ctx *MacroContext) bool {
+	if ctx == nil {
+		return false
+	}
 	isInstallOp := ctx.Op == platform.OperationInstall || ctx.Op == platform.OperationUpgrade || ctx.Op == ""
-	if isInstallOp && (ctx.Safety == "strict" || ctx.Safety == "") && !platform.IsTermux() && !platform.IsMacOS() && !platform.IsRoot() && hasFakeroot() {
+	isStrict := ctx.Safety == "strict" || ctx.Safety == ""
+	return isInstallOp && isStrict && !platform.IsTermux() && !platform.IsMacOS() && !platform.IsRoot()
+}
+
+// wrapWithFakeroot wraps a command with fakeroot if the operation is install/upgrade,
+// safety mode is strict, not in Termux, and fakeroot is available.
+func wrapWithFakeroot(cmd string, ctx *MacroContext) string {
+	if shouldWrapWithFakeroot(ctx) && hasFakeroot() && !isAlreadyFakeroot(cmd) {
 		cmd = stripSudo(cmd)
 		return fmt.Sprintf("fakeroot -- %s", cmd)
 	}

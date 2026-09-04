@@ -3,9 +3,11 @@ package more
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -214,6 +216,164 @@ func TestMarkInstalledRecordJSON(t *testing.T) {
 	}
 	if decoded["pkg-b"].Safety != "free" {
 		t.Errorf("pkg-b Safety = %q, want %q", decoded["pkg-b"].Safety, "free")
+	}
+}
+
+// redirectInstalledFile points the installed state file at a temp dir for the
+// duration of a test, restoring the previous value afterwards.
+func redirectInstalledFile(t *testing.T) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+	old := installedFileOverride
+	installedFileOverride = filepath.Join(tmpDir, "installed.json")
+	t.Cleanup(func() { installedFileOverride = old })
+	return tmpDir
+}
+
+// TestMarkInstalledRecordConcurrent verifies that concurrent marks of
+// different packages all survive — each read-modify-write cycle is serialized
+// by the state lock, so no goroutine's record overwrites another's.
+func TestMarkInstalledRecordConcurrent(t *testing.T) {
+	redirectInstalledFile(t)
+
+	const n = 6
+	var wg sync.WaitGroup
+	errCh := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			name := fmt.Sprintf("pkg-%d", i)
+			errCh <- MarkInstalledRecord(name, InstalledRecord{Version: "1.0.0", InstalledAt: "2026-09-04T00:00:00Z"})
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent MarkInstalledRecord failed: %v", err)
+		}
+	}
+
+	records, err := ReadInstalled()
+	if err != nil {
+		t.Fatalf("ReadInstalled failed: %v", err)
+	}
+	if len(records) != n {
+		t.Errorf("expected %d records after concurrent marks, got %d: %v", n, len(records), records)
+	}
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("pkg-%d", i)
+		if _, ok := records[name]; !ok {
+			t.Errorf("record %q was lost by a concurrent writer", name)
+		}
+	}
+}
+
+// TestUnmarkInstalledConcurrent verifies that removing one package while
+// marking others does not drop the surviving records (and vice versa).
+func TestUnmarkInstalledConcurrent(t *testing.T) {
+	redirectInstalledFile(t)
+
+	for _, name := range []string{"keep-a", "keep-b", "drop-c"} {
+		if err := MarkInstalledRecord(name, InstalledRecord{Version: "1.0.0"}); err != nil {
+			t.Fatalf("seed MarkInstalledRecord(%q) failed: %v", name, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 3)
+	ops := []func() error{
+		func() error { return UnmarkInstalled("drop-c") },
+		func() error { return MarkInstalledRecord("keep-c", InstalledRecord{Version: "2.0.0"}) },
+		func() error { return UnmarkInstalled("keep-b") },
+	}
+	for _, op := range ops {
+		wg.Add(1)
+		go func(op func() error) {
+			defer wg.Done()
+			errCh <- op()
+		}(op)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent state operation failed: %v", err)
+		}
+	}
+
+	records, err := ReadInstalled()
+	if err != nil {
+		t.Fatalf("ReadInstalled failed: %v", err)
+	}
+	want := map[string]string{"keep-a": "1.0.0", "keep-c": "2.0.0"}
+	if len(records) != len(want) {
+		t.Errorf("expected records %v after concurrent ops, got %d: %v", want, len(records), records)
+	}
+	for name, ver := range want {
+		rec, ok := records[name]
+		if !ok {
+			t.Errorf("record %q missing after concurrent ops", name)
+			continue
+		}
+		if rec.Version != ver {
+			t.Errorf("%s version = %q, want %q", name, rec.Version, ver)
+		}
+	}
+}
+
+// TestMarkInstalledEntryWithOwnedItemsRoundTrip verifies the install pipeline's
+// state step: MarkInstalledEntryWithOwnedItems persists an entry together with
+// its owned items, and the record reads back intact.
+func TestMarkInstalledEntryWithOwnedItemsRoundTrip(t *testing.T) {
+	redirectInstalledFile(t)
+
+	e := &Entry{
+		Name:        "tool",
+		Version:     "1.4.2",
+		RemoveLines: []string{"rm -f /usr/bin/tool"},
+		PurgeLines:  []string{"rm -rf /etc/tool"},
+		Servers:     []string{"https://example.com/"},
+		Safety:      "free",
+		Source:      "github:user/tool",
+	}
+	items := []OwnedItem{
+		{Path: "/usr/bin/tool", Type: "file"},
+		{Path: "/etc/tool", Type: "dir"},
+		{Path: "/usr/bin/tool-link", Type: "symlink"},
+	}
+
+	if err := MarkInstalledEntryWithOwnedItems(e, items); err != nil {
+		t.Fatalf("MarkInstalledEntryWithOwnedItems failed: %v", err)
+	}
+
+	rec, ok := GetInstalled("tool")
+	if !ok {
+		t.Fatal("expected record for 'tool' after marking")
+	}
+	if rec.Version != "1.4.2" {
+		t.Errorf("Version = %q, want %q", rec.Version, "1.4.2")
+	}
+	if rec.Safety != "free" {
+		t.Errorf("Safety = %q, want %q", rec.Safety, "free")
+	}
+	if rec.Source != "github:user/tool" {
+		t.Errorf("Source = %q, want %q", rec.Source, "github:user/tool")
+	}
+	if len(rec.RemoveLines) != 1 || rec.RemoveLines[0] != "rm -f /usr/bin/tool" {
+		t.Errorf("RemoveLines = %v, want [rm -f /usr/bin/tool]", rec.RemoveLines)
+	}
+	if len(rec.PurgeLines) != 1 || rec.PurgeLines[0] != "rm -rf /etc/tool" {
+		t.Errorf("PurgeLines = %v, want [rm -rf /etc/tool]", rec.PurgeLines)
+	}
+	if len(rec.OwnedItems) != len(items) {
+		t.Fatalf("OwnedItems length = %d, want %d: %v", len(rec.OwnedItems), len(items), rec.OwnedItems)
+	}
+	for i, want := range items {
+		if rec.OwnedItems[i] != want {
+			t.Errorf("OwnedItems[%d] = %+v, want %+v", i, rec.OwnedItems[i], want)
+		}
 	}
 }
 

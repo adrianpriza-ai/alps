@@ -307,8 +307,8 @@ complete -F _alps_completions alps
 `, cmdList,
 		pkgList, installedList,
 		morePkgs, moreInstalled,
-		pkgList, aurNames, aurInstalled,
-		aurNames)
+		pkgList, aurNames, aurNames,
+		aurInstalled)
 }
 
 func genZsh(cmds []string, backend string) {
@@ -441,8 +441,8 @@ _alps
 `, strings.Join(cmdList, "\n                "),
 		pkgList, installedList,
 		morePkgs, moreInstalled,
-		pkgList, aurNames, aurInstalled,
-		aurNames)
+		pkgList, aurNames, aurNames,
+		aurInstalled)
 }
 
 // cmdDesc returns a description for a command.

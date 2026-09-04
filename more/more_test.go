@@ -918,3 +918,68 @@ func TestNormalizeArch(t *testing.T) {
 		}
 	}
 }
+
+func TestIsAlreadyFakeroot(t *testing.T) {
+	tests := []struct {
+		cmd      string
+		expected bool
+	}{
+		{"fakeroot make install", true},
+		{"/usr/bin/fakeroot make install", true},
+		{"  fakeroot make install", true},
+		{"fakeroot", false},
+		{"make install", false},
+		{"echo fakeroot", false},
+	}
+	for _, tc := range tests {
+		if got := isAlreadyFakeroot(tc.cmd); got != tc.expected {
+			t.Errorf("isAlreadyFakeroot(%q) = %v; want %v", tc.cmd, got, tc.expected)
+		}
+	}
+}
+
+func TestShouldWrapWithFakeroot(t *testing.T) {
+	if shouldWrapWithFakeroot(nil) {
+		t.Error("shouldWrapWithFakeroot(nil) should be false")
+	}
+
+	ctxFree := &MacroContext{Safety: "free", Op: platform.OperationInstall}
+	if shouldWrapWithFakeroot(ctxFree) {
+		t.Error("shouldWrapWithFakeroot with safety=free should be false")
+	}
+
+	ctxRemove := &MacroContext{Safety: "strict", Op: platform.OperationRemove}
+	if shouldWrapWithFakeroot(ctxRemove) {
+		t.Error("shouldWrapWithFakeroot with remove op should be false")
+	}
+
+	ctxPurge := &MacroContext{Safety: "strict", Op: platform.OperationPurge}
+	if shouldWrapWithFakeroot(ctxPurge) {
+		t.Error("shouldWrapWithFakeroot with purge op should be false")
+	}
+}
+
+func TestFindEntry(t *testing.T) {
+	entries := map[string]*Entry{
+		"pkg-linux": {Name: "pkg-linux", OS: []string{"ubuntu", "debian"}},
+		"pkg-all":   {Name: "pkg-all", OS: []string{"all"}},
+	}
+
+	// Missing package
+	_, err := findEntry(entries, "missing", "ubuntu", nil)
+	if err == nil || !strings.Contains(err.Error(), "not found in alps-more repo") {
+		t.Errorf("expected not found error, got %v", err)
+	}
+
+	// OS mismatch
+	_, err = findEntry(entries, "pkg-linux", "fedora", []string{"rhel"})
+	if err == nil || !strings.Contains(err.Error(), "not available for your distro") {
+		t.Errorf("expected OS mismatch error, got %v", err)
+	}
+
+	// Match
+	e, err := findEntry(entries, "pkg-linux", "ubuntu", []string{"debian"})
+	if err != nil || e == nil || e.Name != "pkg-linux" {
+		t.Errorf("expected pkg-linux entry, got entry=%v, err=%v", e, err)
+	}
+}

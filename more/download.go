@@ -76,7 +76,11 @@ func prepareDownloadDirectory(file string) error {
 	return nil
 }
 
-// performDownload executes the HTTP download with progress tracking.
+// performDownload executes the HTTP download for the DOWNLOAD macro.
+// Security: downloads are capped at maxDownloadSize so a bad or malicious
+// mirror cannot make alps transfer unbounded data. A server that declares an
+// oversized Content-Length is rejected before any data is transferred;
+// downloadToFile enforces the cap for servers that lie about or omit it.
 func performDownload(url, file string, ctx *MacroContext) (string, error) {
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Get(url)
@@ -89,13 +93,15 @@ func performDownload(url, file string, ctx *MacroContext) (string, error) {
 		return "", fmt.Errorf("failed to download %s: HTTP %d", url, resp.StatusCode)
 	}
 
-	// Get content length for progress tracking
-	contentLength := resp.ContentLength
-	if contentLength <= 0 {
-		return downloadSimple(resp.Body, file, ctx)
+	if resp.ContentLength > maxDownloadSize {
+		return "", fmt.Errorf("download too large from %s: %d bytes exceeds the %d-byte limit", url, resp.ContentLength, maxDownloadSize)
 	}
 
-	return downloadWithProgress(resp.Body, file, contentLength, ctx)
+	// contentLength is used for the progress display; when it is unknown or
+	// zero the body is streamed without progress. downloadToFile re-checks the
+	// actual byte count so a server that lies about Content-Length cannot slip
+	// past the cap.
+	return downloadToFile(resp.Body, file, resp.ContentLength, ctx, maxDownloadSize)
 }
 
 // requireNextSha256 returns the expected SHA-256 digest for the next download
@@ -149,51 +155,17 @@ func isValidSha256(s string) bool {
 	return true
 }
 
-// downloadSimple performs a download without progress tracking.
-// Security: writes to a temporary file, verifies SHA256, then atomically
-// renames to the final path so a crash or hash mismatch never leaves a
-// partial or unverified file at the destination.
-func downloadSimple(body io.Reader, file string, ctx *MacroContext) (string, error) {
-	// Read all bytes to compute SHA256 before writing anything to disk
-	bodyBytes, err := io.ReadAll(body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read download: %w", err)
-	}
+// downloadToFile is the single file-download path used by the DOWNLOAD macro.
+// Security: reads at most maxSize bytes (the +1 makes an exactly-maxSize body
+// distinguishable from an oversized one), streams to a temp file in the same
+// directory, verifies the SHA-256 digest declared in sha256sums, then
+// atomically renames into place — a crash, size overrun or hash mismatch never
+// leaves a partial or unverified file at the destination. Progress is rendered
+// only when the total size is known (contentLength > 0) and stdout can display
+// it (see progressCapable).
+func downloadToFile(body io.Reader, file string, contentLength int64, ctx *MacroContext, maxSize int64) (string, error) {
+	displayName := filepath.Base(file)
 
-	// Compute SHA256 of downloaded content
-	hash := sha256.Sum256(bodyBytes)
-	computedHash := fmt.Sprintf("%x", hash)
-
-	// The manifest must declare a digest for every download.
-	expectedHash, err := requireNextSha256(ctx, filepath.Base(file))
-	if err != nil {
-		return "", err
-	}
-
-	// Free mode may opt out of digest verification (expectedHash == "").
-	if expectedHash != "" && computedHash != expectedHash {
-		return "", fmt.Errorf("SHA256 mismatch for %s: expected %s, got %s", file, expectedHash, computedHash)
-	}
-
-	// Write to a temp file in the same directory (ensures rename is atomic)
-	tmpPath := file + ".tmp"
-	if err := os.WriteFile(tmpPath, bodyBytes, 0644); err != nil {
-		return "", fmt.Errorf("failed to write file %s: %w", tmpPath, err)
-	}
-
-	// Atomically move the verified file to its final destination
-	if err := os.Rename(tmpPath, file); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("failed to move file to %s: %w", file, err)
-	}
-	return "", nil
-}
-
-// downloadWithProgress performs a download with progress tracking.
-// Security: streams to a temporary file, verifies SHA256, then atomically
-// renames to the final path so a crash or hash mismatch never leaves a
-// partial or unverified file at the destination.
-func downloadWithProgress(body io.Reader, file string, contentLength int64, ctx *MacroContext) (string, error) {
 	// Write to a temp file in the same directory (ensures rename is atomic)
 	tmpPath := file + ".tmp"
 	out, err := os.Create(tmpPath)
@@ -202,27 +174,39 @@ func downloadWithProgress(body io.Reader, file string, contentLength int64, ctx 
 	}
 	defer out.Close()
 
-	displayName := filepath.Base(file)
-	progress := setupProgressDisplay(contentLength, displayName)
+	// Security: stop reading past maxSize bytes so a mirror that lies about
+	// (or omits) Content-Length cannot stream unbounded data to disk.
+	limitedBody := io.LimitReader(body, maxSize+1)
 
 	// Use a tee reader to compute SHA256 while downloading
 	hasher := sha256.New()
-	teeReader := io.TeeReader(body, hasher)
+	teeReader := io.TeeReader(limitedBody, hasher)
 
-	reader := &progressReader{
-		reader: teeReader,
-		total:  contentLength,
-		onProgress: func(bytesRead int) {
-			progress.update(bytesRead)
-		},
+	reader := io.Reader(teeReader)
+	showProgress := contentLength > 0 && progressCapable(os.Stdout)
+	if showProgress {
+		progress := setupProgressDisplay(contentLength, displayName)
+		reader = &progressReader{
+			reader: teeReader,
+			total:  contentLength,
+			onProgress: func(bytesRead int) {
+				progress.update(bytesRead)
+			},
+		}
 	}
 
-	if _, err := io.Copy(out, reader); err != nil {
+	written, err := io.Copy(out, reader)
+	if err != nil {
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("failed to write file %s: %w", tmpPath, err)
 	}
-
-	fmt.Println()
+	if written > maxSize {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("download too large for %s: exceeds %d bytes", displayName, maxSize)
+	}
+	if showProgress {
+		fmt.Println() // end the progress line
+	}
 
 	// Compute SHA256 of downloaded content
 	computedHash := fmt.Sprintf("%x", hasher.Sum(nil))
@@ -257,6 +241,26 @@ type progressDisplay struct {
 	barWidth      int
 	nameColWidth  int
 	truncatedName string
+}
+
+// progressCapable reports whether f can show a live progress bar. The bar
+// redraws itself with a carriage return and an erase-line escape, which only
+// makes sense on a character device (a terminal) whose TERM promises cursor
+// control. Piped or redirected output collects those control characters as
+// literal noise, so it gets a silent download instead.
+func progressCapable(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	switch os.Getenv("TERM") {
+	case "", "dumb":
+		return false
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
 
 // setupProgressDisplay initializes the progress display.

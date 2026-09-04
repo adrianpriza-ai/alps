@@ -53,8 +53,9 @@ func stripUnknownTokens(s string) string {
 	return result.String()
 }
 
-// ExecutionManifest represents the execution plan stored in the temp dir
-// (/tmp/.alps_runner.txt on Linux, $PREFIX/tmp/.alps_runner.txt on Termux)
+// ExecutionManifest represents the execution plan stored in the per-run
+// scratch directory (os.TempDir()/.alps-run-*; /tmp on Linux, $PREFIX/tmp on
+// Termux)
 type ExecutionManifest struct {
 	BuildEnv  []string // Build environment commands (before installation)
 	AfterEnv  []string // After environment commands (installation macros)
@@ -259,7 +260,7 @@ func detectShell() string {
 
 // categorizeMacro adds a macro to the appropriate manifest section
 func categorizeMacro(line string, macro Macro, manifest *ExecutionManifest, op platform.OperationType) {
-	if (op == platform.OperationRemove || op == platform.OperationPurge) && isInstallOnlyMacro(macro.Name) {
+	if skipMacroForOp(macro.Name, op) {
 		return // Skip install/creation macros during remove or purge
 	}
 	if BuildEnvMacros[macro.Name] {
@@ -268,6 +269,23 @@ func categorizeMacro(line string, macro Macro, manifest *ExecutionManifest, op p
 		manifest.AfterEnv = append(manifest.AfterEnv, line)
 	}
 	// Unknown macros are silently ignored
+}
+
+// dropSkippedMacros returns commands with the macro lines that must not run
+// for op removed, leaving plain shell commands untouched.
+func dropSkippedMacros(commands []string, op platform.OperationType) []string {
+	if !isRemovalOp(op) {
+		return commands
+	}
+	kept := make([]string, 0, len(commands))
+	for _, cmd := range commands {
+		macro, _, isMacro := ParseMacro(strings.TrimSpace(cmd))
+		if isMacro && skipMacroForOp(macro.Name, op) {
+			continue
+		}
+		kept = append(kept, cmd)
+	}
+	return kept
 }
 
 // processShellCommand processes a plain shell command
@@ -288,12 +306,48 @@ func expandPlaceholders(line string, ctx *MacroContext) string {
 	return replaceVars(line, ctx, false)
 }
 
-// writeTempScript writes a temporary script file and returns its path.
-// Security: uses a unique name per script with restrictive owner-only
-// permissions instead of a fixed, predictable path in the shared temp dir.
+// runScratchDir is the per-run scratch directory holding the execution
+// manifest and the temp scripts it references. It is created on first use
+// with a random 0700 name under os.TempDir() and removed by cleanupTempFiles
+// at the end of the operation. Because the path is unpredictable and private,
+// concurrent alps processes never clobber each other's files and other users
+// cannot plant a symlink at a fixed path for a privileged install to write
+// through.
+var runScratchDir string
+
+// ensureRunScratchDir returns the per-run scratch directory, creating it on
+// first use. os.MkdirTemp randomizes the name and applies 0700 permissions,
+// mirroring how the temp scripts were already created with os.CreateTemp.
+// If the cached directory no longer exists (removed out from under the run)
+// a fresh one is created in its place.
+func ensureRunScratchDir() (string, error) {
+	if runScratchDir != "" {
+		if _, err := os.Stat(runScratchDir); err == nil {
+			return runScratchDir, nil
+		}
+		runScratchDir = "" // stale reference — recreate below
+	}
+	dir, err := os.MkdirTemp(os.TempDir(), ".alps-run-")
+	if err != nil {
+		return "", fmt.Errorf("cannot create run scratch directory: %w", err)
+	}
+	runScratchDir = dir
+	return dir, nil
+}
+
+// writeTempScript writes a temporary script file inside the per-run scratch
+// directory and returns its path.
+// Security: the scratch directory has a random 0700 name and scripts keep
+// restrictive owner-only permissions, so no fixed, predictable path exists in
+// the shared temp dir for another user to race or pre-create.
 func writeTempScript(lines []string, _ int) (string, error) {
+	dir, err := ensureRunScratchDir()
+	if err != nil {
+		return "", err
+	}
+
 	content := "set -e\n" + strings.Join(lines, "\n")
-	f, err := os.CreateTemp(os.TempDir(), ".alps_run_*.sh")
+	f, err := os.CreateTemp(dir, ".alps_run_*.sh")
 	if err != nil {
 		return "", err
 	}
@@ -307,10 +361,16 @@ func writeTempScript(lines []string, _ int) (string, error) {
 	return f.Name(), nil
 }
 
-// WriteManifest writes the execution manifest to .alps_runner.txt in the temp
-// dir (os.TempDir(); /tmp on Linux, $PREFIX/tmp on Termux)
+// WriteManifest writes the execution manifest to .alps_runner.txt inside the
+// per-run scratch directory (see ensureRunScratchDir), so the file lives in a
+// private, unpredictable directory instead of at a fixed 0644 path in the
+// shared temp dir. Successive writes in the same run replace the file.
 func WriteManifest(manifest *ExecutionManifest) error {
-	manifestPath := filepath.Join(os.TempDir(), ".alps_runner.txt")
+	dir, err := ensureRunScratchDir()
+	if err != nil {
+		return err
+	}
+	manifestPath := filepath.Join(dir, ".alps_runner.txt")
 
 	var content strings.Builder
 	content.WriteString("build_env\n")
@@ -322,13 +382,16 @@ func WriteManifest(manifest *ExecutionManifest) error {
 		content.WriteString(cmd + "\n")
 	}
 
-	return os.WriteFile(manifestPath, []byte(content.String()), 0644)
+	return os.WriteFile(manifestPath, []byte(content.String()), 0600)
 }
 
-// ReadManifest reads the execution manifest from .alps_runner.txt in the temp
-// dir (os.TempDir(); /tmp on Linux, $PREFIX/tmp on Termux)
+// ReadManifest reads the execution manifest written by WriteManifest in this
+// run from .alps_runner.txt inside the per-run scratch directory.
 func ReadManifest() (*ExecutionManifest, error) {
-	manifestPath := filepath.Join(os.TempDir(), ".alps_runner.txt")
+	if runScratchDir == "" {
+		return nil, fmt.Errorf("no execution manifest found for this run")
+	}
+	manifestPath := filepath.Join(runScratchDir, ".alps_runner.txt")
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil, err
@@ -369,24 +432,41 @@ func ReadManifest() (*ExecutionManifest, error) {
 	return manifest, nil
 }
 
-// styleOnce/styleCache memoize the configured output style so execution
-// helpers can use user-configured symbols without threading *config.Config
-// through every call site.
+// styleMu/styleCache memoize the configured output style so execution helpers
+// can use user-configured symbols without threading *config.Config through
+// every call site. resetStyleCache clears the cache, so a style change
+// (or a config reload) takes effect on the next call.
 var (
-	styleOnce  sync.Once
-	styleCache config.Style
+	styleMu     sync.Mutex
+	styleLoaded bool
+	styleCache  config.Style
 )
 
-// currentStyle returns the user's configured output style (loaded once).
+// currentStyle returns the user's configured output style, loaded once and
+// cached until resetStyleCache is called.
 func currentStyle() config.Style {
-	styleOnce.Do(func() { styleCache = config.Load().Style })
+	styleMu.Lock()
+	defer styleMu.Unlock()
+	if !styleLoaded {
+		styleCache = config.Load().Style
+		styleLoaded = true
+	}
 	return styleCache
+}
+
+// resetStyleCache drops the cached style so the next currentStyle call
+// re-reads the user's configuration files.
+func resetStyleCache() {
+	styleMu.Lock()
+	defer styleMu.Unlock()
+	styleCache = config.Style{}
+	styleLoaded = false
 }
 
 // envStepLabel maps an operation to a user-facing label for the after_env
 // phase: installs/upgrades run "post-install" steps, removals run "cleanup".
 func envStepLabel(op platform.OperationType) string {
-	if op == platform.OperationRemove || op == platform.OperationPurge {
+	if isRemovalOp(op) {
 		return "cleanup"
 	}
 	return "post-install"
@@ -451,19 +531,9 @@ func executeBuildEnv(commands []string, op platform.OperationType, ctx *MacroCon
 
 // executeAfterEnv executes all after_env commands with proper privilege handling
 func executeAfterEnv(commands []string, useSudo bool, ctx *MacroContext, op platform.OperationType) error {
-	// Filter out install/creation macros during remove or purge operations.
-	// This is a safety net in case categorizeMacro let them through.
-	if op == platform.OperationRemove || op == platform.OperationPurge {
-		filtered := make([]string, 0, len(commands))
-		for _, cmd := range commands {
-			macro, _, isMacro := ParseMacro(strings.TrimSpace(cmd))
-			if isMacro && isInstallOnlyMacro(macro.Name) {
-				continue
-			}
-			filtered = append(filtered, cmd)
-		}
-		commands = filtered
-	}
+	// Drop install/creation macros during remove or purge. This is a safety net
+	// in case categorizeMacro let them through; both use skipMacroForOp.
+	commands = dropSkippedMacros(commands, op)
 
 	if len(commands) == 0 {
 		return nil
@@ -501,17 +571,15 @@ func expandAndWrapCommand(cmd string, op platform.OperationType, ctx *MacroConte
 
 	result := expanded[0]
 
-	// Wraps build_env and after_env with fakeroot for install/upgrade operations, removing permissions and purge system files.
-	// On macOS, fakeroot is not available, so this is skipped.
-	if (op == platform.OperationInstall || op == platform.OperationUpgrade) &&
-		(ctx.Safety == "strict" || ctx.Safety == "") && !platform.IsTermux() && !platform.IsMacOS() && !platform.IsRoot() {
+	if ctx != nil && ctx.Op == "" && op != "" {
+		ctx.Op = op
+	}
+
+	if shouldWrapWithFakeroot(ctx) {
 		if err := requireFakeroot(); err != nil {
 			return "", err
 		}
-		if hasFakeroot() && !isAlreadyFakeroot(result) {
-			result = stripSudo(result)
-			result = fmt.Sprintf("fakeroot -- %s", result)
-		}
+		result = wrapWithFakeroot(result, ctx)
 	}
 
 	return result, nil
@@ -526,13 +594,6 @@ func executeCommand(cmd string, useSudo bool) error {
 		shellCmd = shellCmd.WithPrivilege()
 	}
 	return r.Run(context.Background(), shellCmd)
-}
-
-// isAlreadyFakeroot returns true if the command already starts with fakeroot
-// (e.g. from macro-level wrapping via wrapWithFakeroot).
-func isAlreadyFakeroot(cmd string) bool {
-	trimmed := strings.TrimSpace(cmd)
-	return strings.HasPrefix(trimmed, "fakeroot ") || strings.HasPrefix(trimmed, "/usr/bin/fakeroot ")
 }
 
 // privEscPrefixes lists known privilege escalation commands and their absolute paths.

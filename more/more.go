@@ -2,8 +2,6 @@ package more
 
 import (
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -183,42 +181,6 @@ func getBuildDir(pkgName string) (string, error) {
 		return "", fmt.Errorf("cannot create build directory %s: %w", dir, err)
 	}
 	return dir, nil
-}
-
-// downloadScriptWithLimit downloads a script with size limit and security checks.
-// This is a local version of downloadOnceWithSizeLimit for script downloads.
-func downloadScriptWithLimit(url string, maxSize int64) ([]byte, error) {
-	if !isSafeDownloadURL(url) {
-		return nil, fmt.Errorf("script download requires HTTPS: %s", url)
-	}
-	client := &http.Client{Timeout: scriptDownloadTimeout}
-	resp, err := client.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
-	}
-
-	// Security: Limit response size to prevent denial of service.
-	// Read one extra byte so the limit check below can actually distinguish
-	// an exactly-maxSize body (allowed) from an oversized one (rejected);
-	// with LimitReader(maxSize) alone len(body) never exceeds maxSize and
-	// oversized responses would be silently truncated and accepted.
-	limitedReader := io.LimitReader(resp.Body, maxSize+1)
-	body, err := io.ReadAll(limitedReader)
-	if err != nil {
-		return nil, err
-	}
-	if len(body) == 0 {
-		return nil, fmt.Errorf("empty response from %s", url)
-	}
-	if int64(len(body)) > maxSize {
-		return nil, fmt.Errorf("response too large from %s (exceeds %d bytes)", url, maxSize)
-	}
-	return body, nil
 }
 
 // hasFakeroot checks if fakeroot is available.

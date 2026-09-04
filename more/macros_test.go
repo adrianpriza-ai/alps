@@ -471,136 +471,223 @@ func TestReplaceVarsMixedVariablesAndUnknownTokens(t *testing.T) {
 	}
 }
 
-// --- downloadSimple / downloadWithProgress tests ---
+// --- downloadToFile tests ---
 
 // sha256hex computes the hex-encoded SHA-256 of data for test assertions.
 func sha256hex(data []byte) string {
 	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
-func TestDownloadSimpleAtomicWrite(t *testing.T) {
-	// Verify that downloadSimple writes to a temp file, checks the SHA256,
-	// then atomically renames to the final path. The destination must contain
-	// the exact bytes that were fed through the reader.
-	content := []byte("hello, world — atomic download test")
-	expectedHash := sha256hex(content)
-
-	e := &Entry{Name: "dltest", SHA256Sums: []string{expectedHash}}
-	ctx := NewMacroContext(e, "")
-
-	dest := filepath.Join(t.TempDir(), "output.bin")
-	_, err := downloadSimple(bytes.NewReader(content), dest, ctx)
-	if err != nil {
-		t.Fatalf("downloadSimple returned error: %v", err)
-	}
-
-	// The final file must exist and match the original content.
-	got, err := os.ReadFile(dest)
-	if err != nil {
-		t.Fatalf("cannot read destination file: %v", err)
-	}
-	if !bytes.Equal(got, content) {
-		t.Errorf("file content mismatch: got %q, want %q", got, content)
-	}
-
-	// The .tmp leftover must NOT exist.
-	tmpPath := dest + ".tmp"
-	if _, err := os.Stat(tmpPath); err == nil {
-		t.Errorf("temp file %s should have been cleaned up after rename", tmpPath)
+// runDownloadModes runs a downloadToFile scenario twice: once with an unknown
+// content length (silent streaming) and once with a declared content length
+// (progress display), since downloadToFile serves both former code paths.
+func runDownloadModes(t *testing.T, content []byte, fn func(t *testing.T, contentLength int64)) {
+	t.Helper()
+	for _, tc := range []struct {
+		name string
+		decl int64
+	}{
+		{"unknown length (silent stream)", -1},
+		{"declared length (progress)", int64(len(content))},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			fn(t, tc.decl)
+		})
 	}
 }
 
-func TestDownloadSimpleHashMismatchCleansUp(t *testing.T) {
+func TestDownloadToFileAtomicWrite(t *testing.T) {
+	// Verify that downloadToFile writes to a temp file, checks the SHA256,
+	// then atomically renames to the final path. The destination must contain
+	// the exact bytes that were streamed through the reader.
+	content := []byte("hello, world — atomic download test")
+	expectedHash := sha256hex(content)
+	e := &Entry{Name: "dltest", SHA256Sums: []string{expectedHash}}
+
+	runDownloadModes(t, content, func(t *testing.T, contentLength int64) {
+		ctx := NewMacroContext(e, "")
+		dest := filepath.Join(t.TempDir(), "output.bin")
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxDownloadSize)
+		if err != nil {
+			t.Fatalf("downloadToFile returned error: %v", err)
+		}
+
+		// The final file must exist and match the original content.
+		got, err := os.ReadFile(dest)
+		if err != nil {
+			t.Fatalf("cannot read destination file: %v", err)
+		}
+		if !bytes.Equal(got, content) {
+			t.Errorf("file content mismatch: got %q, want %q", got, content)
+		}
+
+		// The .tmp leftover must NOT exist.
+		tmpPath := dest + ".tmp"
+		if _, err := os.Stat(tmpPath); err == nil {
+			t.Errorf("temp file %s should have been cleaned up after rename", tmpPath)
+		}
+	})
+}
+
+func TestDownloadToFileHashMismatchCleansUp(t *testing.T) {
 	// When the computed hash does not match the declared digest, the
 	// function must return an error AND remove the temp file so that no
 	// partial/unverified data remains on disk.
 	content := []byte("some content")
 	wrongHash := strings.Repeat("ff", 32) // 64 hex chars — guaranteed mismatch
 	e := &Entry{Name: "dltest", SHA256Sums: []string{wrongHash}}
-	ctx := NewMacroContext(e, "")
 
-	dest := filepath.Join(t.TempDir(), "mismatch.bin")
-	_, err := downloadSimple(bytes.NewReader(content), dest, ctx)
-	if err == nil {
-		t.Fatal("expected error on SHA256 mismatch, got nil")
-	}
+	runDownloadModes(t, content, func(t *testing.T, contentLength int64) {
+		ctx := NewMacroContext(e, "")
+		dest := filepath.Join(t.TempDir(), "mismatch.bin")
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxDownloadSize)
+		if err == nil {
+			t.Fatal("expected error on SHA256 mismatch, got nil")
+		}
 
-	// Neither the final file nor the temp file should exist.
-	if _, err := os.Stat(dest); err == nil {
-		t.Errorf("destination file %s should not exist after hash mismatch", dest)
-	}
-	if _, err := os.Stat(dest + ".tmp"); err == nil {
-		t.Errorf("temp file %s.tmp should not exist after hash mismatch", dest)
-	}
+		// Neither the final file nor the temp file should exist.
+		if _, err := os.Stat(dest); err == nil {
+			t.Errorf("destination file %s should not exist after hash mismatch", dest)
+		}
+		if _, err := os.Stat(dest + ".tmp"); err == nil {
+			t.Errorf("temp file %s.tmp should not exist after hash mismatch", dest)
+		}
+	})
 }
 
-func TestDownloadWithProgressAtomicWrite(t *testing.T) {
-	// Same guarantees as downloadSimple but via the progress-tracked path.
-	content := []byte("progress-tracked download content for atomic write test")
-	expectedHash := sha256hex(content)
-	e := &Entry{Name: "dltest", SHA256Sums: []string{expectedHash}}
-	ctx := NewMacroContext(e, "")
-
-	dest := filepath.Join(t.TempDir(), "progress.bin")
-	_, err := downloadWithProgress(bytes.NewReader(content), dest, int64(len(content)), ctx)
-	if err != nil {
-		t.Fatalf("downloadWithProgress returned error: %v", err)
-	}
-
-	got, err := os.ReadFile(dest)
-	if err != nil {
-		t.Fatalf("cannot read destination file: %v", err)
-	}
-	if !bytes.Equal(got, content) {
-		t.Errorf("file content mismatch: got %q, want %q", got, content)
-	}
-
-	// Temp leftover must be gone.
-	if _, err := os.Stat(dest + ".tmp"); err == nil {
-		t.Errorf("temp file %s.tmp should have been cleaned up", dest)
-	}
-}
-
-func TestDownloadWithProgressHashMismatchCleansUp(t *testing.T) {
-	// Hash mismatch during progress-tracked download must clean up both files.
-	content := []byte("another content")
-	wrongHash := strings.Repeat("aa", 32)
-	e := &Entry{Name: "dltest", SHA256Sums: []string{wrongHash}}
-	ctx := NewMacroContext(e, "")
-
-	dest := filepath.Join(t.TempDir(), "mismatch_progress.bin")
-	_, err := downloadWithProgress(bytes.NewReader(content), dest, int64(len(content)), ctx)
-	if err == nil {
-		t.Fatal("expected error on SHA256 mismatch, got nil")
-	}
-
-	if _, err := os.Stat(dest); err == nil {
-		t.Errorf("destination file %s should not exist after hash mismatch", dest)
-	}
-	if _, err := os.Stat(dest + ".tmp"); err == nil {
-		t.Errorf("temp file %s.tmp should not exist after hash mismatch", dest)
-	}
-}
-
-func TestDownloadSimpleFreeModeSkipsDigest(t *testing.T) {
+func TestDownloadToFileFreeModeSkipsDigest(t *testing.T) {
 	// In free mode (safety=free) with no sha256sums declared, the download
 	// should succeed without hash verification.
 	content := []byte("free-mode content")
 	e := &Entry{Name: "dltest", Safety: "free"}
+
+	runDownloadModes(t, content, func(t *testing.T, contentLength int64) {
+		ctx := NewMacroContext(e, "")
+		dest := filepath.Join(t.TempDir(), "free.bin")
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxDownloadSize)
+		if err != nil {
+			t.Fatalf("downloadToFile in free mode returned error: %v", err)
+		}
+
+		got, err := os.ReadFile(dest)
+		if err != nil {
+			t.Fatalf("cannot read destination file: %v", err)
+		}
+		if !bytes.Equal(got, content) {
+			t.Errorf("file content mismatch: got %q, want %q", got, content)
+		}
+	})
+}
+
+// TestDownloadToFileSizeLimit verifies downloadToFile rejects bodies larger
+// than maxSize and accepts bodies at exactly the limit, in both streaming
+// modes.
+func TestDownloadToFileSizeLimit(t *testing.T) {
+	const maxSize int64 = 64
+
+	runDownloadModes(t, make([]byte, maxSize+1), func(t *testing.T, contentLength int64) {
+		content := make([]byte, maxSize+1)
+		e := &Entry{Name: "dltest", Safety: "free"}
+		ctx := NewMacroContext(e, "")
+
+		dest := filepath.Join(t.TempDir(), "oversize.bin")
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxSize)
+		if err == nil {
+			t.Fatal("expected error for body larger than maxSize")
+		}
+		if !strings.Contains(err.Error(), "too large") {
+			t.Errorf("error should mention the size limit, got: %v", err)
+		}
+		if _, statErr := os.Stat(dest); statErr == nil {
+			t.Errorf("destination file %s should not exist after oversize rejection", dest)
+		}
+		if _, statErr := os.Stat(dest + ".tmp"); statErr == nil {
+			t.Errorf("temp file %s.tmp should not exist after oversize rejection", dest)
+		}
+	})
+
+	content := bytes.Repeat([]byte("x"), int(maxSize))
+	runDownloadModes(t, content, func(t *testing.T, contentLength int64) {
+		e := &Entry{Name: "dltest", Safety: "free"}
+		ctx := NewMacroContext(e, "")
+
+		dest := filepath.Join(t.TempDir(), "exact.bin")
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxSize)
+		if err != nil {
+			t.Fatalf("body of exactly maxSize bytes should be accepted: %v", err)
+		}
+	})
+}
+
+// TestDownloadToFileNoProgressOnPipe verifies that a download with a declared
+// size does not leak carriage-return / erase-line control characters into
+// stdout when stdout is not a terminal (e.g. piped or redirected).
+func TestDownloadToFileNoProgressOnPipe(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+
+	content := []byte("content for the non-tty download test")
+	e := &Entry{Name: "dltest", Safety: "free"}
 	ctx := NewMacroContext(e, "")
+	dest := filepath.Join(t.TempDir(), "pipe.bin")
 
-	dest := filepath.Join(t.TempDir(), "free.bin")
-	_, err := downloadSimple(bytes.NewReader(content), dest, ctx)
+	// A pipe is a stream, not a character device, so progress must be skipped.
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
 	if err != nil {
-		t.Fatalf("downloadSimple in free mode returned error: %v", err)
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	_, err = downloadToFile(bytes.NewReader(content), dest, int64(len(content)), ctx, maxDownloadSize)
+	w.Close()
+	os.Stdout = oldStdout
+
+	captured, _ := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("downloadToFile returned error: %v", err)
+	}
+	if got, err := os.ReadFile(dest); err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("destination contents = %q, err = %v; want the original content", got, err)
+	}
+	if bytes.ContainsAny(captured, "\r") || bytes.Contains(captured, []byte("\x1b")) {
+		t.Errorf("progress control characters leaked into non-tty stdout: %q", captured)
+	}
+}
+
+// TestProgressCapable verifies when a download shows a live progress bar:
+// only a character device (a terminal) with a real TERM value qualifies.
+func TestProgressCapable(t *testing.T) {
+	// A pipe is not a character device, so no progress bar.
+	pr, _, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pr.Close()
+	if progressCapable(pr) {
+		t.Error("a pipe should not render a progress bar")
 	}
 
-	got, err := os.ReadFile(dest)
+	// A character device (such as /dev/null) qualifies only with a real TERM.
+	t.Setenv("TERM", "xterm-256color")
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
-		t.Fatalf("cannot read destination file: %v", err)
+		t.Fatal(err)
 	}
-	if !bytes.Equal(got, content) {
-		t.Errorf("file content mismatch: got %q, want %q", got, content)
+	defer devNull.Close()
+	if !progressCapable(devNull) {
+		t.Error("a character device with a real TERM should render a progress bar")
+	}
+
+	// A dumb/no TERM suppresses the bar even on a character device.
+	for _, term := range []string{"dumb", ""} {
+		t.Setenv("TERM", term)
+		if progressCapable(devNull) {
+			t.Errorf("character device with TERM=%q should not render a progress bar", term)
+		}
+	}
+
+	if progressCapable(nil) {
+		t.Error("nil output should not render a progress bar")
 	}
 }
 
@@ -632,14 +719,14 @@ func TestExecuteExtract(t *testing.T) {
 		filename string
 		wantCmd  string
 	}{
-		{"tar.gz", "archive.tar.gz", "tar -xzf archive.tar.gz"},
-		{"tgz", "archive.tgz", "tar -xzf archive.tgz"},
-		{"tar.xz", "archive.tar.xz", "tar -xJf archive.tar.xz"},
-		{"txz", "archive.txz", "tar -xJf archive.txz"},
-		{"tar.bz2", "archive.tar.bz2", "tar -xjf archive.tar.bz2"},
-		{"tbz", "archive.tbz", "tar -xjf archive.tbz"},
-		{"zip", "archive.zip", "unzip archive.zip"},
-		{"fallback", "archive.tar", "tar -xf archive.tar"},
+		{"tar.gz", "archive.tar.gz", "tar -xzf 'archive.tar.gz'"},
+		{"tgz", "archive.tgz", "tar -xzf 'archive.tgz'"},
+		{"tar.xz", "archive.tar.xz", "tar -xJf 'archive.tar.xz'"},
+		{"txz", "archive.txz", "tar -xJf 'archive.txz'"},
+		{"tar.bz2", "archive.tar.bz2", "tar -xjf 'archive.tar.bz2'"},
+		{"tbz", "archive.tbz", "tar -xjf 'archive.tbz'"},
+		{"zip", "archive.zip", "unzip 'archive.zip'"},
+		{"fallback", "archive.tar", "tar -xf 'archive.tar'"},
 	}
 
 	for _, tc := range cases {
@@ -681,9 +768,9 @@ func TestExecuteDownloadValidation(t *testing.T) {
 	})
 
 	t.Run("missing sha256 in strict mode returns error", func(t *testing.T) {
-		// SHA256 validation happens inside downloadSimple/downloadWithProgress
-		// (already tested separately). Here we verify that executeDownload
-		// at least validates the URL scheme before making any request.
+		// SHA256 validation happens inside downloadToFile (already tested
+		// separately). Here we verify that executeDownload at least validates
+		// the URL scheme before making any request.
 		ctx := NewMacroContext(&Entry{Name: "pkg", Safety: "strict"}, "")
 		m := Macro{Name: "DOWNLOAD", Args: []string{"http://insecure.example.com/file.tar.gz"}}
 		_, err := executeDownload(m, ctx)
