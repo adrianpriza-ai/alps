@@ -47,8 +47,8 @@ var defaultServers = []string{
 // Security: Removed branch fallbacks - require explicit branch specification
 // to prevent reliance on mutable references like HEAD, main, master
 
-func getCacheFile() string     { return filepath.Join(platform.CacheDir(), "main.txt") }
-func getLastSyncFile() string  { return filepath.Join(platform.CacheDir(), "last_sync") }
+func getCacheFile() string    { return filepath.Join(platform.CacheDir(), "main.txt") }
+func getLastSyncFile() string { return filepath.Join(platform.CacheDir(), "last_sync") }
 
 // installedFileOverride redirects the installed state file to another path.
 // It exists for tests, which point state at a temp dir so they never touch

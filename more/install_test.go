@@ -137,8 +137,8 @@ func TestRemoveFallsBackToSavedRemoveLines(t *testing.T) {
 func TestDiffOwnedItems(t *testing.T) {
 	old := []OwnedItem{
 		{Path: "/usr/bin/tool", Type: "file"},
-		{Path: "/etc/tool", Type: "file"},   // dropped by the new version
-		{Path: "/opt/tool", Type: "dir"},    // kept, same path+type
+		{Path: "/etc/tool", Type: "file"},       // dropped by the new version
+		{Path: "/opt/tool", Type: "dir"},        // kept, same path+type
 		{Path: "/usr/bin/relink", Type: "file"}, // type changed in the new version
 	}
 	new := []OwnedItem{

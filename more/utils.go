@@ -11,7 +11,7 @@ import (
 )
 
 // shellQuote wraps s in single quotes so the shell treats it as one literal
-// argument, escaping any embedded single quote ('\'' is the POSIX idiom).
+// argument, escaping any embedded single quote ('\” is the POSIX idiom).
 //
 // Macro-supplied paths and names come from third-party ALPSMORE files, so
 // interpolating them unquoted would let spaces split a path into several
