@@ -224,8 +224,8 @@ Execute during the build phase, before installation. In strict mode, these run u
 
 | Macro | Syntax | Behavior |
 |-|-|-|
-| `{DOWNLOAD}` | `{DOWNLOAD} URL [FILE]` | Download file to build directory using Go's HTTP client (uses entry-level sha256sums) |
-| `{BASH_RUN}` | `{BASH_RUN} URL [args]` | Download and execute shell script via `bash` (uses entry-level sha256sums) |
+| `{DOWNLOAD}` | `{DOWNLOAD} URL [FILE]` | Download file to build directory using Go's HTTP client (500MB limit, uses entry-level sha256sums) |
+| `{BASH_RUN}` | `{BASH_RUN} URL [args]` | Download and execute shell script via `bash` (10MB limit, uses entry-level sha256sums) |
 | `{SH}` | `{SH} PATH` | Execute script with `bash` (or `sh` as fallback) |
 | `{EXTRACT}` | `{EXTRACT} ARCHIVE` | Extract archive (`.tar.gz`, `.tar.xz`, `.tar.bz2`, `.zip`) |
 
@@ -276,6 +276,11 @@ cmd_end
 The `sha256sums` field holds comma-separated 64-character hashes. Downloads verify in order: first hash for the first download, second for the second, and so on. Applies to both `{DOWNLOAD}` and `{BASH_RUN}`.
 
 Strict mode (default) requires checksums — any `{DOWNLOAD}` or `{BASH_RUN}` without a matching `sha256sums` entry is rejected before anything is fetched. A digest mismatch fails the installation. Free mode allows downloads without checksums but shows a reduced-safety warning on install.
+
+**Size limits:**
+- `{DOWNLOAD}`: 500 MB (for large packages like VSCode, IDEs, SDKs)
+- `{BASH_RUN}`: 10 MB (bash scripts should never be large)
+- Manifest downloads: 10 MB
 
 ### Generating Checksums
 ```bash
@@ -477,7 +482,7 @@ Safety features:
 - Full preview before execution
 - Snapshot saved to `installed.json` even if the repo disappears later
 - Owned items tracked for safe removal
-- Downloads are HTTPS-only, SHA-256 verified, size-limited (10MB manifests, 100MB scripts and `{DOWNLOAD}` payloads)
+- Downloads are HTTPS-only, SHA-256 verified, size-limited (10MB manifests, 10MB scripts, 500MB `{DOWNLOAD}` payloads)
 - Atomic cache writes prevent partial corruption
 - Host whitelist only — no broad suffix matching
 - Generated scripts shown before they run
@@ -520,9 +525,11 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 
 ## Hardening Notes
 
-The `more/` package has gone through a review pass. The behavior that matters when writing or installing ALPSMORE files:
+The `more/` package has been reviewed and hardened. Key security improvements that affect ALPSMORE behavior:
 
-- `{DOWNLOAD}` is capped at 100 MB (same as `{BASH_RUN}` scripts). A bad mirror can't make alps slurp arbitrary amounts of data.
+- `{DOWNLOAD}` is capped at 500 MB. A bad mirror can't make alps slurp arbitrary amounts of data.
+- `{BASH_RUN}` scripts are capped at 10 MB. Bash scripts should never be that large.
+- Manifest downloads are capped at 10 MB.
 - Manifests and scripts run from a private per-run scratch directory (`0700`, mode `0600` for the manifest). Two concurrent alps runs no longer clobber each other, and the old fixed `.alps_runner.txt` symlink-attack surface is gone.
 - All download paths share one capped fetcher and one streaming/atomic writer, so the size limit and digest check can't regress.
 - Macro-generated shell commands now quote `source`/`dest`/`service`/`dir` via `shellQuote`, and parent directories are computed in Go (`filepath.Dir`) instead of `$(dirname …)` in the shell. Paths with spaces no longer break installs, and `$(…)` in a macro argument is no longer executed.

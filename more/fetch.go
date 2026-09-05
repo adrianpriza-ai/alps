@@ -32,10 +32,10 @@ const (
 
 	// Security: maximum response size for manifest downloads (10MB)
 	maxManifestSize = 10 * 1024 * 1024
-	// Security: maximum response size for script downloads (100MB)
-	maxScriptSize = 100 * 1024 * 1024
-	// Security: maximum response size for {DOWNLOAD} macro downloads (100MB)
-	maxDownloadSize = 100 * 1024 * 1024
+	// Security: maximum response size for script downloads (10MB)
+	maxScriptSize = 10 * 1024 * 1024
+	// Security: maximum response size for {DOWNLOAD} macro downloads (500MB)
+	maxDownloadSize = 500 * 1024 * 1024
 )
 
 // defaultServers are the official alps-more mirrors.

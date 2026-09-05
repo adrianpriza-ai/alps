@@ -30,7 +30,7 @@ The codebase is ~9k lines. Tests pass and `go vet` is clean.
 | **Built-in AUR** | Full recursive dep resolution, PKGBUILD review, yay/paru fallback |
 | **Extra packages** | Snap, Flatpak, and Winget — same command shape across all three |
 | **alps-more** | Cross-distro script repo with version tracking, mirror failover, and remote installs from GitHub/GitLab/Hugging Face |
-| **Security** | HTTPS-only downloads, SHA-256 verification, signed APT repositories, response size limits |
+| **Security** | HTTPS-only downloads, SHA-256 verification, signed APT repositories, response size limits (10MB manifests, 10MB scripts, 500MB downloads) |
 | **Customizable** | Colors, symbols, header, aliases — all via config file |
 | **Completion** | fish, bash, zsh — distro-aware, AUR name cache, live package completion |
 | **Build isolation** | Per-package build directories (`~/.cache/alps/more/<pkg>/`) |
@@ -277,30 +277,9 @@ Snap is available on Debian/Ubuntu and offered as a fallback when apt can't find
 
 ## alps-more
 
-Cross-distro script repo for tools
+Cross-distro script repo for tools and applications not available in native package managers.
 
-### Requirements
-
-**Common requirements (all platforms):**
-- **bash** – For running installation scripts.
-- **tar & unzip** – For extracting archives (.tar.gz, .tar.xz, .tar.bz2, .zip).
-- **GNU Coreutils** – Standard file utilities (mkdir, cp, chmod, gzip, ln).
-
-**Linux-specific:**
-- **fakeroot** – Handles sandboxed file ownership (not needed on macOS/Termux).
-- **systemctl** – Manages systemd service macros (not needed on macOS/Termux).
-- **useradd / userdel** – Handles user account management macros (not needed on macOS/Termux).
-
-- **macOS:** Available out of the box; add packages via Homebrew if needed.
-
-**Install dependencies:**
-
-Linux:
-```bash
-alps install fakeroot coreutils tar unzip bash
-```
-
-### Quick User Guide
+### Quick Start
 
 ```bash
 alps repo update                          # refresh cache from fastest mirror
@@ -316,40 +295,9 @@ alps repo purge <pkg>                     # remove package and delete config/dat
 alps repo clean                           # remove build cache (~/.cache/alps/more)
 ```
 
-### Runtime Details & Requirements
+### Authoring Packages
 
-- Build dir: `~/.cache/alps/more/<package>/`
-- State file: `/var/lib/alps/installed.json` (Termux: `$PREFIX/var/lib/alps/installed.json`, macOS: `~/Library/Application Support/alps/installed.json`)
-- Repo cache: `/var/cache/alps/more/main.txt` (Termux: `$PREFIX/var/cache/alps/more/main.txt`, macOS: `~/Library/Caches/alps/more/main.txt`)
-- Mirrors: [GitHub Pages](https://github.com/adrianpiza-ai/alps-more) and [Codeberg](https://codeberg.org/moreland/alps-more)
-
-### Key Features
-
-- Simple placeholders: `{ARCH}`, `{OS}`, `{DISTRO}`, `{VERSION}`, `{PKG_DIR}`, `{SERVER}`
-- Practical macros: `{DOWNLOAD}`, `{BASH_RUN}` (no external curl)
-- Mirror failover and server reachability checks
-- Optional sudo handling (skipped on Termux)
-
-### Validation & Safety
-
-- Platform checks prevent mismatched installs
-- `exec.LookPath` validates `deps` binaries before install
-- Install preview + explicit confirmation required (no `-y` for repo installs)
-- **Security-hardened downloads:**
-  - HTTPS-only requirement for all remote content
-  - SHA-256 digest verification for all script downloads
-  - Response size limits (10MB for manifests, 100MB for `{BASH_RUN}` scripts and `{DOWNLOAD}` payloads)
-  - Signed APT repository with GPG key verification
-  - Per-run private scratch directory (mode `0700`) for manifests and scripts; manifest is mode `0600`
-  - Macro-generated shell args are shell-quoted; parent directories are computed in Go, not via `$(dirname …)`
-  - File-locked `installed.json` updates (in-process mutex + advisory flock) for concurrent installs
-  - Atomic cache writes to prevent partial corruption
-  - Explicit host whitelist (no broad suffix matching)
-  - Display of generated scripts before execution
-
-### Full Authoring Guide
-
-See [ALPSMORE.md](ALPSMORE.md) for complete authoring docs: package fields, command blocks, macros, placeholders, examples, and publishing instructions.
+See [ALPSMORE.md](ALPSMORE.md) for complete authoring documentation: package fields, command blocks, macros, placeholders, examples, and publishing instructions.
 
 ## Contributing
 
