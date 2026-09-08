@@ -10,9 +10,24 @@ color_setup = \
     GREEN=""; RED=""; BLUE=""; YELLOW=""; RESET=""; \
   fi
 
+UNAME := $(shell uname -s 2>/dev/null)
+IS_TERMUX := $(shell [ -d /data/data/com.termux/files ] && echo "yes" || echo "")
+
 ifeq ($(PREFIX),)
   ifdef TERMUX_VERSION
     PREFIX = $(HOME)/../usr
+  else ifeq ($(IS_TERMUX),yes)
+    PREFIX = $(HOME)/../usr
+  else ifeq ($(UNAME),Darwin)
+    PREFIX = /usr/local
+  else ifeq ($(UNAME),FreeBSD)
+    PREFIX = /usr/local
+  else ifeq ($(UNAME),OpenBSD)
+    PREFIX = /usr/local
+  else ifeq ($(UNAME),NetBSD)
+    PREFIX = /usr/local
+  else ifeq ($(UNAME),DragonFly)
+    PREFIX = /usr/local
   else
     UID := $(shell id -u)
     HAS_SUDO := $(shell command -v sudo 2>/dev/null)
@@ -31,14 +46,32 @@ IS_SYSTEM := $(shell echo "$(PREFIX)" | grep -Eq "^(/usr|/etc|/var|/opt)" && ech
 UID := $(shell id -u)
 ifeq ($(UID),0)
   SUDO =
+else ifdef TERMUX_VERSION
+  SUDO =
 else ifneq ($(IS_SYSTEM),)
-  HAS_SUDO := $(shell command -v sudo 2>/dev/null)
-  ifneq ($(HAS_SUDO),)
-    SUDO = sudo
+  ifeq ($(UNAME),OpenBSD)
+    HAS_DOAS := $(shell command -v doas 2>/dev/null)
+    ifneq ($(HAS_DOAS),)
+      SUDO = doas
+    else
+      HAS_SUDO := $(shell command -v sudo 2>/dev/null)
+      ifneq ($(HAS_SUDO),)
+        SUDO = sudo
+      else
+        override PREFIX = $(HOME)/.local
+        IS_SYSTEM =
+        SUDO =
+      endif
+    endif
   else
-    override PREFIX = $(HOME)/.local
-    IS_SYSTEM =
-    SUDO =
+    HAS_SUDO := $(shell command -v sudo 2>/dev/null)
+    ifneq ($(HAS_SUDO),)
+      SUDO = sudo
+    else
+      override PREFIX = $(HOME)/.local
+      IS_SYSTEM =
+      SUDO =
+    endif
   endif
 else
   SUDO =
@@ -46,10 +79,24 @@ endif
 
 BINDIR = $(PREFIX)/bin
 
-ifneq ($(IS_SYSTEM),)
-  FISH_COMP = /usr/share/fish/vendor_completions.d
-  ZSH_COMP  = /usr/share/zsh/site-functions
-  BASH_COMP = /usr/share/bash-completion/completions
+ifdef TERMUX_VERSION
+  FISH_COMP = $(HOME)/.config/fish/completions
+  ZSH_COMP  = $(HOME)/.zsh/completion
+  BASH_COMP = $(HOME)/.local/share/bash-completion/completions
+else ifneq ($(IS_SYSTEM),)
+  ifeq ($(UNAME),Darwin)
+    FISH_COMP = /usr/local/share/fish/vendor_completions.d
+    ZSH_COMP  = /usr/local/share/zsh/site-functions
+    BASH_COMP = /usr/local/etc/bash_completion.d
+  else ifeq ($(filter $(UNAME),FreeBSD OpenBSD NetBSD DragonFly),$(UNAME))
+    FISH_COMP = /usr/local/share/fish/vendor_completions.d
+    ZSH_COMP  = /usr/local/share/zsh/site-functions
+    BASH_COMP = /usr/local/etc/bash_completion.d
+  else
+    FISH_COMP = /usr/share/fish/vendor_completions.d
+    ZSH_COMP  = /usr/share/zsh/site-functions
+    BASH_COMP = /usr/share/bash-completion/completions
+  endif
 else
   FISH_COMP = $(HOME)/.config/fish/completions
   ZSH_COMP  = $(HOME)/.zsh/completion
@@ -60,11 +107,16 @@ build:
 	@if [ -z "$(GO)" ]; then \
 		printf "  $$RED$$SYM_ERR$$RESET Go is not installed.\n"; \
 		printf "     Install it with your package manager:\n"; \
-		printf "       Arch:          sudo pacman -S go\n"; \
-		printf "       Debian/Ubuntu: sudo apt install golang-go\n"; \
-		printf "       Fedora:        sudo dnf install golang\n"; \
-		printf "       Alpine Linux:  sudo apk add go\n"; \
-        printf "       openSUSE:      sudo zypper install go\n"; \
+		printf "       macOS (Homebrew):    brew install go\n"; \
+		printf "       Arch Linux:          sudo pacman -S go\n"; \
+		printf "       Debian/Ubuntu:       sudo apt install golang-go\n"; \
+		printf "       Fedora:              sudo dnf install golang\n"; \
+		printf "       Alpine Linux:        sudo apk add go\n"; \
+		printf "       openSUSE:            sudo zypper install go\n"; \
+		printf "       FreeBSD:             pkg install go\n"; \
+		printf "       OpenBSD:             doas pkg_add go\n"; \
+		printf "       NetBSD:              pkgin install go\n"; \
+		printf "       Termux (Android):    pkg install golang\n"; \
 		exit 1; \
 	fi
 	@$(color_setup); printf "  $$BLUE$$SYM_INFO$$RESET Building $(BINARY) $(VERSION)...\n"
@@ -128,4 +180,27 @@ clean:
 	rm -f $(BINARY)
 	@$(color_setup); printf "  $$GREEN$$SYM_OK$$RESET Clean complete.\n"
 
-.PHONY: build install uninstall clean
+help:
+	@$(color_setup); printf "  $$BLUE$$SYM_INFO$$RESET ALPS Makefile Help\n"
+	@$(color_setup); printf "\n  $$GREEN$$SYM_OK$$RESET Available targets:\n"
+	@$(color_setup); printf "     make build      - Build the ALPS binary\n"
+	@$(color_setup); printf "     make install    - Install ALPS and completions\n"
+	@$(color_setup); printf "     make uninstall  - Remove ALPS and completions\n"
+	@$(color_setup); printf "     make clean      - Clean build artifacts\n"
+	@$(color_setup); printf "     make help       - Show this help message\n"
+	@$(color_setup); printf "\n  $$BLUE$$SYM_INFO$$RESET Platform-specific notes:\n"; \
+	if [ -n "$(TERMUX_VERSION)" ] || [ -d /data/data/com.termux/files ]; then \
+		printf "     Termux: Install to ~/../usr (Termux prefix)\n"; \
+	elif [ "$(UNAME)" = "Darwin" ]; then \
+		printf "     macOS: Uses Homebrew paths (/usr/local)\n"; \
+	elif [ "$(UNAME)" = "FreeBSD" ] || [ "$(UNAME)" = "OpenBSD" ] || [ "$(UNAME)" = "NetBSD" ] || [ "$(UNAME)" = "DragonFly" ]; then \
+		printf "     $(UNAME): Uses /usr/local prefix\n"; \
+	else \
+		printf "     Linux: Uses system paths or ~/.local\n"; \
+	fi
+	@$(color_setup); printf "\n  $$BLUE$$SYM_INFO$$RESET Current settings:\n"
+	@$(color_setup); printf "     PREFIX = $(PREFIX)\n"
+	@$(color_setup); printf "     BINDIR = $(BINDIR)\n"
+	@$(color_setup); printf "     SUDO   = $(SUDO)\n"
+
+.PHONY: build install uninstall clean help
