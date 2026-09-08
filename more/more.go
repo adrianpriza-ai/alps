@@ -72,10 +72,10 @@ type Entry struct {
 	// default (maxDownloadSize). Only the block format populates it.
 	SHA256SizeByName map[string]int64
 	CmdLines         []string
-	RemoveLines  []string
-	UpgradeLines []string
-	PurgeLines   []string
-	Source       string
+	RemoveLines      []string
+	UpgradeLines     []string
+	PurgeLines       []string
+	Source           string
 
 	// pendingSumsFile is parse-time transient state: the filename declared by
 	// {FILE} inside a sha256sums block that is still awaiting its {SUMS} line.

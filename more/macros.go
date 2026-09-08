@@ -57,22 +57,22 @@ type Macro struct {
 
 // MacroContext holds context for macro expansion and execution.
 type MacroContext struct {
-	PackageName    string
-	Version        string
-	Server         string
-	Arch           string
-	OS             string                 // Operating system (linux, darwin, etc.)
-	Distro         string                 // Linux distribution ID (ubuntu, debian, etc.)
-	Safety             string                 // "strict" or "free"
-	SHA256Sums         []string               // legacy positional SHA-256 checksums for downloads
-	SHA256ByName       map[string]string      // named checksums keyed by destination filename
-	SHA256SizeByName   map[string]int64       // per-file download caps in bytes; -1 = unlimited, 0 = global default
-	SHA256Index        int                    // Current index for SHA256 sum assignment
-	Op             platform.OperationType // current operation (install/upgrade/remove/purge)
-	InstalledPaths []InstalledPath        // Track installed files for auto-uninstall (internal)
-	DeferredOps    []DeferredOperation    // Deferred file operations
-	BuildDir       string                 // Build directory for source files
-	DistroVersion  string
+	PackageName      string
+	Version          string
+	Server           string
+	Arch             string
+	OS               string                 // Operating system (linux, darwin, etc.)
+	Distro           string                 // Linux distribution ID (ubuntu, debian, etc.)
+	Safety           string                 // "strict" or "free"
+	SHA256Sums       []string               // legacy positional SHA-256 checksums for downloads
+	SHA256ByName     map[string]string      // named checksums keyed by destination filename
+	SHA256SizeByName map[string]int64       // per-file download caps in bytes; -1 = unlimited, 0 = global default
+	SHA256Index      int                    // Current index for SHA256 sum assignment
+	Op               platform.OperationType // current operation (install/upgrade/remove/purge)
+	InstalledPaths   []InstalledPath        // Track installed files for auto-uninstall (internal)
+	DeferredOps      []DeferredOperation    // Deferred file operations
+	BuildDir         string                 // Build directory for source files
+	DistroVersion    string
 }
 
 // NewMacroContext creates a new macro execution context.
@@ -82,22 +82,22 @@ func NewMacroContext(e *Entry, server string) *MacroContext {
 	os := runtime.GOOS
 
 	if e == nil {
-	return &MacroContext{
-		PackageName:      "",
-		Version:          "",
-		Server:           server,
-		Arch:             platform.NormalizeArch(runtime.GOARCH),
-		OS:               os,
-		Distro:           distro,
-		Safety:           "",
-		SHA256Sums:       []string{},
-		SHA256ByName:     map[string]string{},
-		SHA256SizeByName: map[string]int64{},
-		SHA256Index:      0,
-		InstalledPaths:   []InstalledPath{},
-		BuildDir:         "",
-		DistroVersion:    distroVer,
-	}
+		return &MacroContext{
+			PackageName:      "",
+			Version:          "",
+			Server:           server,
+			Arch:             platform.NormalizeArch(runtime.GOARCH),
+			OS:               os,
+			Distro:           distro,
+			Safety:           "",
+			SHA256Sums:       []string{},
+			SHA256ByName:     map[string]string{},
+			SHA256SizeByName: map[string]int64{},
+			SHA256Index:      0,
+			InstalledPaths:   []InstalledPath{},
+			BuildDir:         "",
+			DistroVersion:    distroVer,
+		}
 	}
 	return &MacroContext{
 		PackageName:      e.Name,

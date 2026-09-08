@@ -190,10 +190,10 @@ func PrintHelp(cfg *config.Config) {
 			{"aur orphans", "list AUR orphan packages"},
 		})
 		fmt.Println()
-	fmt.Printf("  %s%s%s %sArch tip:%s use %sfull-upgrade%s, not update/upgrade — avoids partial upgrades\n\n",
-		s.ColorWarning, s.SymWarn, s.ColorReset,
-		s.ColorBold, s.ColorReset,
-		s.ColorPrimary, s.ColorReset)
+		fmt.Printf("  %s%s%s %sArch tip:%s use %sfull-upgrade%s, not update/upgrade — avoids partial upgrades\n\n",
+			s.ColorWarning, s.SymWarn, s.ColorReset,
+			s.ColorBold, s.ColorReset,
+			s.ColorPrimary, s.ColorReset)
 	}
 
 	if isDebianBased(distro) && isSnapAvailable() {
