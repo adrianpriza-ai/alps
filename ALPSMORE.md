@@ -12,8 +12,8 @@ alps repo update                       # refresh cache
 alps repo search <pkg>                 # search
 alps repo list                         # list available
 alps repo list install                 # list installed
-alps repo install <pkg>                # install
-alps repo install github.com/user/repo # install from GitHub
+alps repo install <pkg>                # install (preview required)
+alps repo install github.com/user/repo # install from a git forge
 alps repo upgrade [pkg]                # upgrade
 alps repo remove <pkg>                 # remove
 alps repo purge <pkg>                  # remove + delete config
@@ -30,6 +30,11 @@ arch = x86_64, aarch64
 os = linux, debian, ubuntu
 deps = curl/wget  # requires curl OR wget
 safety = strict  # default mode
+
+sha256sums_begin
+  {FILE} tool-{ARCH}
+  {SUMS} a1b2c3d4e5f6...64-char-hash
+sha256sums_end
 
 cmd_begin
   {DOWNLOAD} https://github.com/me/tool/releases/download/v{VERSION}/tool-{ARCH}
@@ -63,7 +68,7 @@ cmd_end
 | `atomgit.com` | AtomGit | `alps repo install atomgit.com/user/repo@main` |
 | `huggingface.co` | Hugging Face | `alps repo install huggingface.co/user/repo@main` |
 
-Branch must always be explicit (`@main`, `@master`, `@dev`, etc.) — no mutable HEAD/main/master fallback.
+Branch must always be explicit (`@main`, `@master`, `@dev`, etc.)
 
 ---
 
@@ -80,7 +85,15 @@ os = linux, debian, ubuntu, arch, fedora, alpine, termux, wsl
 servers = https://my-mirror.example.com/
 deps = curl/wget, git  # requires curl OR wget, and git
 safety = strict  # strict (default) or free
-sha256sums = a1b2c3d4e5f6...64-char-hash, another64charhash...
+
+# Checksums for {DOWNLOAD}/{BASH_RUN}: sha256sums_begin block (recommended)
+# or a single sha256sums = line. See "SHA-256 Checksums".
+sha256sums_begin
+  {FILE} file1.tar.gz
+  {SUMS} a1b2c3d4e5f6...64-char-hash
+  {FILE} install.sh
+  {SUMS} another64charhash...
+sha256sums_end
 
 cmd_begin
   # install commands
@@ -117,7 +130,7 @@ purge_end
 | `version` | Semantic version | Version string for upgrades |
 | `servers` | URLs | Mirror servers for `{BASH_RUN}` |
 | `deps` | Binary names with `/` for OR | Required system dependencies (e.g., `curl/wget, git`) |
-| `sha256sums` | 64-char hex hashes | SHA-256 checksums for downloads (comma-separated) |
+| `sha256sums` | 64-char hex hashes | SHA-256 checksums for downloads. Use the `sha256sums_begin` block (recommended) or a `sha256sums` line with `filename=hash` pairs, pasted `hash  filename` output, or the legacy comma-separated positional list |
 | `upgrade_begin`/`upgrade_end` | Commands | Custom upgrade commands |
 | `purge_begin`/`purge_end` | Commands | Config/data cleanup commands |
 
@@ -128,15 +141,15 @@ purge_end
 The `deps` field supports an OR operator using `/` to specify alternative dependencies.
 
 **Syntax:**
-- `deps = curl, git` - requires both curl AND git
-- `deps = curl/wget, git` - requires curl OR wget (at least one), AND git
-- `deps = curl/wget, git/svn` - requires curl OR wget, AND git OR svn
+- `deps = curl, git`: both curl and git required
+- `deps = curl/wget, git`: curl or wget (at least one), plus git
+- `deps = curl/wget, git/svn`: one of curl/wget, and one of git/svn
 
 **Validation:**
-- Each dependency group separated by commas is AND'd together
-- Within a group, alternatives separated by `/` are OR'd together
+- Comma-separated groups are AND'd together
+- Within a group, `/`-separated alternatives are OR'd together
 - At least one alternative from each OR group must be present
-- Backward compatible: existing comma-only syntax continues to work
+- Existing comma-only syntax continues to work
 
 **Examples:**
 ```ini
@@ -192,12 +205,12 @@ cmd_end
 - Validates commands for dangerous patterns
 - Uses `fakeroot` during build if available
 - Defers `{INSTALL_*}` and `{SYMLINK}` until after the build completes
-- Auto-generates remove commands from macros — no manual `remove_begin` needed
+- Auto-generates remove commands from macros, so no manual `remove_begin` is needed
 - Recommended for most packages
 
 ### Free Mode
 - Allows manual scripts and full control; no command validation
-- Does not use fakeroot — direct access only
+- Does not use fakeroot; direct access only
 - File operations execute immediately
 - Requires manual `remove_begin`/`remove_end` blocks
 - Downloads without `sha256sums` are allowed; install prompt warns of reduced safety
@@ -224,8 +237,8 @@ Execute during the build phase, before installation. In strict mode, these run u
 
 | Macro | Syntax | Behavior |
 |-|-|-|
-| `{DOWNLOAD}` | `{DOWNLOAD} URL [FILE]` | Download file to build directory using Go's HTTP client (500MB limit, uses entry-level sha256sums) |
-| `{BASH_RUN}` | `{BASH_RUN} URL [args]` | Download and execute shell script via `bash` (10MB limit, uses entry-level sha256sums) |
+| `{DOWNLOAD}` | `{DOWNLOAD} URL [FILE]` | Download file to build directory using Go's HTTP client (100MB default limit, per-file `{SIZE}` cap; the digest comes from the entry's checksum declarations, matched by destination filename) |
+| `{BASH_RUN}` | `{BASH_RUN} URL [args]` | Download and execute shell script via `bash` (10MB limit; digest matched by destination filename) |
 | `{SH}` | `{SH} PATH` | Execute script with `bash` (or `sh` as fallback) |
 | `{EXTRACT}` | `{EXTRACT} ARCHIVE` | Extract archive (`.tar.gz`, `.tar.xz`, `.tar.bz2`, `.zip`) |
 
@@ -257,28 +270,134 @@ Execute after the build phase completes, using `sudo` for real system access (sk
 
 ## SHA-256 Checksums
 
-ALPSMORE uses PKGBUILD-style SHA-256 checksums at the entry level.
+ALPSMORE checksums come in a block format, two other named forms, plus the
+legacy positional list. The named forms match each `{DOWNLOAD}` and
+`{BASH_RUN}` by **destination filename**, so declaration order never matters.
+Add, remove, or reorder downloads without touching the checksum block.
 
-### Format
+### Named: block format (recommended)
+
+The block format uses `{FILE}` and `{SUMS}` macros inside a `sha256sums_begin`/`sha256sums_end` block. This is the recommended style for new packages: each file gets its own declaration, filenames with spaces can be quoted, and the order doesn't matter.
+
+Each `{FILE}` must be followed by its `{SUMS}` line before the next `{FILE}`
+or `sha256sums_end`; an orphan of either is a parse error. Declaring the
+same filename twice is a parse error (the digest map rejects duplicates), as
+is leaving the block unclosed or mixing it with any other checksum style in
+the same entry.
+
 ```ini
 [package-name]
-sha256sums = a1b2c3d4e5f6...64-char-hash, another64charhash...
+sha256sums_begin
+  {FILE} file1.tar.gz
+  {SUMS} a1b2c3d4e5f6...64-char-hash
+  {FILE} install.sh
+  {SUMS} another64charhash...
+sha256sums_end
 
 cmd_begin
   {DOWNLOAD} https://example.com/file1.tar.gz
-  {DOWNLOAD} https://example.com/file2.tar.gz
+  {DOWNLOAD} https://example.com/download?ver=2 file2.tar.gz
   {BASH_RUN} https://example.com/install.sh
 cmd_end
 ```
 
-### How It Works
+Quoted filenames (for files with spaces or special characters):
+```ini
+sha256sums_begin
+  {FILE} "name with spaces.tar.gz"
+  {SUMS} a1b2c3d4e5f6...64-char-hash
+sha256sums_end
+```
 
-The `sha256sums` field holds comma-separated 64-character hashes. Downloads verify in order: first hash for the first download, second for the second, and so on. Applies to both `{DOWNLOAD}` and `{BASH_RUN}`.
+#### Per-file download cap (`{SIZE}`)
 
-Strict mode (default) requires checksums — any `{DOWNLOAD}` or `{BASH_RUN}` without a matching `sha256sums` entry is rejected before anything is fetched. A digest mismatch fails the installation. Free mode allows downloads without checksums but shows a reduced-safety warning on install.
+`{SIZE}` is an optional macro that applies a download cap to the file being
+declared. It may appear right after the `{FILE}` or after its `{SUMS}` line:
+
+```ini
+sha256sums_begin
+  {FILE} small-cli.tar.gz
+  {SUMS} a1b2c3d4e5f6...64-char-hash
+  {SIZE} 50          # cap this one at 50 MB (tighter than the default)
+  {FILE} sdk.tar.gz
+  {SIZE} unl          # explicit unlimited override (logged at fetch time)
+  {SUMS} 0123ab...64-char-hash
+sha256sums_end
+```
+
+Rules:
+
+- **No `{SIZE}`** → the file inherits the global default cap (100 MB).
+- **`{SIZE} <n>` / `{SIZE} <n>m`** → MB cap (`<n>` may be fractional, e.g. `0.5` = 0.5 MB).
+- **`{SIZE} <n>g`** → GB cap (e.g. `0.05g` ≈ 50 MB).
+- **`{SIZE} unl` / `{SIZE} unlimited`** → no cap for this file. Alps prints a
+  warning when such a download happens.
+- A positive cap must be **> 0** and **≤ 100 MB**. A per-file cap can only
+  tighten the default, never widen it. Values above the default (e.g. `2g`)
+  are parse errors; raise the global default instead of per-package caps.
+- Sizes use binary units (1 MB = 1024² bytes, 1 GB = 1024³ bytes).
+
+### Named: `filename=hash` pairs (older syntax)
+```ini
+[package-name]
+sha256sums = file1.tar.gz=a1b2c3d4e5f6...64-char-hash, install.sh=another64charhash...
+
+cmd_begin
+  {DOWNLOAD} https://example.com/file1.tar.gz
+  {DOWNLOAD} https://example.com/download?ver=2 file2.tar.gz
+  {BASH_RUN} https://example.com/install.sh
+cmd_end
+```
+
+### Named: pasted `sha256sum` output (older syntax)
+
+The output of `sha256sum` can be pasted verbatim below a bare `sha256sums =`
+line. One `hash  filename` pair per line:
+```ini
+[package-name]
+sha256sums =
+  a1b2c3d4e5f6...64-char-hash  file1.tar.gz
+  another64charhash...  install.sh
+```
+
+### How matching works
+
+`{DOWNLOAD} URL [FILE]` is matched by the destination filename: the `FILE`
+argument if given, otherwise the URL's basename. `{BASH_RUN} URL` is matched by
+the URL's basename (which is also the saved script name). If a URL has query
+parameters, give it an explicit `FILE` argument and match that name.
+
+Strict mode (default) requires checksums: any `{DOWNLOAD}` or `{BASH_RUN}`
+whose filename has no matching entry is rejected before anything is fetched. A
+digest mismatch fails the installation. Free mode allows downloads without
+checksums but shows a reduced-safety warning on install.
+
+Validation warns if a strict-mode entry declares a named checksum whose
+filename never matches any `{DOWNLOAD}` or `{BASH_RUN}` in its install or
+upgrade commands: usually a stale entry left after editing, or a typo in the
+filename mapping.
+
+### Legacy positional format
+
+`sha256sums = a1b2c3d4..., c3d4e5f6...` is a comma-separated list of bare
+hashes consumed in order by each download (first hash for the first download,
+second for the second, and so on). Still fully supported; prefer the named
+forms for new packages. Mixing styles in one entry is rejected.
+
+### One declaration style per entry
+
+Each entry must use exactly one checksum declaration style:
+- Block format (`sha256sums_begin`/`sha256sums_end`), OR
+- Named pairs (`filename=hash`), OR
+- Pasted `sha256sum` output, OR
+- Legacy positional list
+
+Mixing styles in one entry is a parse error. This keeps manifests predictable and prevents typos from silently weakening verification.
 
 **Size limits:**
-- `{DOWNLOAD}`: 500 MB (for large packages like VSCode, IDEs, SDKs)
+- `{DOWNLOAD}`: 100 MB by default; a per-file `{SIZE}` cap in the checksum
+  block can tighten it, or `{SIZE} unl` can lift it for files that genuinely
+  need more (an SDK, a game engine)
 - `{BASH_RUN}`: 10 MB (bash scripts should never be large)
 - Manifest downloads: 10 MB
 
@@ -286,13 +405,15 @@ Strict mode (default) requires checksums — any `{DOWNLOAD}` or `{BASH_RUN}` wi
 ```bash
 # Generate SHA-256 checksums for your files
 sha256sum file1.tar.gz file2.tar.gz install.sh
-# Output format:
+# Output:
 # a1b2c3d4e5f6...  file1.tar.gz
 # another64charhash...  file2.tar.gz
 # yetanotherhash...  install.sh
 ```
 
-Extract the 64-character hashes and add them to your `sha256sums` field in the same order as downloads appear in your cmd_begin block.
+Paste that output directly below `sha256sums =`; the pairs match by filename,
+so order does not matter. (To use the one-line `filename=hash` form instead,
+join the same pairs with commas.)
 
 ---
 
@@ -307,7 +428,10 @@ version = 1.0.0
 arch = x86_64, aarch64
 os = linux
 safety = strict
-sha256sums = a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef12345678
+sha256sums_begin
+  {FILE} install.sh
+  {SUMS} a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef12345678
+sha256sums_end
 
 cmd_begin
   {BASH_RUN} https://example.com/install.sh
@@ -319,7 +443,7 @@ cmd_end
 # Generate SHA-256 digest for your script
 sha256sum install.sh
 # Output: a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef12345678  install.sh
-# Add the 64-character hex digest to the sha256sums field
+# Declare it in the checksum block under the script's filename
 ```
 
 ### Example 2: Multiple Downloads with SHA-256 Verification
@@ -331,7 +455,14 @@ version = 1.0.0
 arch = x86_64, aarch64
 os = linux
 safety = strict
-sha256sums = a1b2c3d4e5f6...64-char-hash, another64charhash..., yetanother64charhash...
+sha256sums_begin
+  {FILE} file1.tar.gz
+  {SUMS} a1b2c3d4e5f6...64-char-hash
+  {FILE} file2.tar.gz
+  {SUMS} another64charhash...
+  {FILE} install.sh
+  {SUMS} yetanother64charhash...
+sha256sums_end
 
 cmd_begin
   {DOWNLOAD} https://example.com/file1.tar.gz
@@ -414,7 +545,7 @@ No dangerous `rm -rf` commands in state files. Each item type uses the appropria
 
 ### Upgrade Behavior
 
-When upgrading a package, the new `owned_items` list replaces the old one. Any files the old version owned but the new version does not are automatically cleaned up during the upgrade — they won't be orphaned on disk.
+When upgrading a package, the new `owned_items` list replaces the old one. Files the old version owned but the new version does not are automatically cleaned up during the upgrade, so they won't be orphaned on disk.
 
 ### Example installed.json Structure
 ```json
@@ -471,25 +602,25 @@ Checks before install:
 2. `os` matches your distro
 3. `deps` binaries exist (`exec.LookPath`)
 4. `cmd_begin`/`cmd_end` defined (required)
-5. **Strict mode**: `remove_begin` optional — auto-generated from macros
+5. **Strict mode**: `remove_begin` optional; auto-generated from macros
 6. **Free mode**: `remove_begin`/`remove_end` required
 
 Safety features:
 - Strict mode rejects dangerous patterns (`rm -rf /`, etc.)
-- Fakeroot during build in strict mode — no full root needed
+- Fakeroot during build in strict mode, so full root is never needed
 - Warns on sensitive system paths
 - No `-y` flag for repo installs (explicit confirmation required)
 - Full preview before execution
 - Snapshot saved to `installed.json` even if the repo disappears later
 - Owned items tracked for safe removal
-- Downloads are HTTPS-only, SHA-256 verified, size-limited (10MB manifests, 10MB scripts, 500MB `{DOWNLOAD}` payloads)
+- Downloads are HTTPS-only, SHA-256 verified, size-limited (10MB manifests, 10MB scripts, 100MB `{DOWNLOAD}` payloads by default, per-file `{SIZE}` caps)
 - Atomic cache writes prevent partial corruption
-- Host whitelist only — no broad suffix matching
+- Host whitelist only, with no broad suffix matching
 - Generated scripts shown before they run
 
 ### Macro Downloads (`{DOWNLOAD}` / `{BASH_RUN}`)
 
-Macros only require **HTTPS** — any host is allowed since the ALPSMORE maintainer controls which URLs are in their file.
+Macros only require **HTTPS**. Any host is allowed since the ALPSMORE maintainer controls which URLs are in their file.
 
 ---
 
@@ -511,7 +642,7 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 **Option 2:** Self-host on GitHub/GitLab
 - Place `ALPSMORE` at repo root
 - Users install: `alps repo install github.com/you/repo@branch` (branch required)
-- **Security**: Branch specification is now required (no mutable HEAD/main/master fallbacks)
+- **Security**: Branch specification is required (no mutable HEAD/main/master fallbacks)
 
 **Checklist:**
 - [ ] `arch` + `os` fields defined
@@ -527,7 +658,7 @@ Cache expires after 90 days; run `alps repo update` to refresh.
 
 The `more/` package has been reviewed and hardened. Key security improvements that affect ALPSMORE behavior:
 
-- `{DOWNLOAD}` is capped at 500 MB. A bad mirror can't make alps slurp arbitrary amounts of data.
+- `{DOWNLOAD}` is capped at 100 MB by default. A bad mirror can't make alps slurp arbitrary amounts of data; packages that need more declare `{SIZE} unl` per file.
 - `{BASH_RUN}` scripts are capped at 10 MB. Bash scripts should never be that large.
 - Manifest downloads are capped at 10 MB.
 - Manifests and scripts run from a private per-run scratch directory (`0700`, mode `0600` for the manifest). Two concurrent alps runs no longer clobber each other, and the old fixed `.alps_runner.txt` symlink-attack surface is gone.
@@ -539,10 +670,10 @@ The `more/` package has been reviewed and hardened. Key security improvements th
 
 ## Best Practices
 
-1. Define `arch` and `os` — prevents install on unsupported systems
+1. Define `arch` and `os` to prevent installs on unsupported systems
 2. Use structured macros (`{INSTALL_BIN}`, etc.) for automatic cleanup
 3. Set `safety = strict` unless you need full control
-4. Make scripts idempotent — safe to re-run
+4. Make scripts idempotent so they're safe to re-run
 5. Set `version` to enable upgrade detection
 6. List dependencies in `deps` for pre-install validation
 
@@ -560,17 +691,6 @@ The `more/` package has been reviewed and hardened. Key security improvements th
 | Permission errors in strict mode | Install fakeroot package |
 | Service not starting | Check `{ENABLE_SERVICE}` and `{START_SERVICE}` usage |
 | Missing remove commands in free mode | Add `remove_begin`/`remove_end` blocks (required in free mode) |
-
-**Debug locations:**
-- Installed:
-  - Linux: `/var/lib/alps/installed.json`
-  - Termux: `$PREFIX/var/lib/alps/installed.json`
-  - macOS: `~/Library/Application Support/alps/installed.json`
-- Cache:
-  - Linux: `/var/cache/alps/more/main.txt`
-  - Termux: `$PREFIX/var/cache/alps/more/main.txt`
-  - macOS: `~/Library/Caches/alps/more/main.txt`
-- Build: `~/.cache/alps/more/<package>/` (all platforms)
 
 ### Requirements
 
@@ -591,3 +711,14 @@ The `more/` package has been reviewed and hardened. Key security improvements th
 **Termux:**
 - Uses Termux environment
 - No additional requirements
+
+**Debug locations:**
+- Installed:
+  - Linux: `/var/lib/alps/installed.json`
+  - Termux: `$PREFIX/var/lib/alps/installed.json`
+  - macOS: `~/Library/Application Support/alps/installed.json`
+- Cache:
+  - Linux: `/var/cache/alps/more/main.txt`
+  - Termux: `$PREFIX/var/cache/alps/more/main.txt`
+  - macOS: `~/Library/Caches/alps/more/main.txt`
+- Build: `~/.cache/alps/more/<package>/` (all platforms)

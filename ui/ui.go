@@ -127,19 +127,19 @@ func PrintHelp(cfg *config.Config) {
 
 	printSectionTitle(cfg, "Core")
 	printRows(cfg, 19, [][2]string{
-		{"install <pkg>", "install repo/AUR/more pkg"},
+		{"install <pkg>", "install a package"},
 		{"remove <pkg>", "remove a package"},
-		{"purge <pkg>", "remove + config/data"},
-		{"search <query>", "search repo + AUR"},
+		{"purge <pkg>", "remove a package and its data"},
+		{"search <query>", "search packages"},
 		{"show <pkg>", "show package info"},
 		{"list", "list installed packages"},
 		{"update", "refresh package indexes"},
-		{"upgrade", "upgrade system + AUR"},
-		{"full-upgrade", "safe pacman -Syu"},
-		{"autoremove", "remove orphaned pkgs"},
+		{"upgrade", "upgrade installed packages"},
+		{"full-upgrade", "sync repos and upgrade all"},
+		{"autoremove", "remove orphaned packages"},
 		{"autoclean", "clean package cache"},
 		{"clean", "remove cached packages"},
-		{"edit-sources", "edit repo source list"},
+		{"edit-sources", "edit repository sources"},
 		{"completion <shell>", "generate shell completion"},
 		{"help", "show this help"},
 		{"aliases", "show active aliases"},
@@ -151,7 +151,7 @@ func PrintHelp(cfg *config.Config) {
 	printSectionTitle(cfg, "Flags")
 	printRows(cfg, 16, [][2]string{
 		{"-n, --dry-run", "simulate, no changes written"},
-		{"-y, --noconfirm", "skip confirmation prompts (main backends)"},
+		{"-y, --noconfirm", "skip confirmation prompts"},
 		{"-v, --verbose", "enable verbose output"},
 		{"-q, --quiet", "suppress non-error output"},
 		{"-f, --force", "force operation (skip safety checks)"},
@@ -160,14 +160,14 @@ func PrintHelp(cfg *config.Config) {
 
 	printSectionTitle(cfg, "Repo")
 	printRows(cfg, 23, [][2]string{
-		{"repo update", "refresh alps-more cache"},
+		{"repo update", "refresh repo cache"},
 		{"repo list", "list available packages"},
 		{"repo list install", "list installed packages"},
 		{"repo list remove", "list stale packages"},
-		{"repo install <pkg|url>", "install pkg or remote ALPSMORE"},
-		{"repo remove <pkg>", "remove alps-more package"},
-		{"repo purge <pkg>", "remove pkg + config/data"},
-		{"repo search <query>", "search alps-more packages"},
+		{"repo install <pkg|url>", "install pkg or from a URL"},
+		{"repo remove <pkg>", "remove a repo package"},
+		{"repo purge <pkg>", "remove a repo package and its data"},
+		{"repo search <query>", "search repo packages"},
 		{"repo upgrade [pkg]", "upgrade installed package(s)"},
 		{"repo clean", "remove build cache"},
 	})
@@ -190,10 +190,10 @@ func PrintHelp(cfg *config.Config) {
 			{"aur orphans", "list AUR orphan packages"},
 		})
 		fmt.Println()
-		fmt.Printf("  %s%s%s %sArch tip:%s use %sfull-upgrade%s, not update/upgrade — avoids partial upgrades\n\n",
-			s.ColorWarning, s.SymWarn, s.ColorReset,
-			s.ColorBold, s.ColorReset,
-			s.ColorPrimary, s.ColorReset)
+	fmt.Printf("  %s%s%s %sArch tip:%s use %sfull-upgrade%s, not update/upgrade — avoids partial upgrades\n\n",
+		s.ColorWarning, s.SymWarn, s.ColorReset,
+		s.ColorBold, s.ColorReset,
+		s.ColorPrimary, s.ColorReset)
 	}
 
 	if isDebianBased(distro) && isSnapAvailable() {
@@ -220,7 +220,7 @@ func PrintHelp(cfg *config.Config) {
 		fmt.Println()
 	}
 
-	fmt.Printf("  %sOther commands are passed directly to the backend.%s\n\n", s.ColorDim, s.ColorReset)
+	fmt.Printf("  %sOther commands are passed directly to your system's package manager.%s\n\n", s.ColorDim, s.ColorReset)
 }
 
 // detectDistroID reads /etc/os-release ID.

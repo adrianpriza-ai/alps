@@ -76,14 +76,33 @@ func prepareDownloadDirectory(file string) error {
 	return nil
 }
 
+// httpClient performs the HTTP requests for the DOWNLOAD macro. It is a
+// package-level variable so tests can substitute a client that trusts a
+// local TLS test server.
+var httpClient = &http.Client{Timeout: 10 * time.Minute}
+
+// requireNextDownloadSize returns the effective download cap for a file and
+// whether that cap was explicitly lifted with {SIZE} unl. Per-file caps are
+// enforced at parse time to never exceed maxDownloadSize, so the effective
+// cap is the per-file value when declared and the global default otherwise.
+func requireNextDownloadSize(ctx *MacroContext, what string) (int64, bool) {
+	if size, ok := ctx.SHA256SizeByName[what]; ok && size != 0 {
+		if size == unlimitedDownloadSize {
+			return 0, true
+		}
+		return size, false
+	}
+	return maxDownloadSize, false
+}
+
 // performDownload executes the HTTP download for the DOWNLOAD macro.
-// Security: downloads are capped at maxDownloadSize so a bad or malicious
+// Security: downloads are capped (maxDownloadSize by default, or a tighter
+// per-file {SIZE} cap, or none at all for {SIZE} unl) so a bad or malicious
 // mirror cannot make alps transfer unbounded data. A server that declares an
 // oversized Content-Length is rejected before any data is transferred;
 // downloadToFile enforces the cap for servers that lie about or omit it.
 func performDownload(url, file string, ctx *MacroContext) (string, error) {
-	client := &http.Client{Timeout: 10 * time.Minute}
-	resp, err := client.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("failed to download %s: %w", url, err)
 	}
@@ -93,15 +112,20 @@ func performDownload(url, file string, ctx *MacroContext) (string, error) {
 		return "", fmt.Errorf("failed to download %s: HTTP %d", url, resp.StatusCode)
 	}
 
-	if resp.ContentLength > maxDownloadSize {
-		return "", fmt.Errorf("download too large from %s: %d bytes exceeds the %d-byte limit", url, resp.ContentLength, maxDownloadSize)
+	maxSize, unlimited := requireNextDownloadSize(ctx, filepath.Base(file))
+	if !unlimited && resp.ContentLength > maxSize {
+		return "", fmt.Errorf("download too large from %s: %d bytes exceeds the %d-byte limit", url, resp.ContentLength, maxSize)
+	}
+	if unlimited {
+		fmt.Printf("  %s  %s: {SIZE} unl lifts the %d-byte download cap for %s\n",
+			currentStyle().SymWarn, ctx.PackageName, maxDownloadSize, filepath.Base(file))
 	}
 
 	// contentLength is used for the progress display; when it is unknown or
 	// zero the body is streamed without progress. downloadToFile re-checks the
 	// actual byte count so a server that lies about Content-Length cannot slip
 	// past the cap.
-	return downloadToFile(resp.Body, file, resp.ContentLength, ctx, maxDownloadSize)
+	return downloadToFile(resp.Body, file, resp.ContentLength, ctx, maxSize, unlimited)
 }
 
 // requireNextSha256 returns the expected SHA-256 digest for the next download
@@ -113,6 +137,20 @@ func performDownload(url, file string, ctx *MacroContext) (string, error) {
 // user has opted out of guardrails, so missing digests are allowed; the
 // reduced-safety notice is shown at install confirmation time.
 func requireNextSha256(ctx *MacroContext, what string) (string, error) {
+	// Named checksums (name=hash pairs or pasted "hash  filename" lines) are
+	// looked up by destination filename, so declaration order never matters.
+	// Mixing named and positional entries is rejected at parse time, so a
+	// miss here never falls back to the positional list.
+	if len(ctx.SHA256ByName) > 0 {
+		expected, ok := ctx.SHA256ByName[what]
+		if !ok {
+			return sha256MissingNamed(ctx, what)
+		}
+		if !isValidSha256(expected) {
+			return "", fmt.Errorf("invalid sha256sums entry %q for %s (want exactly 64 hex characters)", expected, what)
+		}
+		return expected, nil
+	}
 	if len(ctx.SHA256Sums) > 0 && ctx.SHA256Index < len(ctx.SHA256Sums) {
 		expected := ctx.SHA256Sums[ctx.SHA256Index]
 		ctx.SHA256Index++ // Increment index for next download
@@ -121,6 +159,15 @@ func requireNextSha256(ctx *MacroContext, what string) (string, error) {
 		}
 	}
 	return sha256Missing(ctx, what)
+}
+
+// sha256MissingNamed handles a download whose filename has no declared named
+// digest. Free mode allows it; strict mode refuses before anything is fetched.
+func sha256MissingNamed(ctx *MacroContext, what string) (string, error) {
+	if ctx.Safety == "free" {
+		return "", nil
+	}
+	return "", fmt.Errorf("%s is missing a sha256sums entry (no checksum declared for %q) — refusing to download unverified content (strict mode)", what, what)
 }
 
 // sha256Missing handles a download with no usable digest. In strict mode this
@@ -162,8 +209,9 @@ func isValidSha256(s string) bool {
 // atomically renames into place — a crash, size overrun or hash mismatch never
 // leaves a partial or unverified file at the destination. Progress is rendered
 // only when the total size is known (contentLength > 0) and stdout can display
-// it (see progressCapable).
-func downloadToFile(body io.Reader, file string, contentLength int64, ctx *MacroContext, maxSize int64) (string, error) {
+// it (see progressCapable). unlimited disables the size cap for files declared
+// {SIZE} unl.
+func downloadToFile(body io.Reader, file string, contentLength int64, ctx *MacroContext, maxSize int64, unlimited bool) (string, error) {
 	displayName := filepath.Base(file)
 
 	// Write to a temp file in the same directory (ensures rename is atomic)
@@ -175,12 +223,16 @@ func downloadToFile(body io.Reader, file string, contentLength int64, ctx *Macro
 	defer out.Close()
 
 	// Security: stop reading past maxSize bytes so a mirror that lies about
-	// (or omits) Content-Length cannot stream unbounded data to disk.
-	limitedBody := io.LimitReader(body, maxSize+1)
+	// (or omits) Content-Length cannot stream unbounded data to disk. Files
+	// declared {SIZE} unl bypass the cap entirely.
+	readBody := io.Reader(body)
+	if !unlimited {
+		readBody = io.LimitReader(body, maxSize+1)
+	}
 
 	// Use a tee reader to compute SHA256 while downloading
 	hasher := sha256.New()
-	teeReader := io.TeeReader(limitedBody, hasher)
+	teeReader := io.TeeReader(readBody, hasher)
 
 	reader := io.Reader(teeReader)
 	showProgress := contentLength > 0 && progressCapable(os.Stdout)
@@ -200,7 +252,7 @@ func downloadToFile(body io.Reader, file string, contentLength int64, ctx *Macro
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("failed to write file %s: %w", tmpPath, err)
 	}
-	if written > maxSize {
+	if !unlimited && written > maxSize {
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("download too large for %s: exceeds %d bytes", displayName, maxSize)
 	}

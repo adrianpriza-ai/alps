@@ -17,6 +17,7 @@ import (
 	"github.com/adrianpriza-ai/alps/config"
 	"github.com/adrianpriza-ai/alps/extra"
 	"github.com/adrianpriza-ai/alps/pack"
+	"github.com/adrianpriza-ai/alps/platform"
 	"github.com/adrianpriza-ai/alps/priv"
 	"github.com/adrianpriza-ai/alps/runner"
 	"github.com/adrianpriza-ai/alps/ui"
@@ -164,6 +165,8 @@ func runPkg(subcmd string, args []string, cfg *config.Config) {
 			runAptWithSnapFallback(args, dryRun, cfg)
 		case "search":
 			runAptSearch(args, cfg)
+		case "full-upgrade":
+			runAptFullUpgrade(args, flags, cfg)
 		default:
 			runPkgDefault(backend, subcmd, args, flags, cfg)
 		}
@@ -1229,4 +1232,68 @@ func runAptSearch(args []string, cfg *config.Config) {
 		fmt.Println()
 		<-snapCh
 	}
+}
+
+// runAptFullUpgrade runs apt update followed by apt upgrade instead of apt full-upgrade.
+func runAptFullUpgrade(args []string, f pack.Flags, cfg *config.Config) {
+	dryRun := f.DryRun
+	realBackend := pack.DetectRealApt()
+
+	ui.Msgf(cfg, ui.LevelInfo, "full-upgrade %s(%s update && %s upgrade)%s",
+		cfg.Style.ColorDim,
+		realBackend,
+		realBackend,
+		cfg.Style.ColorReset)
+	fmt.Println()
+
+	if dryRun {
+		ui.Msgf(cfg, ui.LevelWarn, "DRY-RUN: no changes will be made")
+		return
+	}
+
+	// apt needs root for both update and upgrade
+	if !platform.IsTermux() {
+		if err := ensureSudo(); err != nil {
+			ui.Msg(cfg, ui.LevelError, "privilege escalation failed")
+			return
+		}
+	}
+
+	runAptStep := func(stepArgs ...string) error {
+		cmd, err := priv.Command(stepArgs...)
+		if err != nil {
+			return err
+		}
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		return cmd.Run()
+	}
+
+	// Step 1: apt update
+	if err := runAptStep(realBackend, "update"); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			ui.Msg(cfg, ui.LevelWarn, "Update cancelled.")
+		} else {
+			ui.Msgf(cfg, ui.LevelError, "apt update failed: %v", err)
+		}
+		return
+	}
+	ui.Msg(cfg, ui.LevelOK, "Update done.")
+	fmt.Println()
+
+	// Step 2: apt upgrade
+	upgradeArgs := []string{realBackend, "upgrade"}
+	if f.NoConfirm {
+		upgradeArgs = append(upgradeArgs, "-y")
+	}
+	if err := runAptStep(upgradeArgs...); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			ui.Msg(cfg, ui.LevelWarn, "Upgrade cancelled.")
+		} else {
+			ui.Msgf(cfg, ui.LevelError, "apt upgrade failed: %v", err)
+		}
+		return
+	}
+	ui.Msg(cfg, ui.LevelOK, "Done.")
 }

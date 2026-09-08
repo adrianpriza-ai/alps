@@ -17,22 +17,22 @@
 
 ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and `apk`, plus AUR, Snap, Flatpak, Winget, and a custom script repo called alps-more. One command interface across Linux, macOS, Termux on Android, and WSL on Windows.
 
-The codebase is ~9k lines. Tests pass and `go vet` is clean.
+~9k lines of Go. Tests pass, `go vet` is clean.
 
 ## Features
 
 | Feature | Description |
 |-|-|
 | **Multi-distro** | Auto-detects `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, or `apk` |
-| **Termux support** | Full support on Android — no sudo, native `$PREFIX` paths |
+| **Termux support** | Full support on Android: no sudo, native `$PREFIX` paths |
 | **macOS support** | Full support with Homebrew integration; macOS-specific paths and behaviors |
 | **WSL support** | Works on WSL; alps-more entries can target `os = wsl` |
 | **Built-in AUR** | Full recursive dep resolution, PKGBUILD review, yay/paru fallback |
-| **Extra packages** | Snap, Flatpak, and Winget — same command shape across all three |
+| **Extra packages** | Snap, Flatpak, and Winget with the same command shape across all three |
 | **alps-more** | Cross-distro script repo with version tracking, mirror failover, and remote installs from GitHub/GitLab/Hugging Face |
-| **Security** | HTTPS-only downloads, SHA-256 verification, signed APT repositories, response size limits (10MB manifests, 10MB scripts, 500MB downloads) |
-| **Customizable** | Colors, symbols, header, aliases — all via config file |
-| **Completion** | fish, bash, zsh — distro-aware, AUR name cache, live package completion |
+| **Security** | HTTPS-only downloads, SHA-256 verification, signed APT repositories, response size limits (10MB manifests, 10MB scripts, 100MB downloads, per-file `{SIZE}` caps) |
+| **Customizable** | Colors, symbols, header, aliases, all via the config file |
+| **Completion** | fish, bash, zsh; distro-aware, with an AUR name cache and live package completion |
 | **Build isolation** | Per-package build directories (`~/.cache/alps/more/<pkg>/`) |
 
 ## Installation
@@ -102,7 +102,7 @@ alps completion zsh > $(brew --prefix)/share/zsh/site-functions/_alps
 
 > **Note:** For Zsh, run `autoload -U compinit && compinit` in your shell (or add it to `~/.zshrc`) to enable completions.
 
-Completion is environment-aware — AUR subcommands only appear on Arch, snap only on Debian/Ubuntu, neither on Termux. Tab-completing `alps aur install` draws from a local AUR name cache populated by every search. `alps repo install [TAB]` completes live from the alps-more cache.
+Completion is environment-aware: AUR subcommands only appear on Arch, snap only on Debian/Ubuntu, neither on Termux. Tab-completing `alps aur install` draws from a local AUR name cache populated by every search. `alps repo install [TAB]` completes live from the alps-more cache.
 
 ## Global Flags
 
@@ -111,7 +111,7 @@ Completion is environment-aware — AUR subcommands only appear on Arch, snap on
 | `-n, --dry-run` | Preview actions without making changes | All (repo, aur, extra, apt, pacman, dnf, zypper, apk) |
 | `-y, --noconfirm` | Skip confirmation prompts | Main package managers only (apt, pacman, dnf, zypper, apk) |
 
-**Important**: For safety, `-y` is **intentionally NOT supported** for secondary package managers (`aur`, `repo`, `extra`) and fallback paths. These operations always require explicit user confirmation.
+**Important**: `-y` is **intentionally not supported** for secondary package managers (`aur`, `repo`, `extra`) and fallback paths. Those operations always require explicit confirmation.
 
 ## Usage
 
@@ -142,7 +142,7 @@ alps <command> [args]
 | `version` | Show version |
 | `help` | Show help |
 
-Unknown commands produce a clear error instead of being passed silently to the backend.
+Unknown commands error out instead of being passed silently to the backend.
 
 ## Default Aliases
 
@@ -184,7 +184,7 @@ alps aur bl ./mypkg       # aur build-local ./mypkg
 | `/etc/alps/config` | Global |
 | `~/.config/alps/config` | Per-user (overrides global) |
 
-**Config file format (INI-style):**
+Config format:
 
 ```ini
 # Colors
@@ -231,7 +231,7 @@ sudo pacman -S --needed git base-devel
 ### Built-in AUR features
 
 | Area | What it does |
-|---|---|
+|-|-|
 | RPC search/info | `Search`, `SearchNarrow`, `Info`, `InfoBatch`, `Exists` — all with retry, backoff, jitter |
 | Install pipeline | Dependency resolution → build plan → `makepkg -si` or delegate to yay/paru |
 | VCS update detection | Probes upstream repos (`git ls-remote`, `svn info`, `hg identify`) for `-git`/`-svn`/`-hg` packages instead of comparing frozen RPC versions |
@@ -265,7 +265,6 @@ alps aur fetch-abs <pkg>        # fetch official PKGBUILD (asp or Arch GitLab)
 ## Extra Packages (Snap, Flatpak, Winget)
 
 ```bash
-# Manage each package manager directly — no auto-detection
 alps snap install <pkg>     # Snap (Ubuntu/Debian)
 alps flatpak install <pkg>  # Flatpak
 alps winget install <pkg>   # Winget (WSL)
@@ -282,17 +281,17 @@ Cross-distro script repo for tools and applications not available in native pack
 ### Quick Start
 
 ```bash
-alps repo update                          # refresh cache from fastest mirror
-alps repo list                            # list available packages for your distro
-alps repo list install                    # list installed packages (alps-more + remote)
-alps repo list remove                     # list stale packages no longer in repo
-alps repo search <query>                  # search by name or description
-alps repo install <pkg>                   # install (preview required)
-alps repo install github.com/user/repo@main  # install from any supported forge
-alps repo upgrade [pkg]                   # upgrade one or all installed packages
-alps repo remove <pkg>                    # remove package
-alps repo purge <pkg>                     # remove package and delete config/data
-alps repo clean                           # remove build cache (~/.cache/alps/more)
+alps repo update                            # refresh cache from fastest mirror
+alps repo list                              # list available packages for your distro
+alps repo list install                      # list installed packages (alps-more + remote)
+alps repo list remove                       # list stale packages no longer in repo
+alps repo search <query>                    # search by name or description
+alps repo install <pkg>                     # install (preview required)
+alps repo install github.com/user/repo@main # install from any supported forge
+alps repo upgrade [pkg]                     # upgrade one or all installed packages
+alps repo remove <pkg>                      # remove package
+alps repo purge <pkg>                       # remove package and delete config/data
+alps repo clean                             # remove build cache (~/.cache/alps/more)
 ```
 
 ### Authoring Packages

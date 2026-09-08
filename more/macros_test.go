@@ -65,6 +65,68 @@ func TestRequireNextSha256(t *testing.T) {
 	})
 }
 
+func TestRequireNextSha256Named(t *testing.T) {
+	hashA := strings.Repeat("ab", 32)
+	hashB := strings.Repeat("cd", 32)
+
+	t.Run("lookup by filename is order independent", func(t *testing.T) {
+		ctx := NewMacroContext(&Entry{Name: "pkg", SHA256ByName: map[string]string{
+			"b.bin": hashB, "a.bin": hashA,
+		}}, "")
+		got, err := requireNextSha256(ctx, "b.bin")
+		if err != nil || got != hashB {
+			t.Errorf("requireNextSha256(b.bin) = %q, %v; want %q", got, err, hashB)
+		}
+		got, err = requireNextSha256(ctx, "a.bin")
+		if err != nil || got != hashA {
+			t.Errorf("requireNextSha256(a.bin) = %q, %v; want %q", got, err, hashA)
+		}
+	})
+
+	t.Run("missing filename is rejected in strict mode", func(t *testing.T) {
+		ctx := NewMacroContext(&Entry{Name: "pkg", SHA256ByName: map[string]string{"a.bin": hashA}}, "")
+		_, err := requireNextSha256(ctx, "missing.bin")
+		if err == nil {
+			t.Fatal("expected error for undeclared filename in strict mode")
+		}
+		if !strings.Contains(err.Error(), "missing.bin") {
+			t.Errorf("error should name the missing file, got: %v", err)
+		}
+	})
+
+	t.Run("missing filename is allowed in free mode", func(t *testing.T) {
+		ctx := NewMacroContext(&Entry{Name: "pkg", Safety: "free", SHA256ByName: map[string]string{"a.bin": hashA}}, "")
+		expected, err := requireNextSha256(ctx, "missing.bin")
+		if err != nil || expected != "" {
+			t.Errorf("free mode should allow undeclared filename: got %q, %v", expected, err)
+		}
+	})
+
+	t.Run("named lookups take precedence over positional list", func(t *testing.T) {
+		ctx := &MacroContext{
+			Safety:       "strict",
+			SHA256Sums:   []string{hashB},
+			SHA256ByName: map[string]string{"a.bin": hashA},
+		}
+		got, err := requireNextSha256(ctx, "a.bin")
+		if err != nil || got != hashA {
+			t.Errorf("named lookup should win: got %q, %v", got, err)
+		}
+		// The positional index must not advance for named lookups.
+		if ctx.SHA256Index != 0 {
+			t.Errorf("SHA256Index = %d, want 0", ctx.SHA256Index)
+		}
+	})
+
+	t.Run("invalid named digest is rejected", func(t *testing.T) {
+		ctx := NewMacroContext(&Entry{Name: "pkg", SHA256ByName: map[string]string{"a.bin": "not-a-digest"}}, "")
+		_, err := requireNextSha256(ctx, "a.bin")
+		if err == nil {
+			t.Fatal("expected error for malformed named digest")
+		}
+	})
+}
+
 func TestRequireNextSha256FreeMode(t *testing.T) {
 	validHash := strings.Repeat("ab", 32) // 64 hex chars
 
@@ -508,7 +570,7 @@ func TestDownloadToFileAtomicWrite(t *testing.T) {
 	runDownloadModes(t, content, func(t *testing.T, contentLength int64) {
 		ctx := NewMacroContext(e, "")
 		dest := filepath.Join(t.TempDir(), "output.bin")
-		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxDownloadSize)
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxDownloadSize, false)
 		if err != nil {
 			t.Fatalf("downloadToFile returned error: %v", err)
 		}
@@ -541,7 +603,7 @@ func TestDownloadToFileHashMismatchCleansUp(t *testing.T) {
 	runDownloadModes(t, content, func(t *testing.T, contentLength int64) {
 		ctx := NewMacroContext(e, "")
 		dest := filepath.Join(t.TempDir(), "mismatch.bin")
-		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxDownloadSize)
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxDownloadSize, false)
 		if err == nil {
 			t.Fatal("expected error on SHA256 mismatch, got nil")
 		}
@@ -565,7 +627,7 @@ func TestDownloadToFileFreeModeSkipsDigest(t *testing.T) {
 	runDownloadModes(t, content, func(t *testing.T, contentLength int64) {
 		ctx := NewMacroContext(e, "")
 		dest := filepath.Join(t.TempDir(), "free.bin")
-		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxDownloadSize)
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxDownloadSize, false)
 		if err != nil {
 			t.Fatalf("downloadToFile in free mode returned error: %v", err)
 		}
@@ -592,7 +654,7 @@ func TestDownloadToFileSizeLimit(t *testing.T) {
 		ctx := NewMacroContext(e, "")
 
 		dest := filepath.Join(t.TempDir(), "oversize.bin")
-		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxSize)
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxSize, false)
 		if err == nil {
 			t.Fatal("expected error for body larger than maxSize")
 		}
@@ -613,7 +675,7 @@ func TestDownloadToFileSizeLimit(t *testing.T) {
 		ctx := NewMacroContext(e, "")
 
 		dest := filepath.Join(t.TempDir(), "exact.bin")
-		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxSize)
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxSize, false)
 		if err != nil {
 			t.Fatalf("body of exactly maxSize bytes should be accepted: %v", err)
 		}
@@ -638,7 +700,7 @@ func TestDownloadToFileNoProgressOnPipe(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	_, err = downloadToFile(bytes.NewReader(content), dest, int64(len(content)), ctx, maxDownloadSize)
+	_, err = downloadToFile(bytes.NewReader(content), dest, int64(len(content)), ctx, maxDownloadSize, false)
 	w.Close()
 	os.Stdout = oldStdout
 

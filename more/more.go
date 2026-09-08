@@ -50,6 +50,10 @@ import (
 const scriptDownloadTimeout = 5 * time.Minute
 
 // Entry represents a package entry.
+// SHA256Sums holds the legacy positional checksum list (bare 64-hex hashes
+// consumed in order by each download); SHA256ByName holds the named form,
+// keyed by destination filename. At most one of the two is populated per
+// entry — mixing them is a parse error.
 type Entry struct {
 	Name         string
 	Desc         string
@@ -61,11 +65,27 @@ type Entry struct {
 	Servers      []string
 	Safety       string
 	SHA256Sums   []string
-	CmdLines     []string
+	SHA256ByName map[string]string
+	// SHA256SizeByName holds per-file download caps in bytes, keyed by the
+	// same destination filename as SHA256ByName. unlimitedDownloadSize (-1)
+	// lifts the cap for that file; an absent/zero entry means the global
+	// default (maxDownloadSize). Only the block format populates it.
+	SHA256SizeByName map[string]int64
+	CmdLines         []string
 	RemoveLines  []string
 	UpgradeLines []string
 	PurgeLines   []string
 	Source       string
+
+	// pendingSumsFile is parse-time transient state: the filename declared by
+	// {FILE} inside a sha256sums block that is still awaiting its {SUMS} line.
+	pendingSumsFile string
+	// lastSumsFile is the filename of the most recently completed {FILE}/{SUMS}
+	// pair, so a following {SIZE} can attach a download cap to it.
+	lastSumsFile string
+	// usedSumsBlock records that the sha256sums block format was used in this
+	// entry, so later sha256sums = declarations are rejected as a style mix.
+	usedSumsBlock bool
 }
 
 // reqTool describes a single binary requirement.

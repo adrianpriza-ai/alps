@@ -34,8 +34,14 @@ const (
 	maxManifestSize = 10 * 1024 * 1024
 	// Security: maximum response size for script downloads (10MB)
 	maxScriptSize = 10 * 1024 * 1024
-	// Security: maximum response size for {DOWNLOAD} macro downloads (500MB)
-	maxDownloadSize = 500 * 1024 * 1024
+	// Security: maximum response size for {DOWNLOAD} macro downloads. 100MB
+	// is the default; packages that need more declare {SIZE} unl in their
+	// sha256sums block rather than raising this global bound.
+	maxDownloadSize = 100 * 1024 * 1024
+	// unlimitedDownloadSize marks a file whose download cap is lifted via
+	// {SIZE} unl — stored in SHA256SizeByName and returned by
+	// requireNextDownloadSize as the "no cap" sentinel.
+	unlimitedDownloadSize = int64(-1)
 )
 
 // defaultServers are the official alps-more mirrors.
@@ -47,8 +53,8 @@ var defaultServers = []string{
 // Security: Removed branch fallbacks - require explicit branch specification
 // to prevent reliance on mutable references like HEAD, main, master
 
-func getCacheFile() string    { return filepath.Join(platform.CacheDir(), "main.txt") }
-func getLastSyncFile() string { return filepath.Join(platform.CacheDir(), "last_sync") }
+func getCacheFile() string     { return filepath.Join(platform.CacheDir(), "main.txt") }
+func getLastSyncFile() string  { return filepath.Join(platform.CacheDir(), "last_sync") }
 
 // installedFileOverride redirects the installed state file to another path.
 // It exists for tests, which point state at a temp dir so they never touch

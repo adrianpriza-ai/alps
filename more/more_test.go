@@ -1,6 +1,7 @@
 package more
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -956,6 +957,585 @@ func TestShouldWrapWithFakeroot(t *testing.T) {
 	ctxPurge := &MacroContext{Safety: "strict", Op: platform.OperationPurge}
 	if shouldWrapWithFakeroot(ctxPurge) {
 		t.Error("shouldWrapWithFakeroot with purge op should be false")
+	}
+}
+
+// --- sha256sums format parsing ---
+
+func TestParseSHA256SumsNamedPairs(t *testing.T) {
+	hashA := strings.Repeat("ab", 32)
+	hashB := strings.Repeat("cd", 32)
+	input := []byte(`[pkg]
+sha256sums = file1.tar.gz=` + hashA + `, install.sh=` + hashB + `
+
+cmd_begin
+  {DOWNLOAD} https://example.com/file1.tar.gz
+cmd_end
+`)
+
+	entries, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	e := entries["pkg"]
+	if e == nil {
+		t.Fatal("expected package pkg")
+	}
+	if len(e.SHA256ByName) != 2 || e.SHA256ByName["file1.tar.gz"] != hashA || e.SHA256ByName["install.sh"] != hashB {
+		t.Errorf("SHA256ByName = %v, want named map with file1.tar.gz and install.sh", e.SHA256ByName)
+	}
+	if len(e.SHA256Sums) != 0 {
+		t.Errorf("SHA256Sums = %v, want empty for named format", e.SHA256Sums)
+	}
+}
+
+func TestParseSHA256SumsPasteFormat(t *testing.T) {
+	hashA := strings.Repeat("ab", 32)
+	hashB := strings.Repeat("cd", 32)
+	input := []byte(`[pkg]
+sha256sums =
+  ` + hashA + `  file1.tar.gz
+  ` + hashB + `  install.sh
+
+cmd_begin
+  {DOWNLOAD} https://example.com/file1.tar.gz
+  {BASH_RUN} https://example.com/install.sh
+cmd_end
+`)
+
+	entries, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	e := entries["pkg"]
+	if e == nil {
+		t.Fatal("expected package pkg")
+	}
+	if len(e.SHA256ByName) != 2 || e.SHA256ByName["file1.tar.gz"] != hashA || e.SHA256ByName["install.sh"] != hashB {
+		t.Errorf("SHA256ByName = %v, want named map from pasted lines", e.SHA256ByName)
+	}
+}
+
+func TestParseSHA256SumsLegacyPositional(t *testing.T) {
+	hashA := strings.Repeat("ab", 32)
+	hashB := strings.Repeat("cd", 32)
+	input := []byte(`[pkg]
+sha256sums = ` + hashA + `, ` + hashB + `
+
+cmd_begin
+  {DOWNLOAD} https://example.com/file1.tar.gz
+cmd_end
+`)
+
+	entries, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	e := entries["pkg"]
+	if e == nil {
+		t.Fatal("expected package pkg")
+	}
+	if len(e.SHA256Sums) != 2 || e.SHA256Sums[0] != hashA || e.SHA256Sums[1] != hashB {
+		t.Errorf("SHA256Sums = %v, want legacy positional list", e.SHA256Sums)
+	}
+	if len(e.SHA256ByName) != 0 {
+		t.Errorf("SHA256ByName = %v, want empty for positional format", e.SHA256ByName)
+	}
+}
+
+func TestParseSHA256SumsMixedRejected(t *testing.T) {
+	hashA := strings.Repeat("ab", 32)
+	cases := []string{
+		`[pkg]
+sha256sums = ` + hashA + `, file1.tar.gz=` + hashA + `
+`,
+		`[pkg]
+sha256sums = file1.tar.gz=` + hashA + `, ` + hashA + `
+`,
+		`[pkg]
+sha256sums = ` + hashA + `
+sha256sums = file1.tar.gz=` + hashA + `
+`,
+	}
+	for i, input := range cases {
+		if _, err := Parse([]byte(input)); err == nil {
+			t.Errorf("case %d: expected error for mixing positional and named sha256sums", i)
+		}
+	}
+}
+
+func TestParseSHA256SumsDuplicateRejected(t *testing.T) {
+	hashA := strings.Repeat("ab", 32)
+	hashB := strings.Repeat("cd", 32)
+	cases := []string{
+		`[pkg]
+sha256sums = file1.tar.gz=` + hashA + `, file1.tar.gz=` + hashB + `
+`,
+		`[pkg]
+sha256sums =
+  ` + hashA + `  file1.tar.gz
+  ` + hashB + `  file1.tar.gz
+`,
+	}
+	for i, input := range cases {
+		_, err := Parse([]byte(input))
+		if err == nil || !strings.Contains(err.Error(), "duplicate") {
+			t.Errorf("case %d: expected duplicate error, got %v", i, err)
+		}
+	}
+}
+
+func TestParseSHA256SumsInvalidRejected(t *testing.T) {
+	cases := []string{
+		`[pkg]
+sha256sums = not-a-digest
+`,
+		`[pkg]
+sha256sums = =` + strings.Repeat("ab", 32) + `
+`, // missing filename
+		`[pkg]
+sha256sums = file1.tar.gz=short
+`, // bad digest
+		`[pkg]
+sha256sums =
+  garbage line without a hash
+`,
+	}
+	for i, input := range cases {
+		if _, err := Parse([]byte(input)); err == nil {
+			t.Errorf("case %d: expected error for invalid sha256sums entry", i)
+		}
+	}
+}
+
+func TestParseSHA256SumsContinuationEnds(t *testing.T) {
+	hashA := strings.Repeat("ab", 32)
+	input := []byte(`[pkg]
+sha256sums =
+  ` + hashA + `  file1.tar.gz
+desc = tool description
+
+cmd_begin
+  {DOWNLOAD} https://example.com/file1.tar.gz
+  echo building
+cmd_end
+`)
+
+	entries, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	e := entries["pkg"]
+	if e == nil {
+		t.Fatal("expected package pkg")
+	}
+	// The checksum block must stop at the desc key and at cmd_begin: the key
+	// and the command lines must not be swallowed as checksum continuations.
+	if e.Desc != "tool description" {
+		t.Errorf("Desc = %q, want %q", e.Desc, "tool description")
+	}
+	if len(e.SHA256ByName) != 1 || e.SHA256ByName["file1.tar.gz"] != hashA {
+		t.Errorf("SHA256ByName = %v, want only file1.tar.gz", e.SHA256ByName)
+	}
+	if len(e.CmdLines) != 2 {
+		t.Errorf("CmdLines = %v, want the two cmd_begin lines", e.CmdLines)
+	}
+}
+
+// --- sha256sums block format ({FILE}/{SUMS}) ---
+
+func TestParseSHA256SumsBlockFormat(t *testing.T) {
+	hashA := strings.Repeat("ab", 32)
+	hashB := strings.Repeat("cd", 32)
+	hashC := strings.Repeat("ef", 32)
+	input := []byte(`[pkg]
+sha256sums_begin
+  {FILE} "name with spaces.tar.gz"
+  {SUMS}  ` + hashA + `
+  {FILE} 'single-quoted.bin'
+  {SUMS} ` + hashB + `
+  {FILE} third.tar.gz
+  {SUMS} ` + hashC + `
+sha256sums_end
+
+cmd_begin
+  {DOWNLOAD} https://example.com/name%20with%20spaces.tar.gz "name with spaces.tar.gz"
+  {DOWNLOAD} https://example.com/single-quoted.bin
+  {DOWNLOAD} https://example.com/third.tar.gz
+cmd_end
+`)
+
+	entries, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	e := entries["pkg"]
+	if e == nil {
+		t.Fatal("expected package pkg")
+	}
+	want := map[string]string{
+		"name with spaces.tar.gz": hashA,
+		"single-quoted.bin":       hashB,
+		"third.tar.gz":            hashC,
+	}
+	if len(e.SHA256ByName) != len(want) {
+		t.Fatalf("SHA256ByName = %v, want %v", e.SHA256ByName, want)
+	}
+	for name, hash := range want {
+		if e.SHA256ByName[name] != hash {
+			t.Errorf("SHA256ByName[%q] = %q, want %q", name, e.SHA256ByName[name], hash)
+		}
+	}
+	if len(e.SHA256Sums) != 0 {
+		t.Errorf("SHA256Sums = %v, want empty for block format", e.SHA256Sums)
+	}
+}
+
+func TestParseSHA256SumsBlockShuffledOrder(t *testing.T) {
+	hashA := strings.Repeat("ab", 32)
+	hashB := strings.Repeat("cd", 32)
+	input := []byte(`[pkg]
+sha256sums_begin
+  {FILE} second.bin
+  {SUMS} ` + hashB + `
+  {FILE} first.bin
+  {SUMS} ` + hashA + `
+sha256sums_end
+`)
+
+	entries, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	e := entries["pkg"]
+	if e == nil {
+		t.Fatal("expected package pkg")
+	}
+	if e.SHA256ByName["first.bin"] != hashA || e.SHA256ByName["second.bin"] != hashB {
+		t.Errorf("SHA256ByName = %v, want order-independent mapping", e.SHA256ByName)
+	}
+}
+
+func TestParseSHA256SumsBlockErrors(t *testing.T) {
+	hashA := strings.Repeat("ab", 32)
+	hashB := strings.Repeat("cd", 32)
+	block := "[pkg]\nsha256sums_begin\n  {FILE} file1.tar.gz\n  {SUMS} " + hashA + "\nsha256sums_end\n"
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"empty quoted filename", "[pkg]\nsha256sums_begin\n  {FILE} \"\"\n  {SUMS} " + hashA + "\nsha256sums_end\n"},
+		{"orphan FILE at _end", "[pkg]\nsha256sums_begin\n  {FILE} file1.tar.gz\nsha256sums_end\n"},
+		{"orphan FILE before next FILE", "[pkg]\nsha256sums_begin\n  {FILE} a.tar.gz\n  {FILE} b.tar.gz\nsha256sums_end\n"},
+		{"orphan SUMS", "[pkg]\nsha256sums_begin\n  {SUMS} " + hashA + "\nsha256sums_end\n"},
+		{"invalid SUMS digest", "[pkg]\nsha256sums_begin\n  {FILE} file1.tar.gz\n  {SUMS} not-a-digest\nsha256sums_end\n"},
+		{"unknown macro", "[pkg]\nsha256sums_begin\n  {FROBNICATE} x\nsha256sums_end\n"},
+		{"non-macro line", "[pkg]\nsha256sums_begin\n  {FILE} file1.tar.gz\n  {SUMS} " + hashA + "\n  some garbage\nsha256sums_end\n"},
+		{"duplicate FILE", "[pkg]\nsha256sums_begin\n  {FILE} file1.tar.gz\n  {SUMS} " + hashA + "\n  {FILE} file1.tar.gz\n  {SUMS} " + hashB + "\nsha256sums_end\n"},
+		{"block then positional", block + "sha256sums = " + hashA + "\n"},
+		{"block then named pairs", block + "sha256sums = file2.tar.gz=" + hashB + "\n"},
+		{"block then paste", block + "sha256sums =\n  " + hashB + "  file2.tar.gz\n"},
+		{"positional then block", "[pkg]\nsha256sums = " + hashA + "\nsha256sums_begin\n  {FILE} file1.tar.gz\n  {SUMS} " + hashA + "\nsha256sums_end\n"},
+		{"named pairs then block", "[pkg]\nsha256sums = file1.tar.gz=" + hashA + "\nsha256sums_begin\n  {FILE} file2.tar.gz\n  {SUMS} " + hashB + "\nsha256sums_end\n"},
+		{"paste then block", "[pkg]\nsha256sums =\n  " + hashA + "  file1.tar.gz\nsha256sums_begin\n  {FILE} file2.tar.gz\n  {SUMS} " + hashB + "\nsha256sums_end\n"},
+		{"block inside cmd_begin", "[pkg]\ncmd_begin\n  sha256sums_begin\ncmd_end\n"},
+		{"unclosed block at next section", "[pkg]\nsha256sums_begin\n  {FILE} file1.tar.gz\n  {SUMS} " + hashA + "\n\n[other]\n"},
+		{"unclosed block at EOF", "[pkg]\nsha256sums_begin\n  {FILE} file1.tar.gz\n  {SUMS} " + hashA + "\n"},
+		{"two blocks without end", "[pkg]\nsha256sums_begin\nsha256sums_begin\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Parse([]byte(tc.input)); err == nil {
+				t.Errorf("expected parse error: %s", tc.name)
+			}
+		})
+	}
+}
+
+// TestRequireNextSha256BlockDeclared verifies that checksums declared in the
+// block format are looked up by destination filename at download time, exactly
+// like the other named forms.
+func TestRequireNextSha256BlockDeclared(t *testing.T) {
+	hashA := strings.Repeat("ab", 32)
+	hashB := strings.Repeat("cd", 32)
+	input := []byte(`[pkg]
+sha256sums_begin
+  {FILE} file1.tar.gz
+  {SUMS} ` + hashA + `
+  {FILE} install.sh
+  {SUMS} ` + hashB + `
+sha256sums_end
+
+cmd_begin
+  {DOWNLOAD} https://example.com/file1.tar.gz
+  {BASH_RUN} https://example.com/install.sh
+cmd_end
+`)
+
+	entries, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	e := entries["pkg"]
+	if e == nil {
+		t.Fatal("expected package pkg")
+	}
+	ctx := NewMacroContext(e, "")
+	for name, want := range map[string]string{"file1.tar.gz": hashA, "install.sh": hashB} {
+		got, err := requireNextSha256(ctx, name)
+		if err != nil {
+			t.Fatalf("requireNextSha256(%q) returned error: %v", name, err)
+		}
+		if got != want {
+			t.Errorf("requireNextSha256(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestParseSHA256SumsBlockSizes(t *testing.T) {
+	hashA := strings.Repeat("ab", 32)
+	hashB := strings.Repeat("cd", 32)
+	hashC := strings.Repeat("ef", 32)
+	hashD := strings.Repeat("01", 32)
+	hashE := strings.Repeat("23", 32)
+	input := []byte(`[pkg]
+sha256sums_begin
+  {FILE} small.bin
+  {SUMS} ` + hashA + `
+  {SIZE} 50
+  {FILE} medium.bin
+  {SIZE} 25
+  {SUMS} ` + hashB + `
+  {FILE} boundary.bin
+  {SUMS} ` + hashC + `
+  {SIZE} 100
+  {FILE} mb.bin
+  {SIZE} 1m
+  {SUMS} ` + hashD + `
+  {FILE} huge.bin
+  {SUMS} ` + hashE + `
+  {SIZE} unl
+sha256sums_end
+`)
+
+	entries, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	e := entries["pkg"]
+	if e == nil {
+		t.Fatal("expected package pkg")
+	}
+	want := map[string]int64{
+		"small.bin":    50 * 1024 * 1024,
+		"medium.bin":   25 * 1024 * 1024,
+		"boundary.bin": maxDownloadSize, // {SIZE} equal to the default is allowed
+		"mb.bin":       1024 * 1024,
+		"huge.bin":     unlimitedDownloadSize,
+	}
+	if len(e.SHA256SizeByName) != len(want) {
+		t.Fatalf("SHA256SizeByName = %v, want %v", e.SHA256SizeByName, want)
+	}
+	for name, size := range want {
+		if e.SHA256SizeByName[name] != size {
+			t.Errorf("SHA256SizeByName[%q] = %d, want %d", name, e.SHA256SizeByName[name], size)
+		}
+	}
+	// The digests still attach to the right files regardless of {SIZE} placement.
+	digests := map[string]string{
+		"small.bin": hashA, "medium.bin": hashB, "boundary.bin": hashC, "mb.bin": hashD, "huge.bin": hashE,
+	}
+	for name, hash := range digests {
+		if e.SHA256ByName[name] != hash {
+			t.Errorf("SHA256ByName[%q] = %q, want %q", name, e.SHA256ByName[name], hash)
+		}
+	}
+}
+
+func TestParseSHA256SumsBlockSizeErrors(t *testing.T) {
+	hash := strings.Repeat("ab", 32)
+	block := `[pkg]
+sha256sums_begin
+  {FILE} a.bin
+  {SUMS} ` + hash + `
+`
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"zero", block + `  {SIZE} 0
+sha256sums_end
+`},
+		{"negative", block + `  {SIZE} -5
+sha256sums_end
+`},
+		{"exceeds default in GB", block + `  {SIZE} 2g
+sha256sums_end
+`},
+		{"exceeds default in MB", block + `  {SIZE} 200
+sha256sums_end
+`},
+		{"malformed", block + `  {SIZE} banana
+sha256sums_end
+`},
+		{"orphan SIZE", `[pkg]
+sha256sums_begin
+  {SIZE} 50
+sha256sums_end
+`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Parse([]byte(tc.input)); err == nil {
+				t.Errorf("expected parse error: %s", tc.name)
+			}
+		})
+	}
+}
+
+// --- unused named checksum detection ---
+
+func TestUnusedNamedChecksums(t *testing.T) {
+	hash := strings.Repeat("ab", 32)
+	cases := []struct {
+		name  string
+		entry *Entry
+		want  []string
+	}{
+		{
+			name:  "no named sums",
+			entry: &Entry{Name: "pkg"},
+			want:  nil,
+		},
+		{
+			name: "all sums used by DOWNLOAD",
+			entry: &Entry{
+				Name:         "pkg",
+				SHA256ByName: map[string]string{"file1.tar.gz": hash},
+				CmdLines:     []string{"{DOWNLOAD} https://example.com/file1.tar.gz"},
+			},
+			want: nil,
+		},
+		{
+			name: "FILE argument names the checksum",
+			entry: &Entry{
+				Name:         "pkg",
+				SHA256ByName: map[string]string{"app.tar.gz": hash},
+				CmdLines:     []string{"{DOWNLOAD} https://example.com/latest app.tar.gz"},
+			},
+			want: nil,
+		},
+		{
+			name: "BASH_RUN script matched by basename",
+			entry: &Entry{
+				Name:         "pkg",
+				SHA256ByName: map[string]string{"install.sh": hash},
+				CmdLines:     []string{"{BASH_RUN} https://example.com/install.sh"},
+			},
+			want: nil,
+		},
+		{
+			name: "local BASH_RUN script is not a download",
+			entry: &Entry{
+				Name:         "pkg",
+				SHA256ByName: map[string]string{"install.sh": hash},
+				CmdLines:     []string{"{BASH_RUN} install.sh"},
+			},
+			want: []string{"install.sh"},
+		},
+		{
+			name: "unused checksum reported",
+			entry: &Entry{
+				Name:         "pkg",
+				SHA256ByName: map[string]string{"file1.tar.gz": hash, "gone.bin": hash},
+				CmdLines:     []string{"{DOWNLOAD} https://example.com/file1.tar.gz"},
+			},
+			want: []string{"gone.bin"},
+		},
+		{
+			name: "templated URL with resolvable placeholder",
+			entry: &Entry{
+				Name:         "pkg",
+				Version:      "2.0.0",
+				SHA256ByName: map[string]string{"tool-2.0.0.tar.gz": hash},
+				CmdLines:     []string{"{DOWNLOAD} https://example.com/tool-{VERSION}.tar.gz"},
+			},
+			want: nil,
+		},
+		{
+			name: "upgrade block downloads count",
+			entry: &Entry{
+				Name:         "pkg",
+				SHA256ByName: map[string]string{"new.bin": hash},
+				UpgradeLines: []string{"{DOWNLOAD} https://example.com/new.bin"},
+			},
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := unusedNamedChecksums(tc.entry)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("unusedNamedChecksums = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateWarnsUnusedNamedChecksums(t *testing.T) {
+	hash := strings.Repeat("ab", 32)
+	arch := platform.NormalizeArch(runtime.GOARCH)
+
+	capture := func(e *Entry) (string, error) {
+		old := os.Stdout
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("cannot create pipe: %v", err)
+		}
+		os.Stdout = w
+		valErr := Validate(e)
+		os.Stdout = old
+		w.Close()
+		out, _ := io.ReadAll(r)
+		r.Close()
+		return string(out), valErr
+	}
+
+	// An entry that passes validation but declares a checksum for a file it
+	// never downloads must print a warning (and still validate).
+	unused := &Entry{
+		Name:         "warnme",
+		Version:      "1.0.0",
+		Arch:         []string{arch},
+		OS:           []string{"linux", "darwin", "termux"},
+		Safety:       "strict",
+		SHA256ByName: map[string]string{"gone.bin": hash},
+		CmdLines:     []string{"{DOWNLOAD} https://example.com/file1.tar.gz"},
+	}
+	out, err := capture(unused)
+	if err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+	if !strings.Contains(out, "gone.bin") || !strings.Contains(out, "never downloaded") {
+		t.Errorf("expected warning about never-downloaded checksum, got: %q", out)
+	}
+
+	// A fully matched checksum must not warn.
+	used := &Entry{
+		Name:         "ok",
+		Version:      "1.0.0",
+		Arch:         []string{arch},
+		OS:           []string{"linux", "darwin", "termux"},
+		Safety:       "strict",
+		SHA256ByName: map[string]string{"file1.tar.gz": hash},
+		CmdLines:     []string{"{DOWNLOAD} https://example.com/file1.tar.gz"},
+	}
+	out, err = capture(used)
+	if err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+	if strings.Contains(out, "never downloaded") {
+		t.Errorf("expected no warning for matched checksum, got: %q", out)
 	}
 }
 
