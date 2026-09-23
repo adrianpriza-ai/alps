@@ -25,7 +25,7 @@ func (t *testServerTransport) RoundTrip(req *http.Request) (*http.Response, erro
 
 func TestValidatePkgNameValid(t *testing.T) {
 	valid := []string{
-		"bash", "foo-bar", "my_pkg", "test@1.0", "a.b-c+d_e", "UPPERCASE",
+		"bash", "foo-bar", "my_pkg", "test@1.0", "python@3", "a.b-c+d_e", "UPPERCASE",
 	}
 	for _, name := range valid {
 		if err := validatePkgName(name); err != nil {
@@ -36,12 +36,16 @@ func TestValidatePkgNameValid(t *testing.T) {
 
 func TestValidatePkgNameInvalid(t *testing.T) {
 	invalid := []string{
-		"",          // empty
-		"foo bar",   // space
-		"foo/bar",   // slash
-		"foo;bar",   // semicolon
-		"$(rm -rf)", // shell injection
-		"pkg\nname", // newline
+		"",            // empty
+		"foo bar",     // space
+		"foo/bar",     // slash
+		"foo;bar",     // semicolon
+		"$(rm -rf)",   // shell injection
+		"pkg\nname",   // newline
+		"..foo",       // traversal sequence
+		"a..b",        // traversal sequence
+		".hidden",     // leading dot
+		strings.Repeat("a", 256), // over-long
 	}
 	for _, name := range invalid {
 		if err := validatePkgName(name); err == nil {
@@ -239,6 +243,49 @@ func TestInfoBatchWithFakeServer(t *testing.T) {
 	if results["curl"] == nil || results["curl"].Version != "8.5.0" {
 		t.Errorf("results[curl] incorrect: %+v", results["curl"])
 	}
+}
+
+// --- Exists ---
+
+// TestExistsWithFakeServer covers Exists against the fake RPC server, both
+// for a package that resolves and one that comes back empty.
+func TestExistsWithFakeServer(t *testing.T) {
+	handlerFor := func(body []byte) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write(body)
+		}
+	}
+
+	foundBody, _ := json.Marshal(rpcResponse{Results: []Package{{Name: "curl", Version: "8.5.0"}}})
+	emptyBody, _ := json.Marshal(rpcResponse{Results: []Package{}})
+
+	t.Run("package exists", func(t *testing.T) {
+		srv := httptest.NewServer(handlerFor(foundBody))
+		defer srv.Close()
+		origClient := aurHTTPClient
+		testURL, _ := url.Parse(srv.URL)
+		aurHTTPClient = &http.Client{Transport: &testServerTransport{target: testURL}}
+		defer func() { aurHTTPClient = origClient }()
+
+		if !Exists("curl") {
+			t.Error("Exists(curl) = false, want true")
+		}
+	})
+
+	t.Run("package not found", func(t *testing.T) {
+		srv := httptest.NewServer(handlerFor(emptyBody))
+		defer srv.Close()
+		origClient := aurHTTPClient
+		testURL, _ := url.Parse(srv.URL)
+		aurHTTPClient = &http.Client{Transport: &testServerTransport{target: testURL}}
+		defer func() { aurHTTPClient = origClient }()
+
+		if Exists("nonexistent-package-xyz") {
+			t.Error("Exists(nonexistent) = true, want false")
+		}
+	})
 }
 
 // --- aurCacheDir path traversal ---

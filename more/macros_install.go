@@ -85,6 +85,11 @@ func resolveInstallDest(args []string, p installParams) (string, error) {
 		if strings.HasSuffix(dest, "/") {
 			dest += filepath.Base(source)
 		}
+		// A bare name means "install under this name in the default directory" —
+		// using it verbatim would copy into the build dir instead of /usr/bin.
+		if !filepath.IsAbs(dest) && !strings.ContainsRune(dest, filepath.Separator) {
+			return filepath.Join(p.defaultDir(), dest), nil
+		}
 		return dest, nil
 	}
 	return filepath.Join(p.defaultDir(), filepath.Base(source)), nil
@@ -195,7 +200,12 @@ func executeInstallService(macro Macro, ctx *MacroContext) (string, error) {
 		if strings.HasSuffix(dest, "/") {
 			dest = dest + filepath.Base(macro.Args[0])
 		}
-		// Store just the service name (basename)
+		// A bare name means "install under this name in the default directory" —
+		// using it verbatim would copy into the build dir instead of /etc/systemd/system.
+		if !filepath.IsAbs(dest) && !strings.ContainsRune(dest, filepath.Separator) {
+			dest = filepath.Join("/etc/systemd/system", dest)
+		}
+		// Store just the service name (basename) for proper cleanup
 		ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
 			Path:      filepath.Base(dest),
 			Type:      "service",
@@ -207,7 +217,7 @@ func executeInstallService(macro Macro, ctx *MacroContext) (string, error) {
 		return fmt.Sprintf("mkdir -p %s && cp %s %s && chmod 644 %s && echo %s",
 			shellQuote(filepath.Dir(dest)), shellQuote(macro.Args[0]), shellQuote(dest), shellQuote(dest), shellQuote(msg)), nil
 	}
-	// Default to /etc/systemd/system directory, store just the service name
+	// Default to /etc/systemd/system directory, store the absolute path
 	serviceName := filepath.Base(macro.Args[0])
 	dest := filepath.Join("/etc/systemd/system", serviceName)
 	ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
@@ -265,7 +275,7 @@ func executeSymlink(macro Macro, ctx *MacroContext) (string, error) {
 	})
 
 	msg := fmt.Sprintf("  %s  installed symlink %s -> %s", getSymOK(), link, target)
-	return fmt.Sprintf("ln -sf %s %s && echo %s", shellQuote(target), shellQuote(link), shellQuote(msg)), nil
+	return fmt.Sprintf("ln -sfn %s %s && echo %s", shellQuote(target), shellQuote(link), shellQuote(msg)), nil
 }
 
 // executeExtract extracts an archive.

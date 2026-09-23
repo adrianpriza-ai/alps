@@ -24,7 +24,7 @@ func TestCleanupTempFilesRemovesScratchDir(t *testing.T) {
 	if err := WriteManifest(&ExecutionManifest{BuildEnv: []string{"echo building"}}); err != nil {
 		t.Fatalf("WriteManifest failed: %v", err)
 	}
-	script, err := writeTempScript([]string{"echo hi"}, 0)
+	script, err := writeTempScript([]string{"echo hi"})
 	if err != nil {
 		t.Fatalf("writeTempScript failed: %v", err)
 	}

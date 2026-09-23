@@ -102,6 +102,11 @@ func requireNextDownloadSize(ctx *MacroContext, what string) (int64, bool) {
 // oversized Content-Length is rejected before any data is transferred;
 // downloadToFile enforces the cap for servers that lie about or omit it.
 func performDownload(url, file string, ctx *MacroContext) (string, error) {
+	expectedHash, err := requireNextSha256(ctx, filepath.Base(file))
+	if err != nil {
+		return "", err
+	}
+
 	resp, err := httpClient.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("failed to download %s: %w", url, err)
@@ -125,7 +130,7 @@ func performDownload(url, file string, ctx *MacroContext) (string, error) {
 	// zero the body is streamed without progress. downloadToFile re-checks the
 	// actual byte count so a server that lies about Content-Length cannot slip
 	// past the cap.
-	return downloadToFile(resp.Body, file, resp.ContentLength, ctx, maxSize, unlimited)
+	return downloadToFile(resp.Body, file, resp.ContentLength, ctx, expectedHash, maxSize, unlimited)
 }
 
 // requireNextSha256 returns the expected SHA-256 digest for the next download
@@ -211,7 +216,7 @@ func isValidSha256(s string) bool {
 // only when the total size is known (contentLength > 0) and stdout can display
 // it (see progressCapable). unlimited disables the size cap for files declared
 // {SIZE} unl.
-func downloadToFile(body io.Reader, file string, contentLength int64, ctx *MacroContext, maxSize int64, unlimited bool) (string, error) {
+func downloadToFile(body io.Reader, file string, contentLength int64, ctx *MacroContext, expectedHash string, maxSize int64, unlimited bool) (string, error) {
 	displayName := filepath.Base(file)
 
 	// Write to a temp file in the same directory (ensures rename is atomic)
@@ -220,7 +225,6 @@ func downloadToFile(body io.Reader, file string, contentLength int64, ctx *Macro
 	if err != nil {
 		return "", fmt.Errorf("failed to create file %s: %w", tmpPath, err)
 	}
-	defer out.Close()
 
 	// Security: stop reading past maxSize bytes so a mirror that lies about
 	// (or omits) Content-Length cannot stream unbounded data to disk. Files
@@ -249,10 +253,12 @@ func downloadToFile(body io.Reader, file string, contentLength int64, ctx *Macro
 
 	written, err := io.Copy(out, reader)
 	if err != nil {
+		_ = out.Close()
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("failed to write file %s: %w", tmpPath, err)
 	}
 	if !unlimited && written > maxSize {
+		_ = out.Close()
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("download too large for %s: exceeds %d bytes", displayName, maxSize)
 	}
@@ -263,17 +269,22 @@ func downloadToFile(body io.Reader, file string, contentLength int64, ctx *Macro
 	// Compute SHA256 of downloaded content
 	computedHash := fmt.Sprintf("%x", hasher.Sum(nil))
 
-	// The manifest must declare a digest for every download.
-	expectedHash, err := requireNextSha256(ctx, displayName)
-	if err != nil {
-		_ = os.Remove(tmpPath)
-		return "", err
-	}
-
 	// Free mode may opt out of digest verification (expectedHash == "").
 	if expectedHash != "" && computedHash != expectedHash {
+		_ = out.Close()
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("SHA256 mismatch for %s: expected %s, got %s", file, expectedHash, computedHash)
+	}
+
+	// Flush data to disk before rename so the file is not empty on crash.
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("failed to sync file %s: %w", tmpPath, err)
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("failed to close file %s: %w", tmpPath, err)
 	}
 
 	// Atomically move the verified file to its final destination
@@ -494,6 +505,29 @@ func formatSize(sb *strings.Builder, bytes int64) {
 	if decPart >= 10 {
 		intPart++
 		decPart = 0
+	}
+
+	// If rounding pushed us to the next unit boundary (e.g. 1023.95 → 1024.0),
+	// step up to the next unit so we never print "1024,0 KiB".
+	for intPart >= 1024 {
+		value = value / unit
+		roundedValue = float64(int(value*10+0.5)) / 10.0
+		intPart = int(roundedValue)
+		decPart = int((roundedValue-float64(intPart))*10 + 0.5)
+		if decPart >= 10 {
+			intPart++
+			decPart = 0
+		}
+		switch unitName {
+		case "KiB":
+			unitName = "MiB"
+		case "MiB":
+			unitName = "GiB"
+		case "GiB":
+			unitName = "TiB"
+		case "TiB":
+			unitName = "PiB"
+		}
 	}
 
 	sb.WriteString(fmt.Sprintf("%d,%d %s", intPart, decPart, unitName))

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/adrianpriza-ai/alps/aur"
@@ -80,10 +82,10 @@ func (b *Backend) Remove(pkgs []string, dryRun bool) error {
 }
 
 // Search searches AUR packages
-func (b *Backend) Search(query string) error {
+func (b *Backend) Search(query string) ([]aur.Package, error) {
 	if query == "" {
 		ui.Msg(b.cfg, ui.LevelError, "Usage: alps aur search <query>")
-		return fmt.Errorf("search query required")
+		return nil, fmt.Errorf("search query required")
 	}
 
 	ui.Msgf(b.cfg, ui.LevelInfo, "Searching '%s' in AUR...", query)
@@ -91,17 +93,17 @@ func (b *Backend) Search(query string) error {
 	results, err := aur.SearchNarrow(query)
 	if err != nil {
 		ui.Msgf(b.cfg, ui.LevelError, "%v", err)
-		return err
+		return nil, err
 	}
 	if len(results) == 0 {
 		ui.Msg(b.cfg, ui.LevelWarn, "No results found in AUR")
-		return nil
+		return []aur.Package{}, nil
 	}
 	for i, p := range results {
 		aur.PrintSearchResult(os.Stdout, i+1, p, "aur")
 	}
 	fmt.Println()
-	return nil
+	return results, nil
 }
 
 // List lists installed AUR packages
@@ -116,7 +118,13 @@ func (b *Backend) List() error {
 		return nil
 	}
 	fmt.Println()
-	for name, ver := range installed {
+	names := make([]string, 0, len(installed))
+	for name := range installed {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		ver := installed[name]
 		fmt.Printf("  %s%s%s  %s%s%s\n",
 			b.cfg.Style.ColorPrimary, name, b.cfg.Style.ColorReset,
 			b.cfg.Style.ColorDim, ver, b.cfg.Style.ColorReset)
@@ -246,6 +254,8 @@ func (b *Backend) Orphans() error {
 }
 
 // buildIgnoreSet reads the pacman config and returns a set of packages the user has marked to ignore.
+// IgnoreGroup entries are expanded into their member packages via pacman -Qg;
+// groups that cannot be queried (unknown group) are skipped.
 func buildIgnoreSet() map[string]bool {
 	pacConf, _ := aur.ReadPacmanConf()
 	ignoreSet := make(map[string]bool)
@@ -253,8 +263,31 @@ func buildIgnoreSet() map[string]bool {
 		for _, pkg := range pacConf.IgnorePkg {
 			ignoreSet[pkg] = true
 		}
+		for _, group := range pacConf.IgnoreGroup {
+			for _, pkg := range groupMembers(group) {
+				ignoreSet[pkg] = true
+			}
+		}
 	}
 	return ignoreSet
+}
+
+// groupMembers returns the package names belonging to a pacman group using
+// `pacman -Qg <group>`, whose output is one "<group> <pkgname>" line per member.
+// It returns nil when the group is unknown or pacman cannot be queried.
+func groupMembers(group string) []string {
+	out, err := exec.Command("pacman", "-Qg", group).Output()
+	if err != nil {
+		return nil
+	}
+	var members []string
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			members = append(members, fields[1])
+		}
+	}
+	return members
 }
 
 // filterNonIgnored returns the names of installed AUR packages that are not in the ignore set,
@@ -262,13 +295,18 @@ func buildIgnoreSet() map[string]bool {
 func filterNonIgnored(installed map[string]string, ignoreSet map[string]bool, symArrow string) []string {
 	names := make([]string, 0, len(installed))
 	for name := range installed {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var kept []string
+	for _, name := range names {
 		if ignoreSet[name] {
 			fmt.Printf("  %s  %s: skipping ignored package\n", symArrow, name)
 			continue
 		}
-		names = append(names, name)
+		kept = append(kept, name)
 	}
-	return names
+	return kept
 }
 
 // isVCSPackage checks if a package is a VCS (version control system) package
@@ -287,8 +325,15 @@ func isVCSPackage(name string) bool {
 // unsupported VCS, version without an embedded revision) we fall back to the
 // legacy "may have updates" warning rather than reporting a false result.
 func findOutdated(installed map[string]string, latest map[string]*aur.Package, ignoreSet map[string]bool, style config.Style) []aur.Package {
+	names := make([]string, 0, len(installed))
+	for name := range installed {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	var outdated []aur.Package
-	for name, installedVer := range installed {
+	for _, name := range names {
+		installedVer := installed[name]
 		if ignoreSet[name] {
 			continue
 		}

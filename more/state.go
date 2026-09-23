@@ -13,6 +13,11 @@ import (
 	"github.com/adrianpriza-ai/alps/platform"
 )
 
+var (
+	lockTimeout       = 10 * time.Second
+	lockRetryInterval = 100 * time.Millisecond
+)
+
 // OwnedItem represents a file/directory/service owned by a package
 type OwnedItem struct {
 	Path string `json:"path"`
@@ -50,7 +55,7 @@ func ReadInstalled() (map[string]InstalledRecord, error) {
 	if err := json.Unmarshal(data, &records); err != nil {
 		// Corrupt JSON — back up and reset so alps keeps working
 		backup := filepath.Clean(getInstalledFile() + ".bak")
-		_ = os.WriteFile(backup, data, 0644) // #nosec G703
+		_ = writeFileDurable(backup, data, 0644) // #nosec G703
 		fmt.Printf("  %s  installed.json is corrupt — backed up to %s, resetting.\n", currentStyle().SymWarn, backup)
 		return make(map[string]InstalledRecord), nil
 	}
@@ -189,9 +194,17 @@ func openAndLockFile(path string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
-		return nil, err
+	// Non-blocking attempt with a bounded retry so a hung process does not
+	// block state writes forever.
+	deadline := time.Now().Add(lockTimeout)
+	for {
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+			return f, nil
+		}
+		if time.Now().After(deadline) {
+			f.Close()
+			return nil, fmt.Errorf("timeout waiting for lock on %s", path)
+		}
+		time.Sleep(lockRetryInterval)
 	}
-	return f, nil
 }

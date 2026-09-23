@@ -186,7 +186,7 @@ func TestIsValidSha256(t *testing.T) {
 }
 
 func TestValidatePkgNameComponent(t *testing.T) {
-	valid := []string{"mytool", "nodejs-lts", "my_pkg", "1password", "lib+plus", "a.b"}
+	valid := []string{"mytool", "nodejs-lts", "my_pkg", "1password", "lib+plus", "a.b", "a@b"}
 	for _, name := range valid {
 		if err := platform.ValidatePkgName(name); err != nil {
 			t.Errorf("expected %q to be valid, got: %v", name, err)
@@ -195,7 +195,7 @@ func TestValidatePkgNameComponent(t *testing.T) {
 
 	invalid := []string{
 		"", "..", "../evil", "a/b", `a\b`, ".hidden",
-		"a b", "a@b", string(make([]byte, 256)),
+		"a b", string(make([]byte, 256)),
 	}
 	for _, name := range invalid {
 		if err := platform.ValidatePkgName(name); err == nil {
@@ -570,7 +570,7 @@ func TestDownloadToFileAtomicWrite(t *testing.T) {
 	runDownloadModes(t, content, func(t *testing.T, contentLength int64) {
 		ctx := NewMacroContext(e, "")
 		dest := filepath.Join(t.TempDir(), "output.bin")
-		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxDownloadSize, false)
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, expectedHash, maxDownloadSize, false)
 		if err != nil {
 			t.Fatalf("downloadToFile returned error: %v", err)
 		}
@@ -603,7 +603,7 @@ func TestDownloadToFileHashMismatchCleansUp(t *testing.T) {
 	runDownloadModes(t, content, func(t *testing.T, contentLength int64) {
 		ctx := NewMacroContext(e, "")
 		dest := filepath.Join(t.TempDir(), "mismatch.bin")
-		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxDownloadSize, false)
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, wrongHash, maxDownloadSize, false)
 		if err == nil {
 			t.Fatal("expected error on SHA256 mismatch, got nil")
 		}
@@ -627,7 +627,7 @@ func TestDownloadToFileFreeModeSkipsDigest(t *testing.T) {
 	runDownloadModes(t, content, func(t *testing.T, contentLength int64) {
 		ctx := NewMacroContext(e, "")
 		dest := filepath.Join(t.TempDir(), "free.bin")
-		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxDownloadSize, false)
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, "", maxDownloadSize, false)
 		if err != nil {
 			t.Fatalf("downloadToFile in free mode returned error: %v", err)
 		}
@@ -654,7 +654,7 @@ func TestDownloadToFileSizeLimit(t *testing.T) {
 		ctx := NewMacroContext(e, "")
 
 		dest := filepath.Join(t.TempDir(), "oversize.bin")
-		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxSize, false)
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, "", maxSize, false)
 		if err == nil {
 			t.Fatal("expected error for body larger than maxSize")
 		}
@@ -675,7 +675,7 @@ func TestDownloadToFileSizeLimit(t *testing.T) {
 		ctx := NewMacroContext(e, "")
 
 		dest := filepath.Join(t.TempDir(), "exact.bin")
-		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, maxSize, false)
+		_, err := downloadToFile(bytes.NewReader(content), dest, contentLength, ctx, "", maxSize, false)
 		if err != nil {
 			t.Fatalf("body of exactly maxSize bytes should be accepted: %v", err)
 		}
@@ -700,7 +700,7 @@ func TestDownloadToFileNoProgressOnPipe(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	_, err = downloadToFile(bytes.NewReader(content), dest, int64(len(content)), ctx, maxDownloadSize, false)
+	_, err = downloadToFile(bytes.NewReader(content), dest, int64(len(content)), ctx, "", maxDownloadSize, false)
 	w.Close()
 	os.Stdout = oldStdout
 
@@ -1016,5 +1016,19 @@ func TestExecuteInstallServiceDirDest(t *testing.T) {
 	}
 	if ctx.InstalledPaths[0].Path != "myapp.service" {
 		t.Errorf("installed path should be 'myapp.service', got %q", ctx.InstalledPaths[0].Path)
+	}
+}
+
+// TestExecuteSymlinkUsesSfnFlag verifies that SYMLINK uses "ln -sfn" so it can
+// atomically replace a symlink that points at a directory (I2).
+func TestExecuteSymlinkUsesSfnFlag(t *testing.T) {
+	ctx := NewMacroContext(&Entry{Name: "pkg"}, "")
+	m := Macro{Name: "SYMLINK", Args: []string{"/usr/local/bin/tool", "/usr/bin/tool"}}
+	cmd, err := executeSymlink(m, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(cmd, "ln -sfn") {
+		t.Errorf("command should use 'ln -sfn' for safe symlink replacement, got: %s", cmd)
 	}
 }

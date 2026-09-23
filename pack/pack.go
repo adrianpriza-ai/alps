@@ -2,26 +2,18 @@ package pack
 
 import (
 	"os/exec"
-	"strings"
 
+	"github.com/adrianpriza-ai/alps/internal/pkgregistry"
 	"github.com/adrianpriza-ai/alps/platform"
 )
 
 // Backend describes a native package manager.
-type Backend struct {
-	Name        string
-	Bin         string
-	Sudo        bool
-	CmdMap      map[string][]string
-	YesFlag     string
-	DryRunFlag  string
-	VerboseFlag string
-	QuietFlag   string
-	ForceFlag   string
-}
+type Backend = pkgregistry.Backend
 
-var registry = map[string]*Backend{} // backend name to Backend
-var detectionOrder = []string{"apt", "apt-get", "dnf", "pacman", "zypper", "apk", "brew"}
+// Flags holds all parsed alps meta-flags from user args.
+type Flags = pkgregistry.Flags
+
+var reg = pkgregistry.New([]string{"apt", "apt-get", "dnf", "pacman", "zypper", "apk", "brew"})
 
 // editSourcesBackends lists backends that support the edit-sources command.
 var editSourcesBackends = map[string]bool{
@@ -33,211 +25,13 @@ var editSourcesBackends = map[string]bool{
 	"apk":     true,
 }
 
-// Register adds a backend.
-func Register(b Backend) {
-	cp := b
-	registry[b.Name] = &cp
-}
-
-// Detect returns the first available backend.
-func Detect() *Backend {
-	for _, name := range detectionOrder {
-		b, ok := registry[name]
-		if !ok {
-			continue
-		}
-		if _, err := exec.LookPath(b.Bin); err == nil {
-			return b
-		}
-	}
-	return nil
-}
-
-// DetectName returns the detected backend name.
-func DetectName() string {
-	if b := Detect(); b != nil {
-		return b.Name
-	}
-	return ""
-}
-
-// NeedsSudo checks if backend requires sudo.
-func NeedsSudo(name string) bool {
-	if platform.IsTermux() {
-		return false
-	}
-	if b, ok := registry[name]; ok {
-		return b.Sudo
-	}
-	return false
-}
-
-// Lookup returns the command for a backend.
-func Lookup(backendName, verb string) (cmd []string, ok bool) {
-	b, found := registry[backendName]
-	if !found {
-		return nil, false
-	}
-	c, found := b.CmdMap[verb]
-	return c, found
-}
-
-// CommandSupported checks if a backend supports a specific command.
-func CommandSupported(backendName, verb string) bool {
-	b, found := registry[backendName]
-	if !found {
-		return false
-	}
-	if _, supported := b.CmdMap[verb]; supported {
-		return true
-	}
-	if verb == "edit-sources" {
-		return editSourcesBackends[backendName]
-	}
-	return false
-}
-
-// yesSupportedBackends lists backends where alps exposes -y / --noconfirm.
-// Only main package managers (apt, apt-get, pacman) are included per design.
-var yesSupportedBackends = map[string]bool{
-	"apt":     true,
-	"apt-get": true,
-	"pacman":  true,
-}
-
-// YesSupported returns true if the backend supports the alps -y flag.
-func YesSupported(backendName string) bool {
-	return yesSupportedBackends[backendName]
-}
-
-// GetYesFlag returns the native "assume yes" flag for a backend, or "" if none.
-func GetYesFlag(backendName string) string {
-	if b, ok := registry[backendName]; ok {
-		return b.YesFlag
-	}
-	return ""
-}
-
-// GetDryRunFlag returns the native dry-run / simulation flag for a backend, or "" if none.
-func GetDryRunFlag(backendName string) string {
-	if b, ok := registry[backendName]; ok {
-		return b.DryRunFlag
-	}
-	return ""
-}
-
-// Flags holds all parsed alps meta-flags from user args.
-type Flags struct {
-	DryRun    bool
-	NoConfirm bool
-	Verbose   bool
-	Quiet     bool
-	Force     bool
-}
-
-// ParseFlags splits raw args into package names and Flags struct.
-// Recognized alps flags: / -n simulate, no changes written, / -y skip confirmation prompts, / -v enable verbose output, / -q suppress non-error output, / -f force operation (skip safety checks).
-func ParseFlags(args []string) (pkgs []string, dryRun, noConfirm bool) {
-	for _, a := range args {
-		switch {
-		case a == "--dry-run" || a == "-n":
-			dryRun = true
-		case a == "--noconfirm" || a == "-y":
-			noConfirm = true
-		default:
-			// --verbose, --quiet, --force are consumed by ParseFlagsExt;
-			// pass through unknown args as package names.
-			pkgs = append(pkgs, a)
-		}
-	}
-	return
-}
-
-// ParseFlagsExt is the full flag parser returning a Flags struct.
-func ParseFlagsExt(args []string) (pkgs []string, f Flags) {
-	for _, a := range args {
-		switch {
-		case a == "--dry-run" || a == "-n":
-			f.DryRun = true
-		case a == "--noconfirm" || a == "-y":
-			f.NoConfirm = true
-		case a == "--verbose" || a == "-v":
-			f.Verbose = true
-		case a == "--quiet" || a == "-q":
-			f.Quiet = true
-		case a == "--force" || a == "-f":
-			f.Force = true
-		default:
-			pkgs = append(pkgs, a)
-		}
-	}
-	return
-}
-
-// BuildExtraFlags assembles the extra flags slice to append to a backend command based on the resolved Flags state.
-// Pass the backend name so the correct native flags are emitted.
-func BuildExtraFlags(backendName string, dryRun, noConfirm bool) []string {
-	return BuildExtraFlagsExt(backendName, Flags{DryRun: dryRun, NoConfirm: noConfirm})
-}
-
-// BuildExtraFlagsExt is the full version of BuildExtraFlags that accepts a Flags struct.
-func BuildExtraFlagsExt(backendName string, f Flags) []string {
-	b, ok := registry[backendName]
-	if !ok {
-		return nil
-	}
-	var flags []string
-
-	if f.DryRun && b.DryRunFlag != "" {
-		flags = appendUniq(flags, b.DryRunFlag)
-	}
-	if f.NoConfirm && YesSupported(backendName) && b.YesFlag != "" {
-		flags = appendUniq(flags, b.YesFlag)
-	}
-	if f.Verbose && b.VerboseFlag != "" {
-		flags = appendUniq(flags, b.VerboseFlag)
-	}
-	if f.Quiet && b.QuietFlag != "" {
-		flags = appendUniq(flags, b.QuietFlag)
-	}
-	if f.Force && b.ForceFlag != "" {
-		flags = appendUniq(flags, b.ForceFlag)
-	}
-	return flags
-}
-
-// appendUniq appends s to slice only if not already present (case-insensitive).
-func appendUniq(flags []string, s string) []string {
-	for _, existing := range flags {
-		if strings.EqualFold(existing, s) {
-			return flags
-		}
-	}
-	return append(flags, s)
-}
-
-// AllNames returns all registered backend names.
-func AllNames() []string {
-	out := make([]string, 0, len(detectionOrder))
-	for _, name := range detectionOrder {
-		if _, ok := registry[name]; ok {
-			out = append(out, name)
-		}
-	}
-	return out
-}
-
-// DetectRealApt returns "apt" or "apt-get".
-func DetectRealApt() string {
-	if _, err := exec.LookPath("apt"); err == nil {
-		return "apt"
-	}
-	return "apt-get"
-}
-
 func init() {
+	reg.SetExtraVerbs(func(backendName, verb string) bool {
+		return verb == "edit-sources" && editSourcesBackends[backendName]
+	})
+
 	// apt and apt-get
-	Register(Backend{
+	reg.Register(Backend{
 		Name:        "apt",
 		Bin:         "apt",
 		Sudo:        true,
@@ -245,7 +39,7 @@ func init() {
 		DryRunFlag:  "--dry-run",
 		VerboseFlag: "-V",
 		QuietFlag:   "-qq",
-		ForceFlag:   "--force-yes",
+		ForceFlag:   []string{"--allow-downgrades", "--allow-change-held-packages"},
 		CmdMap: map[string][]string{
 			"install":      {"apt", "install"},
 			"remove":       {"apt", "remove"},
@@ -263,7 +57,7 @@ func init() {
 	})
 
 	// apt-get
-	Register(Backend{
+	reg.Register(Backend{
 		Name:        "apt-get",
 		Bin:         "apt-get",
 		Sudo:        true,
@@ -271,7 +65,7 @@ func init() {
 		DryRunFlag:  "--dry-run",
 		VerboseFlag: "-V",
 		QuietFlag:   "-qq",
-		ForceFlag:   "--force-yes",
+		ForceFlag:   []string{"--allow-downgrades", "--allow-change-held-packages"},
 		CmdMap: map[string][]string{
 			"install":      {"apt-get", "install"},
 			"remove":       {"apt-get", "remove"},
@@ -289,7 +83,7 @@ func init() {
 	})
 
 	// dnf
-	Register(Backend{
+	reg.Register(Backend{
 		Name:        "dnf",
 		Bin:         "dnf",
 		Sudo:        true,
@@ -297,7 +91,7 @@ func init() {
 		DryRunFlag:  "--assumeno",
 		VerboseFlag: "-v",
 		QuietFlag:   "-q",
-		ForceFlag:   "--skip-broken",
+		ForceFlag:   nil,
 		CmdMap: map[string][]string{
 			"install":      {"dnf", "install"},
 			"remove":       {"dnf", "remove"},
@@ -315,15 +109,17 @@ func init() {
 	})
 
 	// pacman
-	Register(Backend{
-		Name:        "pacman",
-		Bin:         "pacman",
-		Sudo:        true,
-		YesFlag:     "--noconfirm",
+	reg.Register(Backend{
+		Name:    "pacman",
+		Bin:     "pacman",
+		Sudo:    true,
+		YesFlag: "--noconfirm",
+		// pacman(8) documents --print under transaction options applying to
+		// -S, -R and -U, so -p is valid for remove and purge verbs too.
 		DryRunFlag:  "-p",
 		VerboseFlag: "-v",
 		QuietFlag:   "-q",
-		ForceFlag:   "--overwrite=*",
+		ForceFlag:   nil, // --overwrite=* is too broad to bind to alps -f
 		CmdMap: map[string][]string{
 			"install":      {"pacman", "-S"},
 			"remove":       {"pacman", "-R"},
@@ -339,15 +135,15 @@ func init() {
 	})
 
 	// zypper
-	Register(Backend{
+	reg.Register(Backend{
 		Name:        "zypper",
 		Bin:         "zypper",
 		Sudo:        true,
-		YesFlag:     "--non-interactive",
+		YesFlag:     "--no-confirm",
 		DryRunFlag:  "--dry-run",
 		VerboseFlag: "-v",
 		QuietFlag:   "-q",
-		ForceFlag:   "--force",
+		ForceFlag:   []string{"--force-resolution"},
 		CmdMap: map[string][]string{
 			"install":      {"zypper", "install"},
 			"remove":       {"zypper", "remove"},
@@ -358,14 +154,14 @@ func init() {
 			"search":       {"zypper", "search"},
 			"show":         {"zypper", "info"},
 			"list":         {"zypper", "packages", "--installed-only"},
-			"autoremove":   {"zypper", "remove", "--clean-deps", "--no-confirm"},
+			"autoremove":   {"zypper", "remove", "--clean-deps"},
 			"autoclean":    {"zypper", "clean", "--all"},
 			"clean":        {"zypper", "clean", "--all"},
 		},
 	})
 
 	// apk
-	Register(Backend{
+	reg.Register(Backend{
 		Name:        "apk",
 		Bin:         "apk",
 		Sudo:        true,
@@ -373,7 +169,7 @@ func init() {
 		DryRunFlag:  "--simulate",
 		VerboseFlag: "-v",
 		QuietFlag:   "-q",
-		ForceFlag:   "--force-overwrite",
+		ForceFlag:   nil,
 		CmdMap: map[string][]string{
 			"install":      {"apk", "add"},
 			"remove":       {"apk", "del"},
@@ -391,7 +187,7 @@ func init() {
 	})
 
 	// brew (Homebrew)
-	Register(Backend{
+	reg.Register(Backend{
 		Name:        "brew",
 		Bin:         "brew",
 		Sudo:        false,
@@ -399,7 +195,7 @@ func init() {
 		DryRunFlag:  "",
 		VerboseFlag: "-v",
 		QuietFlag:   "-q",
-		ForceFlag:   "--force",
+		ForceFlag:   nil,
 		CmdMap: map[string][]string{
 			"install":      {"brew", "install"},
 			"remove":       {"brew", "uninstall"},
@@ -415,4 +211,98 @@ func init() {
 			"clean":        {"brew", "cleanup"},
 		},
 	})
+}
+
+// Register adds a backend.
+func Register(b Backend) { reg.Register(b) }
+
+// Detect returns the first available backend.
+func Detect() *Backend { return reg.Detect() }
+
+// DetectName returns the detected backend name.
+func DetectName() string {
+	if b := Detect(); b != nil {
+		return b.Name
+	}
+	return ""
+}
+
+// NeedsSudo checks if backend requires sudo.
+func NeedsSudo(name string) bool {
+	if platform.IsTermux() {
+		return false
+	}
+	return reg.Sudo(name)
+}
+
+// Lookup returns a copy of the command for a backend so callers appending
+// to the result cannot corrupt the registry's backing array.
+func Lookup(backendName, verb string) (cmd []string, ok bool) {
+	return reg.Lookup(backendName, verb)
+}
+
+// CommandSupported checks if a backend supports a specific command.
+func CommandSupported(backendName, verb string) bool {
+	return reg.CommandSupported(backendName, verb)
+}
+
+// YesSupported returns true if the backend supports the alps -y flag.
+func YesSupported(backendName string) bool { return reg.YesSupported(backendName) }
+
+// UnsupportedFlagWarnings returns warnings for alps flags the backend cannot
+// honour. Messages are printed by the caller (pack cannot import ui).
+func UnsupportedFlagWarnings(backendName string, noConfirm, force bool) []string {
+	return reg.UnsupportedFlagWarnings(backendName, noConfirm, force)
+}
+
+// GetYesFlag returns the native "assume yes" flag for a backend, or "" if none.
+func GetYesFlag(backendName string) string { return reg.GetYesFlag(backendName) }
+
+// ForceFlags returns the native flags implementing alps -f for a backend.
+// An empty result means the backend has no equivalent and -f is ignored.
+func ForceFlags(backendName string) []string { return reg.ForceFlags(backendName) }
+
+// GetDryRunFlag returns the native dry-run / simulation flag for a backend, or "" if none.
+func GetDryRunFlag(backendName string) string { return reg.GetDryRunFlag(backendName) }
+
+// DryRunEmitted reports whether a backend emits a native simulation flag.
+// Backends without one cannot show a package plan in dry-run mode.
+func DryRunEmitted(backendName string) bool { return reg.DryRunEmitted(backendName) }
+
+// ParseFlags splits raw args into package names and Flags struct.
+// Recognized alps flags: -n simulate, no changes written; -y skip
+// confirmation prompts. --verbose, --quiet and --force are consumed by
+// ParseFlagsExt.
+func ParseFlags(args []string) (pkgs []string, dryRun, noConfirm bool) {
+	return pkgregistry.ParseFlags(args)
+}
+
+// ParseFlagsExt is the full flag parser returning a Flags struct.
+func ParseFlagsExt(args []string) (pkgs []string, f Flags) {
+	return pkgregistry.ParseFlagsExt(args)
+}
+
+// BuildExtraFlags assembles the extra flags slice to append to a backend command based on the resolved Flags state.
+// Pass the backend name so the correct native flags are emitted.
+func BuildExtraFlags(backendName string, dryRun, noConfirm bool) []string {
+	return reg.BuildExtraFlags(backendName, dryRun, noConfirm)
+}
+
+// BuildExtraFlagsExt is the full version of BuildExtraFlags that accepts a Flags struct.
+// Dry-run is print-only (the runner never executes), so no native dry-run
+// flag is appended; callers that genuinely execute a simulation use
+// GetDryRunFlag directly.
+func BuildExtraFlagsExt(backendName string, f Flags) []string {
+	return reg.BuildExtraFlagsExt(backendName, f)
+}
+
+// AllNames returns all registered backend names.
+func AllNames() []string { return reg.AllNames() }
+
+// DetectRealApt returns "apt" or "apt-get".
+func DetectRealApt() string {
+	if _, err := exec.LookPath("apt"); err == nil {
+		return "apt"
+	}
+	return "apt-get"
 }

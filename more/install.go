@@ -2,6 +2,7 @@ package more
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/adrianpriza-ai/alps/config"
@@ -65,6 +66,7 @@ func InstallFromGitHub(repoPath string, cfg *config.Config) error {
 // Remove runs remove commands for a package.
 func Remove(e *Entry, cfg *config.Config) error {
 	priv.Invalidate()
+	defer cleanupTempFiles()
 
 	rec, isInstalled := GetInstalled(e.Name)
 
@@ -74,7 +76,6 @@ func Remove(e *Entry, cfg *config.Config) error {
 		if isInstalled && len(rec.OwnedItems) > 0 {
 			// Even if remove commands fail, try to remove tracked items
 			cleanupOwnedItems(rec.OwnedItems)
-			cleanupTempFiles()
 			return UnmarkInstalled(e.Name)
 		}
 		return err
@@ -106,8 +107,6 @@ func Remove(e *Entry, cfg *config.Config) error {
 	if isInstalled {
 		cleanupOwnedItems(rec.OwnedItems)
 	}
-
-	cleanupTempFiles()
 
 	if isInstalled {
 		return UnmarkInstalled(e.Name)
@@ -226,7 +225,13 @@ func UpgradeAll(cfg *config.Config) error {
 	}
 
 	var upgraded, upToDate, failed, stale int
+	names := make([]string, 0, len(records))
 	for name := range records {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
 		rec := records[name]
 
 		// Remote-sourced (github/gitlab): upgrade by re-fetching ALPSMORE.
@@ -290,6 +295,7 @@ func WarnReducedSafety(e *Entry, rec InstalledRecord, cfg *config.Config) {
 // Purge removes a package and its config/data files.
 func Purge(name string, cfg *config.Config) error {
 	priv.Invalidate()
+	defer cleanupTempFiles()
 
 	e, _, err := RemovalEntry(name, cfg)
 	if err != nil {
@@ -321,8 +327,6 @@ func Purge(name string, cfg *config.Config) error {
 	if isInstalled {
 		cleanupOwnedItems(rec.OwnedItems)
 	}
-
-	cleanupTempFiles()
 
 	if isInstalled {
 		return UnmarkInstalled(name)
@@ -436,10 +440,20 @@ func resolveServerIfNeeded(e *Entry) (string, error) {
 // shared by install and upgrade flows, then records the installed state with
 // the owned items collected during execution.
 func runOperation(e *Entry, op platform.OperationType) error {
+	defer cleanupTempFiles()
+
 	// Install requires explicit commands; upgrades tolerate entries whose
 	// ALPSMORE file has no commands in this revision.
 	if op == platform.OperationInstall && len(e.CmdLines) == 0 {
 		return fmt.Errorf("package %q has no install commands", e.Name)
+	}
+
+	// Upgrades re-resolve the entry from the repo cache or a remote ALPSMORE, so
+	// validate it here too — installs are already validated by the caller.
+	if op == platform.OperationUpgrade {
+		if err := Validate(e); err != nil {
+			return err
+		}
 	}
 
 	server, err := resolveServerIfNeeded(e)
@@ -497,8 +511,6 @@ func runOperation(e *Entry, op platform.OperationType) error {
 			cleanupOwnedItems(stale)
 		}
 	}
-
-	cleanupTempFiles()
 
 	return MarkInstalledEntryWithOwnedItems(e, newOwned)
 }

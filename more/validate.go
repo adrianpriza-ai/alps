@@ -169,6 +169,9 @@ func parseSectionTag(line string, e *Entry, inCmd, inRemove, inUpgrade, inPurge,
 		*inSumsBlock = true
 		e.usedSumsBlock = true
 	case "sha256sums_end":
+		if !*inSumsBlock {
+			return true, fmt.Errorf("sha256sums_end in entry %q without a matching sha256sums_begin", e.Name)
+		}
 		if e.pendingSumsFile != "" {
 			return true, fmt.Errorf("orphan {FILE} %q in sha256sums block (missing {SUMS} before sha256sums_end)", e.pendingSumsFile)
 		}
@@ -194,7 +197,7 @@ func (e *Entry) parseSumsBlockLine(line string) error {
 		return fmt.Errorf("invalid line in sha256sums block %q (unclosed macro)", line)
 	}
 	name := strings.ToUpper(strings.TrimSpace(line[1:end]))
-	value := strings.TrimSpace(line[end+1:])
+	value := stripInlineComment(strings.TrimSpace(line[end+1:]))
 
 	switch name {
 	case "FILE":
@@ -279,6 +282,27 @@ func parseSizeToken(token string) (maxBytes int64, unlimited bool, err error) {
 	return int64(math.Round(bytes)), false, nil
 }
 
+// stripInlineComment removes a trailing "# ..." comment from a metadata value.
+// A '#' only starts a comment when it is the first character or preceded by
+// whitespace and is not inside single or double quotes, so filenames and hashes
+// that legitimately contain '#' survive.
+func stripInlineComment(s string) string {
+	inSingle, inDouble := false, false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+		case c == '#' && !inSingle && !inDouble:
+			if i == 0 || s[i-1] == ' ' || s[i-1] == '\t' {
+				return strings.TrimSpace(s[:i])
+			}
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
 // stripMatchedQuotes removes a single matching outer pair of double or single
 // quotes from a filename. Unmatched quotes are left untouched.
 func stripMatchedQuotes(s string) string {
@@ -317,7 +341,7 @@ func parseKeyValue(line string, e *Entry) (bool, error) {
 		return false, nil
 	}
 	key := strings.TrimSpace(strings.ToLower(line[:idx]))
-	val := strings.TrimSpace(line[idx+1:])
+	val := stripInlineComment(strings.TrimSpace(line[idx+1:]))
 
 	switch key {
 	case "desc":
@@ -380,7 +404,7 @@ func (e *Entry) addSHA256Sums(val string) error {
 			if len(e.SHA256ByName) > 0 {
 				return fmt.Errorf("cannot mix named and positional sha256sums entries (%d named hashes already declared)", len(e.SHA256ByName))
 			}
-			e.SHA256Sums = append(e.SHA256Sums, field)
+			e.SHA256Sums = append(e.SHA256Sums, strings.ToLower(field))
 		} else {
 			return fmt.Errorf("invalid sha256sums entry %q (want a 64-hex hash or name=hash)", field)
 		}
@@ -396,24 +420,25 @@ func (e *Entry) addNamedSum(name, hash string) error {
 	if _, exists := e.SHA256ByName[name]; exists {
 		return fmt.Errorf("duplicate sha256sums entry for %q", name)
 	}
-	e.SHA256ByName[name] = hash
+	e.SHA256ByName[name] = strings.ToLower(hash)
 	return nil
 }
 
 // parseSumsContinuation parses a paste-format checksum line ("hash  filename",
-// the output shape of sha256sum) into a filename → digest pair. A trailing '*'
-// binary marker from "sha256sum -b" is tolerated. ok is false for anything that
-// is not a checksum line so the caller can fall back to normal line handling.
+// the output shape of sha256sum) into a filename → digest pair. In binary mode
+// ("sha256sum -b") the filename is prefixed with a '*', which is stripped here.
+// ok is false for anything that is not a checksum line so the caller can fall
+// back to normal line handling.
 func parseSumsContinuation(line string) (hash, name string, ok bool) {
 	fields := strings.Fields(line)
 	if len(fields) < 2 {
 		return "", "", false
 	}
-	hash = strings.TrimSuffix(fields[0], "*")
+	hash = fields[0]
 	if !isValidSha256(hash) {
 		return "", "", false
 	}
-	name = strings.Join(fields[1:], " ")
+	name = strings.TrimPrefix(strings.Join(fields[1:], " "), "*")
 	return hash, name, true
 }
 
@@ -455,16 +480,18 @@ func Validate(e *Entry) error {
 }
 
 // unusedNamedChecksums returns the destination filenames declared in the
-// entry's named sha256sums that no {DOWNLOAD} or {BASH_RUN} in the install or
-// upgrade commands ever downloads. Matching mirrors runtime behavior: the FILE
+// entry's named sha256sums that no {DOWNLOAD} or {BASH_RUN} in the install,
+// upgrade, remove, or purge commands ever downloads. Matching mirrors runtime behavior: the FILE
 // argument of {DOWNLOAD} if given, otherwise the URL basename; for {BASH_RUN}
 // the URL basename. Macros with placeholders that cannot be resolved are
 // skipped rather than guessed at.
 func unusedNamedChecksums(e *Entry) []string {
-	if len(e.SHA256ByName) == 0 {
+	// Keys are expanded the same way download destinations are, so a declared
+	// "tool-{ARCH}" matches the resolved "tool-x86_64" on the download side.
+	ctx := NewMacroContext(e, "")
+	if len(ctx.SHA256ByName) == 0 {
 		return nil
 	}
-	ctx := NewMacroContext(e, "")
 	downloaded := make(map[string]bool)
 
 	collect := func(lines []string) {
@@ -508,9 +535,11 @@ func unusedNamedChecksums(e *Entry) []string {
 	}
 	collect(e.CmdLines)
 	collect(e.UpgradeLines)
+	collect(e.RemoveLines)
+	collect(e.PurgeLines)
 
 	var unused []string
-	for name := range e.SHA256ByName {
+	for name := range ctx.SHA256ByName {
 		if !downloaded[name] {
 			unused = append(unused, name)
 		}

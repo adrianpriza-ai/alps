@@ -81,39 +81,50 @@ func NewMacroContext(e *Entry, server string) *MacroContext {
 	distro, _ := detectDistro()
 	os := runtime.GOOS
 
-	if e == nil {
-		return &MacroContext{
-			PackageName:      "",
-			Version:          "",
-			Server:           server,
-			Arch:             platform.NormalizeArch(runtime.GOARCH),
-			OS:               os,
-			Distro:           distro,
-			Safety:           "",
-			SHA256Sums:       []string{},
-			SHA256ByName:     map[string]string{},
-			SHA256SizeByName: map[string]int64{},
-			SHA256Index:      0,
-			InstalledPaths:   []InstalledPath{},
-			BuildDir:         "",
-			DistroVersion:    distroVer,
-		}
-	}
-	return &MacroContext{
-		PackageName:      e.Name,
-		Version:          e.Version,
+	ctx := &MacroContext{
 		Server:           server,
 		Arch:             platform.NormalizeArch(runtime.GOARCH),
 		OS:               os,
 		Distro:           distro,
-		Safety:           e.Safety,
-		SHA256Sums:       e.SHA256Sums,
-		SHA256ByName:     e.SHA256ByName,
-		SHA256SizeByName: e.SHA256SizeByName,
+		SHA256Sums:       []string{},
+		SHA256ByName:     map[string]string{},
+		SHA256SizeByName: map[string]int64{},
 		SHA256Index:      0,
 		InstalledPaths:   []InstalledPath{},
 		BuildDir:         "",
 		DistroVersion:    distroVer,
+	}
+	if e != nil {
+		ctx.PackageName = e.Name
+		ctx.Version = e.Version
+		ctx.Safety = e.Safety
+		ctx.SHA256Sums = e.SHA256Sums
+		ctx.SHA256ByName = e.SHA256ByName
+		ctx.SHA256SizeByName = e.SHA256SizeByName
+	}
+	expandChecksumKeys(ctx)
+	return ctx
+}
+
+// expandChecksumKeys rewrites checksum keys so they match destination
+// filenames after placeholder expansion. {ARCH}/{VERSION}/... in a declared
+// filename would otherwise never equal the expanded download basename.
+// Unresolvable tokens stay literal (stripUnknown=false) so two different files
+// cannot collapse onto the same key.
+func expandChecksumKeys(ctx *MacroContext) {
+	if len(ctx.SHA256ByName) > 0 {
+		m := make(map[string]string, len(ctx.SHA256ByName))
+		for k, v := range ctx.SHA256ByName {
+			m[filepath.Base(replaceVars(k, ctx, false))] = v
+		}
+		ctx.SHA256ByName = m
+	}
+	if len(ctx.SHA256SizeByName) > 0 {
+		m := make(map[string]int64, len(ctx.SHA256SizeByName))
+		for k, v := range ctx.SHA256SizeByName {
+			m[filepath.Base(replaceVars(k, ctx, false))] = v
+		}
+		ctx.SHA256SizeByName = m
 	}
 }
 

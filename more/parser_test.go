@@ -261,7 +261,7 @@ func TestRunScratchDirIsolation(t *testing.T) {
 	if dir1 == "" {
 		t.Fatal("run scratch dir was not created")
 	}
-	script1, err := writeTempScript([]string{"true"}, 0)
+	script1, err := writeTempScript([]string{"true"})
 	if err != nil {
 		t.Fatalf("writeTempScript failed: %v", err)
 	}

@@ -66,6 +66,7 @@ cmd_end
 | `gitee.com` | Gitee | `alps repo install gitee.com/user/repo@main` |
 | `gitcode.com` | GitCode | `alps repo install gitcode.com/user/repo@main` |
 | `atomgit.com` | AtomGit | `alps repo install atomgit.com/user/repo@main` |
+| `cnb.cool` | CNB (Cloud Native Build) | `alps repo install cnb.cool/group/repo@main` |
 | `huggingface.co` | Hugging Face | `alps repo install huggingface.co/user/repo@main` |
 
 Branch must always be explicit (`@main`, `@master`, `@dev`, etc.)
@@ -206,6 +207,7 @@ cmd_end
 - Uses `fakeroot` during build if available
 - Defers `{INSTALL_*}` and `{SYMLINK}` until after the build completes
 - Auto-generates remove commands from macros, so no manual `remove_begin` is needed
+- Strips `sudo`/`doas`/`pkexec`/`su -c` prefixes from install and upgrade commands (including after `&&`, `||`, `;`, `|`), plus their common flags — alps handles escalation itself, so don't write it into commands
 - Recommended for most packages
 
 ### Free Mode
@@ -214,6 +216,7 @@ cmd_end
 - File operations execute immediately
 - Requires manual `remove_begin`/`remove_end` blocks
 - Downloads without `sha256sums` are allowed; install prompt warns of reduced safety
+- `sudo` prefixes are kept as written (only strict-mode installs/upgrades strip them)
 
 ---
 
@@ -264,6 +267,7 @@ Execute after the build phase completes, using `sudo` for real system access (sk
 | `{REMOVE_USER}` | `{REMOVE_USER} USERNAME` | Remove system user (`userdel`) |
 
 **Notes:**
+- A `DEST` that is a bare filename (no `/`, not absolute) is created inside the macro's default directory: `{INSTALL_BIN} tool renamed-tool` installs to `/usr/bin/renamed-tool`.
 - Service/user macros are no-ops on Termux (no systemd/useradd).
 - `{CURL_RUN}` is deprecated; use `{BASH_RUN}` instead.
 
@@ -360,6 +364,11 @@ sha256sums =
   another64charhash...  install.sh
 ```
 
+The binary form (`sha256sum -b`, `hash *filename`) is accepted too: the `*`
+marker is stripped from the filename. Pasted lines are taken verbatim, so remove
+any trailing `# ...` comment before pasting — comments are only stripped from
+metadata values and from `{FILE}`/`{SUMS}`/`{SIZE}` block lines.
+
 ### How matching works
 
 `{DOWNLOAD} URL [FILE]` is matched by the destination filename: the `FILE`
@@ -367,15 +376,16 @@ argument if given, otherwise the URL's basename. `{BASH_RUN} URL` is matched by
 the URL's basename (which is also the saved script name). If a URL has query
 parameters, give it an explicit `FILE` argument and match that name.
 
+Checksum names are **basenames**. Placeholders are expanded in a declared name
+before matching, so `{FILE} tool-{ARCH}` matches a download to `tool-x86_64`.
+Use only placeholders that are known at validation time; `{PKG_DIR}` and
+`{SERVER}` are not yet resolved when checksum names are expanded and must not
+appear in a `{FILE}` or `sha256sums` name.
+
 Strict mode (default) requires checksums: any `{DOWNLOAD}` or `{BASH_RUN}`
 whose filename has no matching entry is rejected before anything is fetched. A
 digest mismatch fails the installation. Free mode allows downloads without
-checksums but shows a reduced-safety warning on install.
-
-Validation warns if a strict-mode entry declares a named checksum whose
-filename never matches any `{DOWNLOAD}` or `{BASH_RUN}` in its install or
-upgrade commands: usually a stale entry left after editing, or a typo in the
-filename mapping.
+checksums but shows a reduced-safety warning on install.Validation warns if a strict-mode entry declares a named checksum whose filename never matches any `{DOWNLOAD}` or `{BASH_RUN}` in its install, upgrade, remove or purge commands: usually a stale entry left after editing, or a typo in the filename mapping.
 
 ### Legacy positional format
 
@@ -414,6 +424,9 @@ sha256sum file1.tar.gz file2.tar.gz install.sh
 Paste that output directly below `sha256sums =`; the pairs match by filename,
 so order does not matter. (To use the one-line `filename=hash` form instead,
 join the same pairs with commas.)
+
+Digest case does not matter: uppercase or mixed-case hashes are normalized to
+lowercase when the manifest is parsed.
 
 ---
 
@@ -533,6 +546,11 @@ remove_begin
 remove_end
 ```
 
+**Removal privileges:** commands in `remove_begin`/`purge_begin` always run in the
+privileged pass (`sudo`/`doas`/`pkexec` on Linux; none on Termux, which owns its
+prefix), regardless of safety mode — they act on installed system files. Don't
+write a `sudo` prefix in these blocks; alps escalates for you.
+
 ---
 
 ## Automatic Owned Items Tracking
@@ -604,6 +622,9 @@ Checks before install:
 4. `cmd_begin`/`cmd_end` defined (required)
 5. **Strict mode**: `remove_begin` optional; auto-generated from macros
 6. **Free mode**: `remove_begin`/`remove_end` required
+
+The same checks re-run on every `alps repo upgrade`, so a package cannot be
+upgraded to a revision that drops your architecture, distro or dependencies.
 
 Safety features:
 - Strict mode rejects dangerous patterns (`rm -rf /`, etc.)

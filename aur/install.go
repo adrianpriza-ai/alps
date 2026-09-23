@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -19,9 +20,11 @@ import (
 
 // installPlan holds resolved install work.
 type installPlan struct {
-	AURPackages   []*Package // in build order (deps first)
-	RepoDeps      []string   // installed from pacman before building
-	MakeDepsAdded []string   // makedeps not pre-installed; offered for removal after
+	AURPackages   []*Package        // in build order (deps first)
+	RepoDeps      []string          // installed from pacman before building
+	MakeDepsAdded []string          // makedeps not pre-installed; offered for removal after
+	ReviewedHeads map[string]string // pkgName -> git HEAD shown to the user during review
+	SyncedRepos   map[string]bool   // pkgName -> true if already synced in prefetch
 }
 
 type builtPackage struct {
@@ -77,9 +80,11 @@ func Install(pkgNames []string, noConfirm bool) error {
 	if err != nil {
 		return err
 	}
-	if err := collectUserInputs(plan, noConfirm); err != nil {
+	reviewed, err := collectUserInputs(plan, noConfirm)
+	if err != nil {
 		return err
 	}
+	plan.ReviewedHeads = reviewed
 	return executeInstallPlan(plan, noConfirm)
 }
 
@@ -261,34 +266,36 @@ func printInstallSummary(plan *installPlan, warn string) {
 // focused git diff of what changed instead of wading through the entire
 // PKGBUILD again — much harder to miss a malicious change in a diff.
 // Fresh installs (no prior checkout) fall back to the full-file review.
-func reviewAURPKGBUILDs(plan *installPlan, arrow string) error {
+func reviewAURPKGBUILDs(plan *installPlan, arrow string) (map[string]string, error) {
+	reviewed := make(map[string]string)
 	if readYesNo(fmt.Sprintf("  %s Review PKGBUILDs before building?", arrow), false) {
 		for _, p := range plan.AURPackages {
 			pkgDir, err := aurCacheDir(p.Name)
 			if err != nil {
-				return err
+				return reviewed, err
 			}
 			// Capture the pre-sync HEAD so we can tell whether this is an
 			// upgrade with actual repository changes.
 			oldHead := gitHead(pkgDir)
 			if err := cloneAUR(p, pkgDir); err != nil {
-				return err
+				return reviewed, err
 			}
+			reviewed[p.Name] = gitHead(pkgDir)
 			if oldHead != "" && oldHead != gitHead(pkgDir) {
 				shown, err := reviewPKGBUILDUpdate(pkgDir, oldHead, arrow)
 				if err != nil {
-					return err
+					return reviewed, err
 				}
 				if shown {
 					continue // change set was reviewed; skip the full-file dump
 				}
 			}
 			if err := reviewPKGBUILD(filepath.Join(pkgDir, "PKGBUILD")); err != nil {
-				return err
+				return reviewed, err
 			}
 		}
 	}
-	return nil
+	return reviewed, nil
 }
 
 // gitHead returns the current HEAD commit of the git repository at dir, or
@@ -299,6 +306,32 @@ func gitHead(dir string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// shortHead truncates a git commit hash for display in messages.
+func shortHead(head string) string {
+	if len(head) > 12 {
+		return head[:12]
+	}
+	return head
+}
+
+// verifyReviewedHeads checks that every reviewed checkout is still at the
+// revision the user approved, returning an error naming the first package
+// that moved. Packages without a recorded review are not checked.
+func verifyReviewedHeads(reviewed map[string]string) error {
+	for pkgName, reviewedHead := range reviewed {
+		pkgDir, err := aurCacheDir(pkgName)
+		if err != nil {
+			return err
+		}
+		current := gitHead(pkgDir)
+		if current != reviewedHead {
+			return fmt.Errorf("%s: PKGBUILD changed after review (reviewed %s, found %s); re-run the install",
+				pkgName, shortHead(reviewedHead), shortHead(current))
+		}
+	}
+	return nil
 }
 
 // reviewPKGBUILDUpdate presents a diff-based review of an upgraded package:
@@ -340,8 +373,9 @@ func reviewPKGBUILDUpdate(pkgDir, oldHead, arrow string) (bool, error) {
 	return true, nil
 }
 
-// collectUserInputs gathers confirmations before building.
-func collectUserInputs(plan *installPlan, noConfirm bool) error {
+// collectUserInputs gathers confirmations before building and returns the
+// git HEAD of each AUR checkout as it was shown to the user during review.
+func collectUserInputs(plan *installPlan, noConfirm bool) (map[string]string, error) {
 	_, warn, arrow := configSymbols()
 
 	fmt.Println()
@@ -352,11 +386,12 @@ func collectUserInputs(plan *installPlan, noConfirm bool) error {
 
 	// --noconfirm: show the plan (above) but skip interactive prompts.
 	if noConfirm {
-		return nil
+		return map[string]string{}, nil
 	}
 
-	if err := reviewAURPKGBUILDs(plan, arrow); err != nil {
-		return err
+	reviewed, err := reviewAURPKGBUILDs(plan, arrow)
+	if err != nil {
+		return reviewed, err
 	}
 
 	label := "Proceed with install?"
@@ -364,9 +399,9 @@ func collectUserInputs(plan *installPlan, noConfirm bool) error {
 		label = fmt.Sprintf("Proceed with all %d builds?", len(plan.AURPackages))
 	}
 	if !readYesNo(fmt.Sprintf("  %s %s", arrow, label), true) {
-		return fmt.Errorf("install cancelled by user")
+		return reviewed, fmt.Errorf("install cancelled by user")
 	}
-	return nil
+	return reviewed, nil
 }
 
 // installRepoDeps installs pacman repository dependencies before building.
@@ -461,7 +496,15 @@ func executeInstallPlan(plan *installPlan, noConfirm bool) error {
 	// Fetch/clone every planned AUR repository up front, in parallel (#19),
 	// so the sequential build loop below starts with all sources in place
 	// instead of paying a network round-trip before each build.
-	if err := prefetchAURRepos(plan.AURPackages); err != nil {
+	synced, err := prefetchAURRepos(plan.AURPackages)
+	if err != nil {
+		return err
+	}
+	plan.SyncedRepos = synced
+
+	// The fetch above may have moved a checkout past the revision the user
+	// reviewed; refuse to build anything that is no longer what was approved.
+	if err := verifyReviewedHeads(plan.ReviewedHeads); err != nil {
 		return err
 	}
 
@@ -471,7 +514,7 @@ func executeInstallPlan(plan *installPlan, noConfirm bool) error {
 	// can cause resource contention without sandboxing. Parallel builds
 	// could be added behind a flag in the future.
 	for _, pkg := range plan.AURPackages {
-		pkgDir, err := buildAndInstall(pkg, noConfirm)
+		pkgDir, err := buildAndInstall(pkg, noConfirm, plan.SyncedRepos)
 		if err != nil {
 			return fmt.Errorf("failed to build %s: %w", pkg.Name, err)
 		}
@@ -499,7 +542,8 @@ const prefetchWorkers = 8
 // prefetchAURRepos clones or updates every package's AUR checkout in
 // parallel. Any failure aborts the plan before any build starts — better to
 // fail fast than to compile for minutes and then discover a broken source.
-func prefetchAURRepos(pkgs []*Package) error {
+// Returns a map of package names that were successfully synced.
+func prefetchAURRepos(pkgs []*Package) (map[string]bool, error) {
 	return prefetchRepos(pkgs, syncAURRepo)
 }
 
@@ -510,9 +554,10 @@ type repoSyncFunc func(pkgName, pkgDir string, quiet bool) error
 // worker pool. Output stays quiet during the fetches (parallel progress
 // lines would interleave into garbage); results are reported sequentially
 // once every worker has finished.
-func prefetchRepos(pkgs []*Package, syncFn repoSyncFunc) error {
+// Returns a map of package names that were successfully synced.
+func prefetchRepos(pkgs []*Package, syncFn repoSyncFunc) (map[string]bool, error) {
 	if len(pkgs) == 0 {
-		return nil
+		return nil, nil
 	}
 	_, _, arrow := configSymbols()
 	fmt.Printf("\n  %s fetching %d AUR repositories (%d workers)...\n",
@@ -544,26 +589,32 @@ func prefetchRepos(pkgs []*Package, syncFn repoSyncFunc) error {
 	close(results)
 
 	var failures []string
+	synced := make(map[string]bool)
 	for r := range results {
 		if r.err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", r.name, r.err))
+		} else {
+			synced[r.name] = true
 		}
 	}
 	if len(failures) > 0 {
-		return fmt.Errorf("failed to fetch AUR repositories:\n     %s",
+		return nil, fmt.Errorf("failed to fetch AUR repositories:\n     %s",
 			strings.Join(failures, "\n     "))
 	}
-	return nil
+	return synced, nil
 }
 
 // verifyPGPSignature checks the GPG signature of a built package.
-// AUR packages are user-produced content, so GPG verification is the
-// one hard security gate before installation.
+// AUR packages are user-produced content, so GPG verification is performed when a signature is present.
+// If the config option aur_require_gpg is set, a missing signature is treated as an error.
 func verifyPGPSignature(pkgPath string) error {
 	// Look for a corresponding .sig file alongside the package
 	sigPath := pkgPath + ".sig"
 	if _, err := os.Stat(sigPath); os.IsNotExist(err) {
 		// No .sig file — AUR packages often don't ship signatures.
+		if config.LoadCached().AURRequireGPG {
+			return fmt.Errorf("missing GPG signature for %s and aur_require_gpg is set", filepath.Base(pkgPath))
+		}
 		// Print a warning but allow the install to proceed, since most
 		// AUR PKGBUILDs don't produce detached signatures.
 		warnStderr("no GPG signature found for %s (this is common for AUR packages — proceed with caution)", filepath.Base(pkgPath))
@@ -584,8 +635,10 @@ func verifyPGPSignature(pkgPath string) error {
 	return nil
 }
 
-// findBuiltPackages returns all .pkg.tar.* files (excluding .sig files) in dir.
-func findBuiltPackages(dir string) ([]string, error) {
+// findBuiltPackages returns all .pkg.tar.* files (excluding .sig files) in dir
+// that were modified at or after since, so stale archives from earlier builds
+// are not picked up.
+func findBuiltPackages(dir string, since time.Time) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -597,6 +650,9 @@ func findBuiltPackages(dir string) ([]string, error) {
 		}
 		name := e.Name()
 		if strings.Contains(name, ".pkg.tar.") && !strings.HasSuffix(name, ".sig") {
+			if info, err := e.Info(); err == nil && info.ModTime().Before(since) {
+				continue
+			}
 			pkgs = append(pkgs, filepath.Join(dir, name))
 		}
 	}
@@ -646,11 +702,15 @@ func versionSatisfied(pkg *Package) (string, bool) {
 
 // buildPackage clones the AUR source, runs makepkg, verifies GPG
 // signatures, and installs the resulting packages.
-func buildPackage(pkg *Package, pkgDir string, noConfirm bool) error {
+// If synced[pkg.Name] is true, the repository was already synced in the prefetch phase
+// and cloneAUR is skipped.
+func buildPackage(pkg *Package, pkgDir string, noConfirm bool, synced map[string]bool) error {
 	_, _, arrow := configSymbols()
 
-	if err := cloneAUR(pkg, pkgDir); err != nil {
-		return err
+	if synced == nil || !synced[pkg.Name] {
+		if err := cloneAUR(pkg, pkgDir); err != nil {
+			return err
+		}
 	}
 
 	fmt.Printf("\n  %s building %s %s...\n\n", arrow, pkg.Name, pkg.Version)
@@ -672,11 +732,12 @@ func buildPackage(pkg *Package, pkgDir string, noConfirm bool) error {
 	makepkg.Stdout = os.Stdout
 	makepkg.Stderr = os.Stderr
 	makepkg.Stdin = os.Stdin
+	buildStart := time.Now()
 	if err := makepkg.Run(); err != nil {
 		return fmt.Errorf("makepkg failed: %w", err)
 	}
 
-	builtPkgs, err := findBuiltPackages(pkgDir)
+	builtPkgs, err := findBuiltPackages(pkgDir, buildStart)
 	if err != nil {
 		return fmt.Errorf("failed to list built packages: %w", err)
 	}
@@ -686,7 +747,7 @@ func buildPackage(pkg *Package, pkgDir string, noConfirm bool) error {
 	return installBuiltPackages(builtPkgs, noConfirm)
 }
 
-func buildAndInstall(pkg *Package, noConfirm bool) (string, error) {
+func buildAndInstall(pkg *Package, noConfirm bool, synced map[string]bool) (string, error) {
 	ok, _, arrow := configSymbols()
 
 	if err := validatePkgName(pkg.Name); err != nil {
@@ -703,17 +764,25 @@ func buildAndInstall(pkg *Package, noConfirm bool) (string, error) {
 		return "", fmt.Errorf("failed to resolve cache dir: %w", err)
 	}
 
-	if cached, err := findReusableBuiltPackage(pkg, pkgDir); err != nil {
+	cached, err := findReusableBuiltPackage(pkg, pkgDir)
+	if err != nil {
 		return "", err
-	} else if cached != nil {
+	}
+	if len(cached) > 0 {
 		useCached := true
 		if !noConfirm {
-			fmt.Printf("\n  :: Found built package for aur/%s %s\n", pkg.Name, pkg.Version)
-			fmt.Printf("     %s\n", cached.Path)
+			fmt.Printf("\n  :: Found built package for aur/%s %s (%d archive(s))\n", pkg.Name, pkg.Version, len(cached))
+			for _, c := range cached {
+				fmt.Printf("     %s\n", c.Path)
+			}
 			useCached = readYesNo(fmt.Sprintf("  %s Install this existing build instead of rebuilding?", arrow), true)
 		}
 		if useCached {
-			if err := installBuiltPackage(cached.Path, noConfirm); err != nil {
+			paths := make([]string, len(cached))
+			for i, c := range cached {
+				paths[i] = c.Path
+			}
+			if err := installBuiltPackages(paths, noConfirm); err != nil {
 				return "", err
 			}
 			fmt.Printf("  %s  %s installed from existing build\n", ok, pkg.Name)
@@ -721,14 +790,17 @@ func buildAndInstall(pkg *Package, noConfirm bool) (string, error) {
 		}
 	}
 
-	if err := buildPackage(pkg, pkgDir, noConfirm); err != nil {
+	if err := buildPackage(pkg, pkgDir, noConfirm, synced); err != nil {
 		return "", err
 	}
 	fmt.Printf("  %s  %s installed\n", ok, pkg.Name)
 	return pkgDir, nil
 }
 
-func findReusableBuiltPackage(pkg *Package, pkgDir string) (*builtPackage, error) {
+// findReusableBuiltPackage returns every cached archive in pkgDir that matches
+// pkg (by name, provides, or package base) at exactly pkg.Version, newest
+// first. When several archives share a package name only the newest is kept.
+func findReusableBuiltPackage(pkg *Package, pkgDir string) ([]builtPackage, error) {
 	entries, err := os.ReadDir(pkgDir)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -772,9 +844,10 @@ func findReusableBuiltPackage(pkg *Package, pkgDir string) (*builtPackage, error
 				break
 			}
 		}
-		// For split packages, also match if they share the same PackageBase
-		// This handles cases where multiple packages are built from one PKGBUILD
-		pkgbaseMatch := pkg.PackageBase != "" && built.Name == pkg.PackageBase
+		// For split packages, also match the pkgbase itself and sibling members
+		// built from the same PKGBUILD (named <pkgbase>-<suffix>).
+		pkgbaseMatch := pkg.PackageBase != "" &&
+			(built.Name == pkg.PackageBase || strings.HasPrefix(built.Name, pkg.PackageBase+"-"))
 
 		if !nameMatch && !providesMatch && !pkgbaseMatch {
 			continue
@@ -790,10 +863,20 @@ func findReusableBuiltPackage(pkg *Package, pkgDir string) (*builtPackage, error
 	if len(matches) == 0 {
 		return nil, nil
 	}
-	sort.Slice(matches, func(i, j int) bool {
-		return matches[i].ModTime.After(matches[j].ModTime)
+	newest := make(map[string]builtPackage, len(matches))
+	for _, m := range matches {
+		if cur, ok := newest[m.Name]; !ok || m.ModTime.After(cur.ModTime) {
+			newest[m.Name] = m
+		}
+	}
+	result := make([]builtPackage, 0, len(newest))
+	for _, m := range newest {
+		result = append(result, m)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].ModTime.After(result[j].ModTime)
 	})
-	return &matches[0], nil
+	return result, nil
 }
 
 func inspectBuiltPackage(path string) (*builtPackage, error) {
@@ -910,7 +993,7 @@ func Clone(pkgName string) error {
 		return fmt.Errorf("directory %s already exists", targetDir)
 	}
 
-	s := config.Load().Style
+	s := config.LoadCached().Style
 	fmt.Printf("  %s cloning %s from AUR...\n", s.SymArrow, pkgName)
 	cmd, err := unprivilegedCommand("git", "clone", "--depth=1", gitURL, targetDir)
 	if err != nil {
@@ -1078,12 +1161,13 @@ func runMakepkg(dir string, pkgname string, noConfirm bool, arrow, ok string) er
 	makepkg.Stdout = os.Stdout
 	makepkg.Stderr = os.Stderr
 	makepkg.Stdin = os.Stdin
+	buildStart := time.Now()
 	if err := makepkg.Run(); err != nil {
 		return fmt.Errorf("makepkg failed: %w", err)
 	}
 
 	// Verify GPG signatures on all built packages before installing
-	builtPkgs, err := findBuiltPackages(dir)
+	builtPkgs, err := findBuiltPackages(dir, buildStart)
 	if err != nil {
 		return fmt.Errorf("failed to list built packages in %s: %w", dir, err)
 	}
@@ -1156,11 +1240,13 @@ func BuildLocal(dir string, noConfirm bool) error {
 	var builtDirs []string
 	for _, aurPkg := range aurOrdered {
 		fmt.Printf("\n  %s building AUR dep: %s\n", arrow, aurPkg.Name)
-		pkgDir, err := buildAndInstall(aurPkg, noConfirm)
+		pkgDir, err := buildAndInstall(aurPkg, noConfirm, nil)
 		if err != nil {
 			return fmt.Errorf("failed to build dep %s: %w", aurPkg.Name, err)
 		}
-		builtDirs = append(builtDirs, pkgDir)
+		if pkgDir != "" {
+			builtDirs = append(builtDirs, pkgDir)
+		}
 	}
 
 	if err := reviewAndConfirmLocalBuild(pkgbuildPath, noConfirm, arrow); err != nil {
@@ -1369,7 +1455,11 @@ func reviewPKGBUILD(path string) error {
 		editor = "nano"
 	}
 	if readYesNo(fmt.Sprintf("  Open PKGBUILD in editor (%s)?", editor), false) {
-		cmd := exec.Command(editor, path)
+		// Under sudo/doas the editor runs as the invoking user, not root.
+		cmd, err := unprivilegedCommand(editor, path)
+		if err != nil {
+			cmd = exec.Command(editor, path)
+		}
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -1393,16 +1483,29 @@ func reviewPKGBUILD(path string) error {
 // Running as pure root (no SUDO_USER / DOAS_USER) is rejected with an error.
 
 // originalUser returns the non-root user who invoked the command via sudo/doas,
-// or "" if not running under privilege escalation.
+// or "" if not running under privilege escalation or if the value is not a
+// well-formed user name.
 func originalUser() string {
-	if u := os.Getenv("SUDO_USER"); u != "" && u != "root" {
+	if u := os.Getenv("SUDO_USER"); u != "" && u != "root" && validUserName(u) {
 		return u
 	}
-	if u := os.Getenv("DOAS_USER"); u != "" && u != "root" {
+	if u := os.Getenv("DOAS_USER"); u != "" && u != "root" && validUserName(u) {
 		return u
 	}
 	return ""
 }
+
+// validUserName reports whether name is safe to pass to `sudo -u`/`doas -u`:
+// non-empty, no leading dash (which sudo would parse as an option), and only
+// characters valid in a user name.
+func validUserName(name string) bool {
+	if name == "" || strings.HasPrefix(name, "-") {
+		return false
+	}
+	return validUserNameRe.MatchString(name)
+}
+
+var validUserNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // unprivilegedCommand creates an exec.Cmd configured to run as a non-root user.
 // If the process is running as root under sudo or doas, it executes the command

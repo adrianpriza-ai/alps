@@ -3,6 +3,7 @@ package repo
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/adrianpriza-ai/alps/cli"
@@ -88,8 +89,9 @@ func (b *Backend) List(args []string) error {
 			}
 			fmt.Println()
 			return nil
+		default:
+			return fmt.Errorf("unknown list action %q (valid: install, remove)", args[0])
 		}
-		// Fall through to full list
 	}
 
 	entries, err := more.List(b.cfg)
@@ -101,7 +103,11 @@ func (b *Backend) List(args []string) error {
 		ui.Msg(b.cfg, ui.LevelWarn, "No packages in repo.")
 		return nil
 	}
-	installed, _ := more.ReadInstalled()
+	installed, err := more.ReadInstalled()
+	if err != nil {
+		ui.Msgf(b.cfg, ui.LevelWarn, "could not read installed state: %v", err)
+		installed = make(map[string]more.InstalledRecord)
+	}
 	fmt.Println()
 	for _, e := range entries {
 		installedVer := ""
@@ -171,18 +177,13 @@ func (b *Backend) Install(pkgs []string, dryRun bool) error {
 	return nil
 }
 
-// Remove removes packages from the repo
-func (b *Backend) Remove(pkgs []string, dryRun bool) error {
-	if len(pkgs) == 0 {
-		ui.Msg(b.cfg, ui.LevelError, "Usage: alps repo remove <package> [packages...]")
-		return fmt.Errorf("package name required")
-	}
-
+// removeOrPurge removes or purges each package, returning true when any failed.
+func (b *Backend) removeOrPurge(pkgs []string, dryRun, purge bool) (bool, error) {
 	var hasErrors bool
 	for _, pkgName := range pkgs {
-		entry, stale, err := more.RemovalEntry(pkgName, b.cfg)
-		if err != nil {
-			ui.Msgf(b.cfg, ui.LevelError, "%v", err)
+		entry, stale, removalErr := more.RemovalEntry(pkgName, b.cfg)
+		if removalErr != nil {
+			ui.Msgf(b.cfg, ui.LevelError, "%v", removalErr)
 			hasErrors = true
 			continue
 		}
@@ -195,19 +196,49 @@ func (b *Backend) Remove(pkgs []string, dryRun bool) error {
 			continue
 		}
 
-		ui.Msgf(b.cfg, ui.LevelInfo, "Remove %s%s%s from alps-more?",
-			b.cfg.Style.ColorBold, entry.Name, b.cfg.Style.ColorReset+b.cfg.Style.ColorInfo)
+		if purge {
+			ui.Msgf(b.cfg, ui.LevelWarn, "Purge %s%s%s? This removes the package AND its config/data files.",
+				b.cfg.Style.ColorBold, entry.Name, b.cfg.Style.ColorReset+b.cfg.Style.ColorWarning)
+		} else {
+			ui.Msgf(b.cfg, ui.LevelInfo, "Remove %s%s%s from alps-more?",
+				b.cfg.Style.ColorBold, entry.Name, b.cfg.Style.ColorReset+b.cfg.Style.ColorInfo)
+		}
 		if stale {
 			ui.Msg(b.cfg, ui.LevelWarn, "package is no longer in repo; using saved uninstall commands")
 		}
 		fmt.Println()
-		for _, line := range entry.RemoveLines {
-			fmt.Printf("  %s$ %s%s\n", b.cfg.Style.ColorDim, line, b.cfg.Style.ColorReset)
+
+		if purge {
+			if len(entry.RemoveLines) > 0 {
+				fmt.Printf("  %sremove:%s\n", b.cfg.Style.ColorBold, b.cfg.Style.ColorReset)
+				for _, line := range entry.RemoveLines {
+					fmt.Printf("  %s$ %s%s\n", b.cfg.Style.ColorDim, line, b.cfg.Style.ColorReset)
+				}
+				fmt.Println()
+			}
+			if len(entry.PurgeLines) > 0 {
+				fmt.Printf("  %spurge:%s\n", b.cfg.Style.ColorBold, b.cfg.Style.ColorReset)
+				for _, line := range entry.PurgeLines {
+					fmt.Printf("  %s$ %s%s\n", b.cfg.Style.ColorDim, line, b.cfg.Style.ColorReset)
+				}
+			} else {
+				fmt.Printf("  %s%s  no purge_cmd defined — only remove will run%s\n",
+					b.cfg.Style.ColorDim, b.cfg.Style.SymWarn, b.cfg.Style.ColorReset)
+			}
+		} else {
+			for _, line := range entry.RemoveLines {
+				fmt.Printf("  %s$ %s%s\n", b.cfg.Style.ColorDim, line, b.cfg.Style.ColorReset)
+			}
 		}
+
 		fmt.Print(b.cfg.Style.ColorReset)
 		fmt.Println()
 		if dryRun {
-			ui.Msgf(b.cfg, ui.LevelWarn, "DRY-RUN: would remove %s", entry.Name)
+			action := "remove"
+			if purge {
+				action = "purge"
+			}
+			ui.Msgf(b.cfg, ui.LevelWarn, "DRY-RUN: would %s %s", action, entry.Name)
 			continue
 		}
 		if !ui.Confirm() {
@@ -216,17 +247,46 @@ func (b *Backend) Remove(pkgs []string, dryRun bool) error {
 		}
 
 		fmt.Println()
-		if err := more.Remove(entry, b.cfg); err != nil {
-			ui.Msgf(b.cfg, ui.LevelError, "failed to remove %s: %v", entry.Name, err)
+		var opErr error
+		if purge {
+			opErr = more.Purge(pkgName, b.cfg)
+		} else {
+			opErr = more.Remove(entry, b.cfg)
+		}
+
+		if opErr != nil {
+			action := "remove"
+			if purge {
+				action = "purge"
+			}
+			ui.Msgf(b.cfg, ui.LevelError, "failed to %s %s: %v", action, entry.Name, opErr)
 			hasErrors = true
 		} else {
-			ui.Msg(b.cfg, ui.LevelOK, entry.Name+" removed.")
+			action := "removed"
+			if purge {
+				action = "purged"
+			}
+			ui.Msg(b.cfg, ui.LevelOK, entry.Name+" "+action+".")
 		}
 	}
 	if hasErrors {
-		return fmt.Errorf("some packages failed to remove")
+		action := "remove"
+		if purge {
+			action = "purge"
+		}
+		return true, fmt.Errorf("some packages failed to %s", action)
 	}
-	return nil
+	return false, nil
+}
+
+// Remove removes packages from the repo
+func (b *Backend) Remove(pkgs []string, dryRun bool) error {
+	if len(pkgs) == 0 {
+		ui.Msg(b.cfg, ui.LevelError, "Usage: alps repo remove <package> [packages...]")
+		return fmt.Errorf("package name required")
+	}
+	_, err := b.removeOrPurge(pkgs, dryRun, false)
+	return err
 }
 
 // Purge purges packages and their config files
@@ -235,71 +295,8 @@ func (b *Backend) Purge(pkgs []string, dryRun bool) error {
 		ui.Msg(b.cfg, ui.LevelError, "Usage: alps repo purge <package> [packages...]")
 		return fmt.Errorf("package name required")
 	}
-
-	var hasErrors bool
-	for _, pkgName := range pkgs {
-		entry, stale, err := more.RemovalEntry(pkgName, b.cfg)
-		if err != nil {
-			ui.Msgf(b.cfg, ui.LevelError, "%v", err)
-			hasErrors = true
-			continue
-		}
-
-		// Validate package is installed before confirmation
-		_, isInstalled := more.GetInstalled(pkgName)
-		if !isInstalled {
-			ui.Msgf(b.cfg, ui.LevelError, "package %q is not installed via alps-more", pkgName)
-			hasErrors = true
-			continue
-		}
-
-		ui.Msgf(b.cfg, ui.LevelWarn, "Purge %s%s%s? This removes the package AND its config/data files.",
-			b.cfg.Style.ColorBold, entry.Name, b.cfg.Style.ColorReset+b.cfg.Style.ColorWarning)
-		if stale {
-			ui.Msg(b.cfg, ui.LevelWarn, "package is no longer in repo; using saved uninstall commands")
-		}
-		fmt.Println()
-
-		if len(entry.RemoveLines) > 0 {
-			fmt.Printf("  %sremove:%s\n", b.cfg.Style.ColorBold, b.cfg.Style.ColorReset)
-			for _, line := range entry.RemoveLines {
-				fmt.Printf("  %s$ %s%s\n", b.cfg.Style.ColorDim, line, b.cfg.Style.ColorReset)
-			}
-			fmt.Println()
-		}
-		if len(entry.PurgeLines) > 0 {
-			fmt.Printf("  %spurge:%s\n", b.cfg.Style.ColorBold, b.cfg.Style.ColorReset)
-			for _, line := range entry.PurgeLines {
-				fmt.Printf("  %s$ %s%s\n", b.cfg.Style.ColorDim, line, b.cfg.Style.ColorReset)
-			}
-		} else {
-			fmt.Printf("  %s%s  no purge_cmd defined — only remove will run%s\n",
-				b.cfg.Style.ColorDim, b.cfg.Style.SymWarn, b.cfg.Style.ColorReset)
-		}
-
-		fmt.Print(b.cfg.Style.ColorReset)
-		fmt.Println()
-		if dryRun {
-			ui.Msgf(b.cfg, ui.LevelWarn, "DRY-RUN: would purge %s", entry.Name)
-			continue
-		}
-		if !ui.Confirm() {
-			ui.Msg(b.cfg, ui.LevelWarn, "Cancelled for "+entry.Name)
-			continue
-		}
-
-		fmt.Println()
-		if err := more.Purge(pkgName, b.cfg); err != nil {
-			ui.Msgf(b.cfg, ui.LevelError, "failed to purge %s: %v", entry.Name, err)
-			hasErrors = true
-		} else {
-			ui.Msg(b.cfg, ui.LevelOK, entry.Name+" purged.")
-		}
-	}
-	if hasErrors {
-		return fmt.Errorf("some packages failed to purge")
-	}
-	return nil
+	_, err := b.removeOrPurge(pkgs, dryRun, true)
+	return err
 }
 
 // Search searches for packages in the repo
@@ -325,8 +322,35 @@ func (b *Backend) Search(query string) error {
 	return nil
 }
 
+// upgradeTarget reports whether a package should be upgraded, and to which
+// version. ok is false when the entry carries no version to compare against.
+func upgradeTarget(entryVersion, installedVersion string) (target string, upgradable, ok bool) {
+	if entryVersion == "" {
+		return "", false, false
+	}
+	if installedVersion == "" {
+		return entryVersion, true, true
+	}
+	if entryVersion == installedVersion {
+		return "", false, true
+	}
+	return entryVersion, true, true
+}
+
+// upgradeSummary returns the summary text and whether the caller should return an error.
+func upgradeSummary(upgraded, skipped, failed int) (string, bool) {
+	summary := fmt.Sprintf("Upgrade summary: %d upgraded", upgraded)
+	if skipped > 0 {
+		summary += fmt.Sprintf(", %d skipped", skipped)
+	}
+	if failed > 0 {
+		summary += fmt.Sprintf(", %d failed", failed)
+	}
+	return summary, failed > 0
+}
+
 // Upgrade upgrades installed packages
-func (b *Backend) Upgrade(pkgs []string) error {
+func (b *Backend) Upgrade(pkgs []string, dryRun bool) error {
 	// pkgPreview holds the pre-check result for a single package.
 	// It stores the resolved entry and installed record so the execute
 	// phase can call more.UpgradeEntry / more.UpgradeFromSource directly
@@ -354,22 +378,32 @@ func (b *Backend) Upgrade(pkgs []string) error {
 			return nil
 		}
 
-		ui.Msgf(b.cfg, ui.LevelInfo, "Upgrade all alps-more packages?")
 		fmt.Println()
-		for name, rec := range records {
+		names := make([]string, 0, len(records))
+		for name := range records {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			rec := records[name]
 			recCopy := rec // avoid pointer aliasing across iterations
-			if more.IsRemoteSource(rec.Source) {
-				fe, fetchErr := more.FetchALPSMOREFromSource(rec.Source)
+			if more.IsRemoteSource(recCopy.Source) {
+				fe, fetchErr := more.FetchALPSMOREFromSource(recCopy.Source)
 				if fetchErr != nil {
-					previews = append(previews, pkgPreview{name: name, err: fmt.Sprintf("fetch failed: %v", fetchErr), rec: &recCopy, remote: rec.Source})
+					previews = append(previews, pkgPreview{name: name, err: fmt.Sprintf("fetch failed: %v", fetchErr), rec: &recCopy, remote: recCopy.Source})
 					continue
 				}
-				fe.Source = rec.Source
-				if fe.Version != "" && rec.Version != "" && fe.Version == rec.Version {
-					previews = append(previews, pkgPreview{name: name, from: rec.Version, to: rec.Version, rec: &recCopy, remote: rec.Source})
+				fe.Source = recCopy.Source
+				target, upgradable, ok := upgradeTarget(fe.Version, recCopy.Version)
+				if !ok {
+					previews = append(previews, pkgPreview{name: name, err: "no version information — skipped", rec: &recCopy, remote: recCopy.Source})
 					continue
 				}
-				previews = append(previews, pkgPreview{name: name, from: rec.Version, to: fe.Version, entry: fe, rec: &recCopy, remote: rec.Source})
+				if upgradable {
+					previews = append(previews, pkgPreview{name: name, from: recCopy.Version, to: target, entry: fe, rec: &recCopy, remote: recCopy.Source})
+				} else {
+					previews = append(previews, pkgPreview{name: name, from: recCopy.Version, to: recCopy.Version, rec: &recCopy, remote: recCopy.Source})
+				}
 				continue
 			}
 			e, findErr := more.Find(name, b.cfg)
@@ -377,10 +411,15 @@ func (b *Backend) Upgrade(pkgs []string) error {
 				previews = append(previews, pkgPreview{name: name, err: "stale — no longer in repo", rec: &recCopy})
 				continue
 			}
-			if e.Version != "" && rec.Version != "" && e.Version != rec.Version {
-				previews = append(previews, pkgPreview{name: name, from: rec.Version, to: e.Version, entry: e, rec: &recCopy})
+			target, upgradable, ok := upgradeTarget(e.Version, recCopy.Version)
+			if !ok {
+				previews = append(previews, pkgPreview{name: name, err: "no version information — skipped", rec: &recCopy})
+				continue
+			}
+			if upgradable {
+				previews = append(previews, pkgPreview{name: name, from: recCopy.Version, to: target, entry: e, rec: &recCopy})
 			} else {
-				previews = append(previews, pkgPreview{name: name, from: rec.Version, to: rec.Version, entry: e, rec: &recCopy})
+				previews = append(previews, pkgPreview{name: name, from: recCopy.Version, to: recCopy.Version, entry: e, rec: &recCopy})
 			}
 		}
 	} else {
@@ -403,11 +442,16 @@ func (b *Backend) Upgrade(pkgs []string) error {
 					continue
 				}
 				fe.Source = recCopy.Source
-				if fe.Version != "" && recCopy.Version != "" && fe.Version == recCopy.Version {
-					previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: recCopy.Version, rec: &recCopy, remote: recCopy.Source})
+				target, upgradable, ok := upgradeTarget(fe.Version, recCopy.Version)
+				if !ok {
+					previews = append(previews, pkgPreview{name: pkgName, err: "no version information — skipped", rec: &recCopy, remote: recCopy.Source})
 					continue
 				}
-				previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: fe.Version, entry: fe, rec: &recCopy, remote: recCopy.Source})
+				if upgradable {
+					previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: target, entry: fe, rec: &recCopy, remote: recCopy.Source})
+				} else {
+					previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: recCopy.Version, rec: &recCopy, remote: recCopy.Source})
+				}
 				continue
 			}
 
@@ -417,12 +461,16 @@ func (b *Backend) Upgrade(pkgs []string) error {
 				continue
 			}
 
-			if e.Version != "" && recCopy.Version != "" && e.Version == recCopy.Version {
-				previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: recCopy.Version, entry: e, rec: &recCopy})
+			target, upgradable, ok := upgradeTarget(e.Version, recCopy.Version)
+			if !ok {
+				previews = append(previews, pkgPreview{name: pkgName, err: "no version information — skipped", rec: &recCopy})
 				continue
 			}
-
-			previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: e.Version, entry: e, rec: &recCopy})
+			if upgradable {
+				previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: target, entry: e, rec: &recCopy})
+			} else {
+				previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: recCopy.Version, entry: e, rec: &recCopy})
+			}
 		}
 	}
 
@@ -433,7 +481,7 @@ func (b *Backend) Upgrade(pkgs []string) error {
 	// Count how many packages actually need upgrading.
 	var upgradable int
 	for _, p := range previews {
-		if p.err == "" && p.from != p.to {
+		if p.err == "" && p.from != p.to && p.to != "" {
 			upgradable++
 		}
 	}
@@ -469,6 +517,11 @@ func (b *Backend) Upgrade(pkgs []string) error {
 	}
 	fmt.Println()
 
+	if dryRun {
+		ui.Msgf(b.cfg, ui.LevelWarn, "DRY-RUN: would upgrade %d package(s)", upgradable)
+		return nil
+	}
+
 	if !ui.Confirm() {
 		ui.Msg(b.cfg, ui.LevelWarn, "Upgrade cancelled.")
 		return nil
@@ -478,11 +531,11 @@ func (b *Backend) Upgrade(pkgs []string) error {
 	// compared versions, so we call the lower-level UpgradeEntry /
 	// UpgradeFromSource directly — no redundant lookups.
 	fmt.Println()
-	var upgraded, failed int
+	var upgraded, failed, skipped int
 	for _, p := range previews {
 		if p.err != "" {
-			ui.Msgf(b.cfg, ui.LevelError, "%s: %s", p.name, p.err)
-			failed++
+			ui.Msgf(b.cfg, ui.LevelWarn, "%s: %s", p.name, p.err)
+			skipped++
 			continue
 		}
 		if p.from == p.to {
@@ -510,8 +563,8 @@ func (b *Backend) Upgrade(pkgs []string) error {
 	// Summary when upgrading multiple packages.
 	if len(previews) > 1 {
 		fmt.Println()
-		ui.Msgf(b.cfg, ui.LevelInfo, "Upgrade summary: %d upgraded, %d failed",
-			upgraded, failed)
+		summary, _ := upgradeSummary(upgraded, skipped, failed)
+		ui.Msg(b.cfg, ui.LevelInfo, summary)
 	}
 
 	if failed > 0 {
@@ -551,12 +604,12 @@ func (b *Backend) Clean(dryRun bool) error {
 // fetchRepoEntry fetches a repo entry
 func (b *Backend) fetchRepoEntry(pkgName string) (*more.Entry, *more.RemoteRef, error) {
 	var remoteRef *more.RemoteRef
-	var err error
 
 	if more.IsRemoteURL(pkgName) {
-		remoteRef, err = more.ParseRemoteURL(pkgName)
-		if err != nil {
-			return nil, nil, err
+		var parseErr error
+		remoteRef, parseErr = more.ParseRemoteURL(pkgName)
+		if parseErr != nil {
+			return nil, nil, parseErr
 		}
 	}
 
@@ -566,9 +619,9 @@ func (b *Backend) fetchRepoEntry(pkgName string) (*more.Entry, *more.RemoteRef, 
 		fmt.Println()
 
 		var resolved more.RemoteRef
-		entry, resolved, err := more.FetchALPSMORERemote(*remoteRef)
-		if err != nil {
-			return nil, nil, err
+		entry, resolved, fetchErr := more.FetchALPSMORERemote(*remoteRef)
+		if fetchErr != nil {
+			return nil, nil, fetchErr
 		}
 
 		source := resolved.Source()
@@ -584,9 +637,9 @@ func (b *Backend) fetchRepoEntry(pkgName string) (*more.Entry, *more.RemoteRef, 
 		return entry, remoteRef, nil
 	}
 
-	entry, err := more.Find(pkgName, b.cfg)
-	if err != nil {
-		return nil, nil, err
+	entry, findErr := more.Find(pkgName, b.cfg)
+	if findErr != nil {
+		return nil, nil, findErr
 	}
 
 	return entry, nil, nil

@@ -1,13 +1,16 @@
 package ui
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
 	"sort"
 	"strings"
 
+	"github.com/adrianpriza-ai/alps/cli"
 	"github.com/adrianpriza-ai/alps/config"
+	"github.com/adrianpriza-ai/alps/extra"
 	"github.com/adrianpriza-ai/alps/more"
 	"github.com/adrianpriza-ai/alps/pack"
 	"github.com/adrianpriza-ai/alps/platform"
@@ -47,13 +50,71 @@ func Msgf(cfg *config.Config, l Level, format string, a ...any) {
 	fmt.Printf("  %s%s%s  %s%s\n", color, symbol, cfg.Style.ColorReset, text, cfg.Style.ColorReset)
 }
 
-// Confirm prompts for confirmation.
+// Confirm is the confirmation gate for destructive actions. A failed or
+// unavailable stdin is never treated as a blank "yes" answer.
 func Confirm() bool {
-	fmt.Print("  Continue? [Y/n] ")
-	var input string
-	fmt.Scanln(&input)
-	input = strings.ToLower(strings.TrimSpace(input))
-	return input == "" || input == "y" || input == "yes"
+	return PromptYesNo("  Continue?", true)
+}
+
+// promptSuffix returns the [Y/n] or [y/N] hint shown after a prompt.
+func promptSuffix(defaultYes bool) string {
+	if defaultYes {
+		return "[Y/n]"
+	}
+	return "[y/N]"
+}
+
+// stdinIsTerminal reports whether stdin is a character device, i.e. an
+// interactive terminal rather than a pipe, a file, or /dev/null.
+func stdinIsTerminal() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// ReadLine reads one line from stdin and returns it trimmed. A read error
+// (EOF, closed stdin) yields the empty string.
+func ReadLine() string {
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return ""
+	}
+	return strings.TrimSpace(line)
+}
+
+// PromptYesNo prints prompt with a [Y/n] or [y/N] hint and reads the answer.
+// Empty input on a real terminal takes defaultYes. On I/O error, or when
+// stdin is not a terminal, it prints a notice to stderr and answers no.
+func PromptYesNo(prompt string, defaultYes bool) bool {
+	if !stdinIsTerminal() {
+		fmt.Fprintln(os.Stderr, "  no terminal available — assuming 'no'")
+		return false
+	}
+
+	fmt.Printf("%s %s ", prompt, promptSuffix(defaultYes))
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		// A failed read is not a blank answer: refuse rather than assume yes.
+		return false
+	}
+	return promptAnswer(line, defaultYes)
+}
+
+// promptAnswer maps trimmed user input to a yes/no answer using the prompt's
+// documented default. Anything that is not y/yes/n/no is a no.
+func promptAnswer(line string, defaultYes bool) bool {
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "":
+		return defaultYes
+	case "y", "yes":
+		return true
+	case "n", "no":
+		return false
+	default:
+		return false
+	}
 }
 
 func PrintHeader(cfg *config.Config) {
@@ -71,19 +132,18 @@ func PrintHeader(cfg *config.Config) {
 	}
 
 	term := os.Getenv("TERM")
+	text := cfg.Style.HeaderText
+	if text == "" {
+		text = "ALPS"
+	}
 	if term == "linux" || term == "" {
-		fmt.Printf("\n  \033[1;97mALPS\033[0m  \033[2mAdvanced Linux Package System · %s\033[0m\n\n", cfg.Version)
+		fmt.Printf("\n  \033[1;97m%s\033[0m  \033[2mAdvanced Linux Package System · %s\033[0m\n\n", text, cfg.Version)
 		return
 	}
 
-	version := cfg.Version
-	if len(version) > 6 {
-		version = version[:6]
-	}
-
-	fmt.Print("\n                   /^\\\n")
-	fmt.Print("   ALPS        /^\\/   \\/\\\n")
-	fmt.Printf("     %-6s   \033[1;32m/___\\____\\_\\\033[0m\n\n", version)
+	fmt.Printf("\n                   /^\\\n")
+	fmt.Printf("   %s        /^\\/   \\/\\\n", text)
+	fmt.Printf("     %-6s   \033[1;32m/___\\____\\_\\\033[0m\n\n", cfg.Version)
 }
 
 // printSectionTitle prints a bold, compact section heading (no rule line,
@@ -126,26 +186,7 @@ func PrintHelp(cfg *config.Config) {
 		s.ColorBold, s.ColorReset, s.ColorPrimary, s.ColorReset, s.ColorDim, s.ColorReset)
 
 	printSectionTitle(cfg, "Core")
-	printRows(cfg, 19, [][2]string{
-		{"install <pkg>", "install a package"},
-		{"remove <pkg>", "remove a package"},
-		{"purge <pkg>", "remove a package and its data"},
-		{"search <query>", "search packages"},
-		{"show <pkg>", "show package info"},
-		{"list", "list installed packages"},
-		{"update", "refresh package indexes"},
-		{"upgrade", "upgrade installed packages"},
-		{"full-upgrade", "sync repos and upgrade all"},
-		{"autoremove", "remove orphaned packages"},
-		{"autoclean", "clean package cache"},
-		{"clean", "remove cached packages"},
-		{"edit-sources", "edit repository sources"},
-		{"completion <shell>", "generate shell completion"},
-		{"help", "show this help"},
-		{"aliases", "show active aliases"},
-		{"config-show", "show config & paths"},
-		{"version", "binary version"},
-	})
+	printRows(cfg, 19, cli.CoreHelpRows())
 	fmt.Println()
 
 	printSectionTitle(cfg, "Flags")
@@ -159,36 +200,13 @@ func PrintHelp(cfg *config.Config) {
 	fmt.Println()
 
 	printSectionTitle(cfg, "Repo")
-	printRows(cfg, 23, [][2]string{
-		{"repo update", "refresh repo cache"},
-		{"repo list", "list available packages"},
-		{"repo list install", "list installed packages"},
-		{"repo list remove", "list stale packages"},
-		{"repo install <pkg|url>", "install pkg or from a URL"},
-		{"repo remove <pkg>", "remove a repo package"},
-		{"repo purge <pkg>", "remove a repo package and its data"},
-		{"repo search <query>", "search repo packages"},
-		{"repo upgrade [pkg]", "upgrade installed package(s)"},
-		{"repo clean", "remove build cache"},
-	})
+	printRows(cfg, 23, cli.SubCmdHelp("repo"))
 	fmt.Println()
 
 	// Distro-specific subcommands
-	distro := detectDistroID()
-	if isArchBased(distro) {
+	if platform.IsArchBased() {
 		printSectionTitle(cfg, "AUR")
-		printRows(cfg, 22, [][2]string{
-			{"aur install <pkg>", "install directly from AUR"},
-			{"aur search <query>", "search AUR only"},
-			{"aur list", "list installed AUR packages"},
-			{"aur remove <pkg>", "remove via pacman -R"},
-			{"aur clean", "remove build cache"},
-			{"aur build-local [dir]", "build a local PKGBUILD"},
-			{"aur fetch-abs <pkg>", "fetch official PKGBUILD"},
-			{"aur info <pkg>", "show AUR package metadata"},
-			{"aur clone <pkg>", "clone AUR PKGBUILD for inspection"},
-			{"aur orphans", "list AUR orphan packages"},
-		})
+		printRows(cfg, 22, cli.SubCmdHelp("aur"))
 		fmt.Println()
 		fmt.Printf("  %s%s%s %sArch tip:%s use %sfull-upgrade%s, not update/upgrade — avoids partial upgrades\n\n",
 			s.ColorWarning, s.SymWarn, s.ColorReset,
@@ -196,73 +214,19 @@ func PrintHelp(cfg *config.Config) {
 			s.ColorPrimary, s.ColorReset)
 	}
 
-	if isDebianBased(distro) && isSnapAvailable() {
+	if platform.IsDebianBased() && extra.IsAvailable("snap") {
 		printSectionTitle(cfg, "Snap")
-		printRows(cfg, 19, [][2]string{
-			{"snap install <pkg>", "install via snap"},
-			{"snap search <query>", "search snap store"},
-			{"snap list", "list installed snaps"},
-			{"snap update", "refresh all snaps"},
-			{"snap remove <pkg>", "remove snap package"},
-		})
+		printRows(cfg, 19, cli.SubCmdHelp("snap"))
 		fmt.Println()
 	}
 
 	if isFlatpakAvailable() {
 		printSectionTitle(cfg, "Flatpak")
-		printRows(cfg, 23, [][2]string{
-			{"flatpak install <pkg>", "install from flathub"},
-			{"flatpak search <query>", "search flathub"},
-			{"flatpak list", "list installed flatpaks"},
-			{"flatpak update", "update all flatpaks"},
-			{"flatpak remove <pkg>", "remove flatpak"},
-		})
+		printRows(cfg, 23, cli.SubCmdHelp("flatpak"))
 		fmt.Println()
 	}
 
 	fmt.Printf("  %sOther commands are passed directly to your system's package manager.%s\n\n", s.ColorDim, s.ColorReset)
-}
-
-// detectDistroID reads /etc/os-release ID.
-func detectDistroID() string {
-	data, err := os.ReadFile("/etc/os-release")
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "ID=") {
-			return strings.ToLower(strings.Trim(line[3:], `"'`))
-		}
-	}
-	return ""
-}
-
-func isArchBased(distro string) bool {
-	for _, d := range []string{"arch", "manjaro", "endeavouros", "garuda", "artix"} {
-		if distro == d {
-			return true
-		}
-	}
-	return false
-}
-
-func isDebianBased(distro string) bool {
-	for _, d := range []string{"debian", "ubuntu", "linuxmint", "pop", "elementary", "kali"} {
-		if distro == d {
-			return true
-		}
-	}
-	return false
-}
-
-func isSnapAvailable() bool {
-	if _, err := exec.LookPath("snap"); err != nil {
-		return false
-	}
-	if _, err := os.Stat("/etc/apt/preferences.d/nosnap.pref"); err == nil {
-		return false
-	}
-	return true
 }
 
 func isFlatpakAvailable() bool {
@@ -294,8 +258,7 @@ func PrintAliases(cfg *config.Config) {
 	}
 	fmt.Println()
 
-	distro := detectDistroID()
-	if isArchBased(distro) {
+	if platform.IsArchBased() {
 		printSectionTitle(cfg, "AUR Subcommand Aliases")
 		subKeys := sortedKeys(config.DefaultSubCmdAliases)
 		for _, k := range subKeys {
@@ -346,7 +309,7 @@ func sortedKeys(m map[string]string) []string {
 
 // symUpgrade returns an upgrade arrow.
 func symUpgrade() string {
-	if isTTY() {
+	if platform.UsesASCIIFallback() {
 		return "->"
 	}
 	return "↑"
@@ -354,16 +317,10 @@ func symUpgrade() string {
 
 // symReinstall returns a reinstall symbol.
 func symReinstall() string {
-	if isTTY() {
+	if platform.UsesASCIIFallback() {
 		return ">>"
 	}
 	return "⟳"
-}
-
-// isTTY checks for basic TTY.
-func isTTY() bool {
-	term := os.Getenv("TERM")
-	return term == "linux" || term == "dumb" || term == ""
 }
 
 // PrintDiagnostic displays system diagnostic information.
@@ -400,8 +357,13 @@ func PrintDiagnostic(cfg *config.Config) {
 		backend = "none detected"
 	}
 
-	installed, _ := more.ReadInstalled()
-	moreCount := len(installed)
+	installed, err := more.ReadInstalled()
+	moreLine := fmt.Sprintf("%d package(s) installed via alps-more", len(installed))
+	if err != nil {
+		// A broken state file must not be reported as "0 packages".
+		Msgf(cfg, LevelWarn, "alps-more  state unreadable: %v", err)
+		moreLine = "state unreadable — package count unknown"
+	}
 
 	extras := []string{}
 	if !platform.IsTermux() {
@@ -428,7 +390,7 @@ func PrintDiagnostic(cfg *config.Config) {
 	if len(extras) > 0 {
 		fmt.Printf("  %sextras%s   %s\n", pri, rst, strings.Join(extras, "  "))
 	}
-	fmt.Printf("  %smore%s     %s%d package(s) installed via alps-more%s\n", pri, rst, dim, moreCount, rst)
+	fmt.Printf("  %smore%s     %s%s%s\n", pri, rst, dim, moreLine, rst)
 	fmt.Println()
 	fmt.Printf("  %srun 'alps help' for commands%s\n", dim, rst)
 	fmt.Println()
@@ -445,11 +407,7 @@ func PrintRepoEntry(cfg *config.Config, name, version, desc string, arch []strin
 
 	instTag := ""
 	if installedVer != "" {
-		label := installedVer
-		if label == "" {
-			label = "installed"
-		}
-		instTag = fmt.Sprintf(" %s[%s]%s", s.ColorSuccess, label, s.ColorReset)
+		instTag = fmt.Sprintf(" %s[%s]%s", s.ColorSuccess, installedVer, s.ColorReset)
 	}
 
 	archStr := ""

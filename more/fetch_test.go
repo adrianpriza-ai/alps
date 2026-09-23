@@ -402,3 +402,115 @@ func TestFetchALPSMORERemoteHuggingFace(t *testing.T) {
 		t.Errorf("unexpected error for non-allowlisted host: %v", fetchErr)
 	}
 }
+
+// TestParseRemoteURLCNB verifies that ParseRemoteURL correctly parses
+// a cnb.cool URL into a RemoteRef with the right provider and fields.
+func TestParseRemoteURLCNB(t *testing.T) {
+	ref, err := ParseRemoteURL("cnb.cool/group/myrepo@main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ref.Provider != "cnb" {
+		t.Errorf("Provider = %q, want %q", ref.Provider, "cnb")
+	}
+	if ref.Host != "cnb.cool" {
+		t.Errorf("Host = %q, want %q", ref.Host, "cnb.cool")
+	}
+	if ref.RepoPath != "group/myrepo" {
+		t.Errorf("RepoPath = %q, want %q", ref.RepoPath, "group/myrepo")
+	}
+	if ref.Branch != "main" {
+		t.Errorf("Branch = %q, want %q", ref.Branch, "main")
+	}
+}
+
+// TestRemoteRawURLCNB verifies that remoteRawURL builds CNB's
+// /-/git/raw/ raw-content path (not the GitLab-style /-/raw/).
+func TestRemoteRawURLCNB(t *testing.T) {
+	ref := RemoteRef{Provider: "cnb", Host: "cnb.cool", RepoPath: "group/myrepo", Branch: "main"}
+	got := remoteRawURL(ref, "main")
+	want := "https://cnb.cool/group/myrepo/-/git/raw/main/ALPSMORE"
+	if got != want {
+		t.Errorf("remoteRawURL() = %q, want %q", got, want)
+	}
+}
+
+// TestIsForgeHostCNB verifies that cnb.cool is accepted by the forge host
+// allowlist while lookalike hosts stay rejected.
+func TestIsForgeHostCNB(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{"https cnb.cool", "https://cnb.cool/group/repo/-/git/raw/main/ALPSMORE", true},
+		{"http rejected", "http://cnb.cool/group/repo/-/git/raw/main/ALPSMORE", false},
+		{"subdomain rejected", "https://evil.cnb.cool/group/repo/-/git/raw/main/ALPSMORE", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isForgeHost(tc.url)
+			if got != tc.want {
+				t.Errorf("isForgeHost(%q) = %v, want %v", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSourceRoundTripCNB verifies that a RemoteRef for CNB round-trips
+// through Source() and ParseSource() without losing data.
+func TestSourceRoundTripCNB(t *testing.T) {
+	original := RemoteRef{
+		Provider: "cnb",
+		Host:     "cnb.cool",
+		RepoPath: "group/myrepo",
+		Branch:   "main",
+	}
+	source := original.Source()
+	parsed, err := ParseSource(source)
+	if err != nil {
+		t.Fatalf("ParseSource(%q) failed: %v", source, err)
+	}
+	if parsed.Provider != original.Provider {
+		t.Errorf("Provider = %q, want %q", parsed.Provider, original.Provider)
+	}
+	if parsed.Host != original.Host {
+		t.Errorf("Host = %q, want %q", parsed.Host, original.Host)
+	}
+	if parsed.RepoPath != original.RepoPath {
+		t.Errorf("RepoPath = %q, want %q", parsed.RepoPath, original.RepoPath)
+	}
+	if parsed.Branch != original.Branch {
+		t.Errorf("Branch = %q, want %q", parsed.Branch, original.Branch)
+	}
+}
+
+// TestProviderFromHostBareHost verifies that a bare host without a dot (e.g.
+// "user" from "user/repo") is not treated as a forge (I6).
+func TestProviderFromHostBareHost(t *testing.T) {
+	got := providerFromHost("user")
+	if got != "" {
+		t.Errorf("providerFromHost(%q) = %q, want %q", "user", got, "")
+	}
+}
+
+// TestProviderFromHostSelfHostedGitLab verifies that a self-hosted GitLab
+// instance (host with a dot) still resolves to the gitlab provider (I6).
+func TestProviderFromHostSelfHostedGitLab(t *testing.T) {
+	got := providerFromHost("gitlab.example.org")
+	if got != "gitlab" {
+		t.Errorf("providerFromHost(%q) = %q, want %q", "gitlab.example.org", got, "gitlab")
+	}
+}
+
+// TestParseRemoteURLBareHost verifies that "user/repo" produces a clear error
+// rather than silently building a bogus GitLab URL (I6).
+func TestParseRemoteURLBareHost(t *testing.T) {
+	_, err := ParseRemoteURL("user/repo")
+	if err == nil {
+		t.Fatal("expected error for bare host in ParseRemoteURL(\"user/repo\")")
+	}
+	if !strings.Contains(err.Error(), "unsupported git host") {
+		t.Errorf("expected 'unsupported git host' error, got: %v", err)
+	}
+}

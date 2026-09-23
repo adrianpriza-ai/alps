@@ -99,6 +99,38 @@ func TestPerformDownloadNamedSums(t *testing.T) {
 	}
 }
 
+// TestPerformDownloadAcceptsUppercaseManifest verifies that a manifest which
+// declares an uppercase digest still installs: the parser normalizes the stored
+// digest to lowercase before the case-sensitive compare at verify time.
+func TestPerformDownloadAcceptsUppercaseManifest(t *testing.T) {
+	t.Setenv("TERM", "")
+
+	content := []byte("uppercase manifest payload")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(content)
+	}))
+	defer srv.Close()
+
+	manifest := []byte("[pkg]\nsha256sums_begin\n  {FILE} out.bin\n  {SUMS} " + strings.ToUpper(sha256hex(content)) + "\nsha256sums_end\n")
+	entries, err := Parse(manifest)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	ctx := NewMacroContext(entries["pkg"], "")
+	dest := filepath.Join(t.TempDir(), "out.bin")
+	if _, err := performDownload(srv.URL+"/out.bin", dest, ctx); err != nil {
+		t.Fatalf("performDownload returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("cannot read destination file: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("file content mismatch: got %q, want %q", got, content)
+	}
+}
+
 // TestPerformDownloadNamedSumsMismatch verifies a digest mismatch fails the
 // download and leaves no file behind, exactly like the positional format.
 func TestPerformDownloadNamedSumsMismatch(t *testing.T) {
@@ -141,6 +173,41 @@ func TestPerformDownloadNamedSumsMissing(t *testing.T) {
 	_, err := performDownload(srv.URL+"/out.bin", dest, ctx)
 	if err == nil || !strings.Contains(err.Error(), "out.bin") {
 		t.Fatalf("expected error naming the undeclared destination, got: %v", err)
+	}
+	if _, statErr := os.Stat(dest); statErr == nil {
+		t.Errorf("destination file %s should not exist when no checksum is declared", dest)
+	}
+}
+
+// roundTripFunc adapts a function to an http.RoundTripper for testing.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+// TestPerformDownloadNoDigestIssuesNoRequest verifies that strict mode checks
+// for a declared digest before issuing any HTTP request, so a missing digest
+// does not transfer data over the network.
+func TestPerformDownloadNoDigestIssuesNoRequest(t *testing.T) {
+	t.Setenv("TERM", "")
+
+	oldClient := httpClient
+	defer func() { httpClient = oldClient }()
+
+	httpClient = &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			t.Fatalf("HTTP request was issued unexpectedly: %s %s", r.Method, r.URL)
+			return nil, nil
+		}),
+	}
+
+	e := &Entry{Name: "pkg", Safety: "strict"}
+	ctx := NewMacroContext(e, "")
+	dest := filepath.Join(t.TempDir(), "nodigest.bin")
+	_, err := performDownload("https://example.com/nodigest.bin", dest, ctx)
+	if err == nil || !strings.Contains(err.Error(), "requires a sha256sums entry") {
+		t.Fatalf("expected error mentioning sha256sums requirement, got: %v", err)
 	}
 	if _, statErr := os.Stat(dest); statErr == nil {
 		t.Errorf("destination file %s should not exist when no checksum is declared", dest)
@@ -283,7 +350,7 @@ func TestDownloadToFileUnlimited(t *testing.T) {
 	ctx := NewMacroContext(e, "")
 
 	dest := filepath.Join(t.TempDir(), "big.bin")
-	_, err := downloadToFile(bytes.NewReader(content), dest, 0, ctx, 64, true)
+	_, err := downloadToFile(bytes.NewReader(content), dest, 0, ctx, "", 64, true)
 	if err != nil {
 		t.Fatalf("unlimited download should ignore the cap: %v", err)
 	}
@@ -358,5 +425,32 @@ func TestPerformDownloadUnlimited(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "unl") {
 		t.Errorf("expected an acknowledged-exception warning for {SIZE} unl, got: %q", out)
+	}
+}
+
+// TestFormatSizeUnitStep verifies that rounding that reaches the next unit
+// boundary (1024 KiB) steps up to the next unit instead of printing "1024,0 KiB" (I7).
+func TestFormatSizeUnitStep(t *testing.T) {
+	tests := []struct {
+		bytes int64
+		want  string
+	}{
+		{0, "0 B"},
+		{512, "512 B"},
+		{1023, "1023 B"},
+		{1024, "1,0 KiB"},
+		{1536, "1,5 KiB"},
+		{1023 * 1024, "1023,0 KiB"},
+		{1023*1024 + 512, "1023,5 KiB"},
+		{1024 * 1024, "1,0 MiB"},
+		{1024*1024 - 1, "1,0 MiB"},       // 1023.9... KiB rounds to 1024.0 → steps to MiB
+		{1536 * 1024 * 1024, "1,5 GiB"},
+	}
+	for _, tc := range tests {
+		var sb strings.Builder
+		formatSize(&sb, tc.bytes)
+		if sb.String() != tc.want {
+			t.Errorf("formatSize(%d) = %q, want %q", tc.bytes, sb.String(), tc.want)
+		}
 	}
 }

@@ -21,10 +21,15 @@ import (
 // the per-package build directory without privilege escalation: safety=free
 // skips fakeroot wrapping and build_env never runs through sudo. HOME and the
 // state file are redirected to temp dirs so nothing touches the real system.
+//
+// After B6 fix, remove commands run in afterEnv with privilege escalation for
+// system paths. This test uses build directory paths which don't need sudo,
+// so we set a special environment variable to disable sudo for this test.
 func TestInstallRemovePipelineRealCommands(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // point the build cache at a temp dir
 	redirectInstalledFile(t)
 	t.Setenv("TERM", "") // keep any progress/style output inert
+	t.Setenv("ALPS_TEST_NO_SUDO", "1") // Disable sudo for this test
 
 	name := "pipeline-test"
 	e := &Entry{
@@ -91,6 +96,47 @@ func TestInstallRemovePipelineRealCommands(t *testing.T) {
 	}
 }
 
+// TestExecuteBashRunAcceptsUppercaseDigest verifies a BASH_RUN script declared
+// with an uppercase digest still verifies: the parser normalizes the stored
+// digest to lowercase before the case-sensitive compare.
+func TestExecuteBashRunAcceptsUppercaseDigest(t *testing.T) {
+	t.Setenv("TERM", "")
+
+	script := []byte("echo hello\n")
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(script)
+	}))
+	defer srv.Close()
+
+	// executeBashRun downloads through fetchBytes, which builds its own client
+	// on http.DefaultTransport, so trust the test server there for the duration
+	// of the test.
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	oldTransport := http.DefaultTransport
+	http.DefaultTransport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}
+	defer func() { http.DefaultTransport = oldTransport }()
+
+	manifest := []byte("[pkg]\nsafety = free\nsha256sums = run.sh=" + strings.ToUpper(sha256hex(script)) + "\n")
+	entries, err := Parse(manifest)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	ctx := NewMacroContext(entries["pkg"], "")
+	ctx.BuildDir = t.TempDir()
+
+	cmd, err := executeBashRun(Macro{Name: "BASH_RUN", Args: []string{srv.URL + "/run.sh"}}, ctx)
+	if err != nil {
+		t.Fatalf("executeBashRun returned error: %v", err)
+	}
+	if !strings.Contains(cmd, "run.sh") {
+		t.Errorf("command = %q, want it to run the downloaded script", cmd)
+	}
+	if _, err := os.Stat(filepath.Join(ctx.BuildDir, "run.sh")); err != nil {
+		t.Errorf("script was not written to the build dir: %v", err)
+	}
+}
+
 // TestInstallDownloadBlockChecksum exercises the full install pipeline with a
 // real HTTPS {DOWNLOAD} verified against a checksum declared in the
 // sha256sums block format: the manifest parses into SHA256ByName, the build
@@ -101,6 +147,7 @@ func TestInstallDownloadBlockChecksum(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // point the build cache at a temp dir
 	redirectInstalledFile(t)
 	t.Setenv("TERM", "") // keep any progress/style output inert
+	t.Setenv("ALPS_TEST_NO_SUDO", "1") // Disable sudo for this test
 
 	body := []byte("block-checksum payload\n")
 	hash := sha256hex(body)
@@ -219,6 +266,7 @@ func TestRemoveFallsBackToSavedRemoveLines(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	redirectInstalledFile(t)
 	t.Setenv("TERM", "")
+	t.Setenv("ALPS_TEST_NO_SUDO", "1") // Disable sudo for this test
 
 	name := "fallback-test"
 	e := &Entry{

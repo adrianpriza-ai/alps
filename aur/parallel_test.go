@@ -140,7 +140,8 @@ func TestPrefetchReposAllProcessedAndConcurrencyCap(t *testing.T) {
 		return nil
 	}
 
-	if err := prefetchRepos(names, stub); err != nil {
+	_, err := prefetchRepos(names, stub)
+	if err != nil {
 		t.Fatalf("prefetchRepos failed: %v", err)
 	}
 	if len(synced) != len(names) {
@@ -165,7 +166,7 @@ func TestPrefetchReposReportsFailure(t *testing.T) {
 		return nil
 	}
 
-	err := prefetchRepos(pkgs, stub)
+	_, err := prefetchRepos(pkgs, stub)
 	if err == nil {
 		t.Fatal("expected an error when a package fails to sync")
 	}
@@ -184,10 +185,69 @@ func TestPrefetchReposEmpty(t *testing.T) {
 		called = true
 		return nil
 	}
-	if err := prefetchRepos(nil, stub); err != nil {
+	_, err := prefetchRepos(nil, stub)
+	if err != nil {
 		t.Fatalf("prefetchRepos(nil) failed: %v", err)
 	}
 	if called {
 		t.Error("stub should not be invoked for an empty plan")
+	}
+}
+
+// initAURCacheRepo creates a git repo at the location aurCacheDir resolves to
+// for pkgName (HOME is pointed at a temp root first) and returns its HEAD.
+func initAURCacheRepo(t *testing.T, pkgName, pkgbuild string) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("SUDO_USER", "")
+	t.Setenv("DOAS_USER", "")
+	dir := filepath.Join(root, ".cache", "alps", "aur", pkgName)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	return dir, initTestRepo(t, dir, pkgbuild)
+}
+
+// TestVerifyReviewedHeadsDetectsMovedHead verifies that a checkout whose HEAD
+// moved after the user approved it makes verifyReviewedHeads fail naming the
+// package, so the build aborts instead of compiling an unreviewed PKGBUILD.
+func TestVerifyReviewedHeadsDetectsMovedHead(t *testing.T) {
+	dir, reviewedHead := initAURCacheRepo(t, "foo", "pkgname=foo\n")
+	commitChange(t, dir, "second commit")
+
+	reviewed := map[string]string{"foo": reviewedHead}
+	err := verifyReviewedHeads(reviewed)
+	if err == nil {
+		t.Fatal("expected an error when the reviewed HEAD moved, got nil")
+	}
+	if !strings.Contains(err.Error(), "foo") {
+		t.Errorf("error should name the package, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "PKGBUILD changed after review") {
+		t.Errorf("error should explain the mismatch, got: %v", err)
+	}
+}
+
+// TestVerifyReviewedHeadsAcceptsUnmovedHead verifies the happy path: when the
+// checkout is still at the reviewed revision, verification passes.
+func TestVerifyReviewedHeadsAcceptsUnmovedHead(t *testing.T) {
+	_, reviewedHead := initAURCacheRepo(t, "foo", "pkgname=foo\n")
+
+	reviewed := map[string]string{"foo": reviewedHead}
+	if err := verifyReviewedHeads(reviewed); err != nil {
+		t.Fatalf("verifyReviewedHeads failed for an unmoved checkout: %v", err)
+	}
+}
+
+// TestVerifyReviewedHeadsIgnoresUnreviewedPackages verifies that packages
+// without a recorded review (e.g. review declined) do not fail verification
+// even when their checkout moved.
+func TestVerifyReviewedHeadsIgnoresUnreviewedPackages(t *testing.T) {
+	if err := verifyReviewedHeads(nil); err != nil {
+		t.Fatalf("verifyReviewedHeads(nil) failed: %v", err)
+	}
+	if err := verifyReviewedHeads(map[string]string{}); err != nil {
+		t.Fatalf("verifyReviewedHeads(empty) failed: %v", err)
 	}
 }

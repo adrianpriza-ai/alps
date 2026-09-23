@@ -6,18 +6,16 @@
 
   *The customizable package manager frontend (Linux, macOS, Termux, WSL)*
 
-  [![Release](https://img.shields.io/github/v/release/adrianpriza-ai/alps?include_prereleases&style=flat&color=red)](https://github.com/adrianpriza-ai/alps/releases)
-  [![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
-  [![Go](https://img.shields.io/badge/Go-1.25.13+-00ADD8?style=flat&logo=go)](https://go.dev)
-  [![CI](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml/badge.svg)](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml)
+  [![Release](https://img.shields.io/github/v/release/adrianpriza-ai/alps?include_prereleases&style=flat-square&logo=git&logoColor=white&label=release)](https://github.com/adrianpriza-ai/alps/releases)
+  [![License](https://img.shields.io/github/license/adrianpriza-ai/alps?style=flat-square&logo=opensourceinitiative&logoColor=white)](LICENSE)
+  [![Go](https://img.shields.io/badge/Go-1.25.13%2B-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev)
+  [![Build](https://img.shields.io/github/actions/workflow/status/adrianpriza-ai/alps/build.yml?style=flat-square&logo=github&label=build)](https://github.com/adrianpriza-ai/alps/actions/workflows/build.yml)
   
 </div>
 
 ---
 
 ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and `apk`, plus AUR, Snap, Flatpak, Winget, and a custom script repo called alps-more. One command interface across Linux, macOS, Termux on Android, and WSL on Windows.
-
-~9k lines of Go. Tests pass, `go vet` is clean.
 
 ## Features
 
@@ -29,7 +27,7 @@ ALPS is a Go-based frontend for `apt`, `apt-get`, `dnf`, `pacman`, `zypper`, and
 | **WSL support** | Works on WSL; alps-more entries can target `os = wsl` |
 | **Built-in AUR** | Full recursive dep resolution, PKGBUILD review, yay/paru fallback |
 | **Extra packages** | Snap, Flatpak, and Winget with the same command shape across all three |
-| **alps-more** | Cross-distro script repo with version tracking, mirror failover, and remote installs from GitHub/GitLab/Hugging Face |
+| **alps-more** | Cross-distro script repo with version tracking, mirror failover, and remote installs from 17 git forges: GitHub, GitLab, Codeberg, Gitea, Gitee, GitCode, AtomGit, CNB (cnb.cool), Hugging Face, SourceHut, Savannah, kernel.org, SourceForge, Freedesktop, Pagure, Salsa, and more |
 | **Security** | HTTPS-only downloads, SHA-256 verification, signed APT repositories, response size limits (10MB manifests, 10MB scripts, 100MB downloads, per-file `{SIZE}` caps) |
 | **Customizable** | Colors, symbols, header, aliases, all via the config file |
 | **Completion** | fish, bash, zsh; distro-aware, with an AUR name cache and live package completion |
@@ -207,6 +205,7 @@ sym_bullet = "•"
 
 # Header
 show_header  = true
+header_text  = "ALPS"     # title text shown by the default header
 title_style  = "default"   # or "custom"
 title_line1  = "\e[1;97m  ╔═════════════╗"
 title_line2  = "\e[1;97m  ║ ALPS  /\/\/ ║"
@@ -216,6 +215,9 @@ title_line3  = "\e[1;97m  ╚═════════════╝"
 alias_i   = "install"
 alias_-S  = "install"
 alias_-R  = "remove"
+
+# AUR
+aur_require_gpg = false  # missing .sig on an AUR package becomes a hard error
 ```
 
 ## AUR (Arch Linux)
@@ -235,13 +237,14 @@ sudo pacman -S --needed git base-devel
 | RPC search/info | `Search`, `SearchNarrow`, `Info`, `InfoBatch`, `Exists` — all with retry, backoff, jitter |
 | Install pipeline | Dependency resolution → build plan → `makepkg -si` or delegate to yay/paru |
 | VCS update detection | Probes upstream repos (`git ls-remote`, `svn info`, `hg identify`) for `-git`/`-svn`/`-hg` packages instead of comparing frozen RPC versions |
-| Security | GPG signature verification on all installs, env var sanitization for `makepkg`, privilege dropping when run as root, AUR remote URL verification |
-| PKGBUILD review | Interactive diff on upgrades, summary of important fields, optional editor/terminal view before building |
+| Security | GPG signature verification when a signature is present (`aur_require_gpg` makes a missing `.sig` a hard error), env var sanitization for `makepkg`, privilege dropping when run as root, AUR remote URL verification |
+| PKGBUILD review | Interactive diff on upgrades, summary of important fields, optional editor/terminal view before building; the build aborts if the checkout moved after review |
 | Local builds | `BuildLocal` from a user-supplied PKGBUILD directory |
 | ABS fetching | `FetchABS` via `asp` or Arch GitLab fallback |
 | Cache management | Build cache at `~/.cache/alps/aur/`, reuse by name+version match with `pacman -Qkp` integrity check |
 | Conflict detection | Pre-build conflict check against installed packages |
-| Split packages | Handles `pkgbase` split packages (matches by name, provides, or `PackageBase`) |
+| Split packages | Handles `pkgbase` split packages (matches by name, provides, or `PackageBase`; cached-build reuse installs the full archive set, not just one) |
+| Ignore rules | `IgnorePkg` and `IgnoreGroup` (expanded via `pacman -Qg`) are filtered out of upgrade checks |
 | Pacman helpers | `pkgInstalled`, `inPacmanRepo`, `unsatisfiedDeps`, `GetInstalledAUR`, `ReadPacmanConf` |
 | Orphan detection | Cross-references `pacman -Qtdq` with `-Qm` to find AUR orphans |
 | Validation | Package name regex, path traversal check in cache dirs |

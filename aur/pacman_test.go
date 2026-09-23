@@ -1,9 +1,68 @@
 package aur
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
+
+// installStubPacman puts an executable fake pacman at the front of PATH for
+// the duration of the test. The stub records its full argument list, one
+// argument per line, into <dir>/args.txt, and exits with the given code.
+func installStubPacman(t *testing.T, exitCode int) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do printf '%s\\n' \"$a\"; done >> " + filepath.Join(dir, "args.txt") + "\n" +
+		"exit " + fmt.Sprintf("%d", exitCode) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "pacman"), []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write stub pacman: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return filepath.Join(dir, "args.txt")
+}
+
+// TestUnsatisfiedDepsPassesVersionConstraints verifies that dep strings reach
+// `pacman -T` with their version constraints intact, so an installed-but-old
+// dependency is reported as missing instead of silently satisfying foo>=2.0.
+func TestUnsatisfiedDepsPassesVersionConstraints(t *testing.T) {
+	argsFile := installStubPacman(t, 1) // exit 1 = something is unsatisfied
+
+	got := unsatisfiedDeps([]string{"foo>=2.0"})
+
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("stub pacman recorded no args: %v", err)
+	}
+	args := strings.Split(strings.TrimSpace(string(data)), "\n")
+	found := false
+	for _, a := range args {
+		if a == "foo>=2.0" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("pacman -T did not receive the constraint intact, args: %v", args)
+	}
+	if len(got) != 1 || got[0] != "foo>=2.0" {
+		t.Errorf("unsatisfiedDeps = %v, want [foo>=2.0]", got)
+	}
+}
+
+// TestUnsatisfiedDepsFailsClosedWhenPacmanMissing verifies that when pacman
+// cannot be executed at all, every dep is reported as unsatisfied.
+func TestUnsatisfiedDepsFailsClosedWhenPacmanMissing(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	got := unsatisfiedDeps([]string{"foo>=2.0", "bar"})
+	if len(got) != 2 || got[0] != "foo>=2.0" || got[1] != "bar" {
+		t.Errorf("unsatisfiedDeps = %v, want every dep reported missing", got)
+	}
+}
 
 // TestVercmpEqual verifies that identical versions return 0 (equal).
 func TestVercmpEqual(t *testing.T) {
@@ -25,6 +84,61 @@ func TestVercmpEqual(t *testing.T) {
 				t.Errorf("vercmp(%q, %q) = %d, want 0", tt.a, tt.b, got)
 			}
 		})
+	}
+}
+
+// TestVercmpFallbackLeadingZeros verifies that digit runs differing only in
+// leading zeros compare equal, matching real vercmp (1.0.01 == 1.0.1).
+func TestVercmpFallbackLeadingZeros(t *testing.T) {
+	cases := [][2]string{
+		{"1.0.01", "1.0.1"},
+		{"1.0.1", "1.0.01"},
+		{"1.0.007", "1.0.7"},
+		{"007", "7"},
+	}
+	for _, c := range cases {
+		if got := vercmpFallback(c[0], c[1]); got != 0 {
+			t.Errorf("vercmpFallback(%q, %q) = %d, want 0", c[0], c[1], got)
+		}
+	}
+	// Numeric value still decides when it differs (007 is seven, so newer than 2).
+	if got := vercmpFallback("1.0.2", "1.0.007"); got != -1 {
+		t.Errorf("vercmpFallback(1.0.2, 1.0.007) = %d, want -1", got)
+	}
+}
+
+// TestFindAUROrphansDeterministicOrder verifies that repeated runs of
+// FindAUROrphans return orphans in the same order rather than Go's randomized
+// map iteration order.
+func TestFindAUROrphansDeterministicOrder(t *testing.T) {
+	pacmanDir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"-Qm\" ]; then\n" +
+		"  echo \"aur-pkg-a 1.0-1\"\n" +
+		"  echo \"aur-pkg-b 2.0-1\"\n" +
+		"  echo \"aur-pkg-c 3.0-1\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"-Qtdq\" ]; then\n" +
+		"  echo \"aur-pkg-c\"\n" +
+		"  echo \"aur-pkg-a\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(pacmanDir, "pacman"), []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write stub pacman: %v", err)
+	}
+	t.Setenv("PATH", pacmanDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	want := []string{"aur-pkg-a", "aur-pkg-c"}
+	for i := 0; i < 20; i++ {
+		got, err := FindAUROrphans()
+		if err != nil {
+			t.Fatalf("FindAUROrphans failed: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("FindAUROrphans = %v, want %v (iteration %d)", got, want, i)
+		}
 	}
 }
 

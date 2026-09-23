@@ -1,6 +1,7 @@
 package priv
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,9 +31,10 @@ type PrivilegeDecision struct {
 	Privileged bool            // Whether privilege escalation is required
 }
 
-// IsRoot checks if running as root.
+// IsRoot reports whether the process runs with root privileges. It delegates
+// to platform.IsRoot — the single canonical check, based on the effective uid.
 func IsRoot() bool {
-	return os.Getuid() == 0
+	return platform.IsRoot()
 }
 
 // HasSudo checks if sudo exists.
@@ -182,43 +184,51 @@ func Command(args ...string) (*exec.Cmd, error) {
 		return nil, err
 	}
 
-	if decision.Method == MethodNone {
-		return exec.Command(decision.Exec, decision.Args...), nil
-	}
-
+	// DecidePrivilege has already resolved both the executable and its
+	// arguments for the privileged and unprivileged cases, so no separate
+	// unprivileged path is needed.
 	return exec.Command(decision.Exec, decision.Args...), nil
 }
 
-// Ensure gets a valid privilege token.
-func Ensure() error {
-	// Termux owns its prefix — no escalation needed or available
-	if platform.IsTermux() {
-		return nil
+// escalatePolicy selects which escalation methods are acceptable.
+type escalatePolicy struct {
+	allowPkexec bool
+	allowSu     bool
+}
+
+// accepts reports whether the policy permits m.
+func (p escalatePolicy) accepts(m PrivilegeMethod) bool {
+	switch m {
+	case MethodPkexec:
+		return p.allowPkexec
+	case MethodSu:
+		return p.allowSu
+	}
+	return true
+}
+
+// errNoModernMethod is returned when only pkexec or su is available and the
+// policy excludes both.
+var errNoModernMethod = errors.New("sudo or doas is required for this operation")
+
+// ensureWith verifies that an acceptable escalation method exists and prompts
+// for credentials when the chosen method supports pre-authentication. Method
+// selection is delegated to DecidePrivilege so both paths share one preference
+// table.
+func ensureWith(p escalatePolicy) error {
+	decision, err := DecidePrivilege("true")
+	if err != nil {
+		return err
 	}
 
-	// macOS may need sudo for system operations
-	if platform.IsMacOS() {
-		// If sudo is available, ensure it's authenticated
-		if HasSudo() {
-			if exec.Command("sudo", "-n", "true").Run() == nil {
-				return nil
-			}
-			fmt.Println()
-			pw := exec.Command("sudo", "-v")
-			pw.Stdout = os.Stdout
-			pw.Stderr = os.Stderr
-			pw.Stdin = os.Stdin
-			return pw.Run()
-		}
-		// If no sudo available, that's okay for user directory operations
-		return nil
+	if !p.accepts(decision.Method) {
+		return errNoModernMethod
 	}
 
-	if IsRoot() {
+	switch decision.Method {
+	case MethodNone:
 		return nil
-	}
-
-	if HasSudo() {
+	case MethodSudo:
 		// Check if sudo token already valid
 		if exec.Command("sudo", "-n", "true").Run() == nil {
 			return nil
@@ -229,185 +239,41 @@ func Ensure() error {
 		pw.Stderr = os.Stderr
 		pw.Stdin = os.Stdin
 		return pw.Run()
-	}
-
-	if HasDoas() {
-		// doas will prompt when command is run, nothing to pre-auth
+	default:
+		// doas, pkexec and su prompt when the escalated command runs
 		return nil
 	}
-
-	if HasPkexec() {
-		// pkexec will handle auth via GUI/system, nothing to pre-auth
-		return nil
-	}
-
-	if HasSu() {
-		// su will prompt when command is run, nothing to pre-auth
-		return nil
-	}
-
-	return fmt.Errorf("no privilege escalation available (no sudo, doas, pkexec, or su)")
 }
 
-// CommandSudoOnly is like Command but never falls back to su.
-func CommandSudoOnly(args ...string) (*exec.Cmd, error) {
-	if len(args) == 0 {
-		return nil, fmt.Errorf("no command provided")
-	}
-
-	if platform.IsTermux() {
-		return exec.Command(args[0], args[1:]...), nil
-	}
-
-	if platform.IsMacOS() {
-		// On macOS, allow sudo for system operations
-		if HasSudo() {
-			return exec.Command("sudo", args...), nil
-		}
-		// If no sudo, run without escalation for user directories
-		return exec.Command(args[0], args[1:]...), nil
-	}
-
-	if IsRoot() {
-		return exec.Command(args[0], args[1:]...), nil
-	}
-
-	if HasSudo() {
-		return exec.Command("sudo", args...), nil
-	}
-
-	if HasDoas() {
-		return exec.Command("doas", args...), nil
-	}
-
-	return nil, fmt.Errorf("sudo is required for this operation — install sudo or run as root")
-}
-
-// CommandModern prefers modern escalation methods (sudo/doas) over legacy (su/pkexec).
-func CommandModern(args ...string) (*exec.Cmd, error) {
-	if len(args) == 0 {
-		return nil, fmt.Errorf("no command provided")
-	}
-
-	if platform.IsTermux() {
-		return exec.Command(args[0], args[1:]...), nil
-	}
-
-	if platform.IsMacOS() {
-		// On macOS, prefer sudo if available
-		if HasSudo() {
-			return exec.Command("sudo", args...), nil
-		}
-		// If no sudo, run without escalation for user directories
-		return exec.Command(args[0], args[1:]...), nil
-	}
-
-	if IsRoot() {
-		return exec.Command(args[0], args[1:]...), nil
-	}
-
-	if HasSudo() {
-		return exec.Command("sudo", args...), nil
-	}
-
-	if HasDoas() {
-		return exec.Command("doas", args...), nil
-	}
-
-	return nil, fmt.Errorf("sudo or doas is required for this operation")
-}
-
-// EnsureSudoOnly is like Ensure but never accepts su.
-func EnsureSudoOnly() error {
-	if platform.IsTermux() {
-		return nil
-	}
-
-	if platform.IsMacOS() {
-		// On macOS, if sudo is available, ensure it's authenticated
-		if HasSudo() {
-			if exec.Command("sudo", "-n", "true").Run() == nil {
-				return nil
-			}
-			fmt.Println()
-			pw := exec.Command("sudo", "-v")
-			pw.Stdout = os.Stdout
-			pw.Stderr = os.Stderr
-			pw.Stdin = os.Stdin
-			return pw.Run()
-		}
-		// If no sudo, that's okay for user directory operations
-		return nil
-	}
-
-	if IsRoot() {
-		return nil
-	}
-
-	if HasSudo() {
-		if exec.Command("sudo", "-n", "true").Run() == nil {
-			return nil
-		}
-		fmt.Println()
-		pw := exec.Command("sudo", "-v")
-		pw.Stdout = os.Stdout
-		pw.Stderr = os.Stderr
-		pw.Stdin = os.Stdin
-		return pw.Run()
-	}
-
-	if HasDoas() {
-		// doas will prompt when command is run, nothing to pre-auth
-		return nil
-	}
-
-	return fmt.Errorf("sudo is required for this operation — install sudo or run as root")
+// Ensure gets a valid privilege token, accepting every escalation method.
+func Ensure() error {
+	return ensureWith(escalatePolicy{allowPkexec: true, allowSu: true})
 }
 
 // EnsureModern ensures privilege access using modern methods (sudo/doas) only.
 func EnsureModern() error {
-	if platform.IsTermux() {
-		return nil
+	return ensureWith(escalatePolicy{})
+}
+
+// CommandModern is like Command but never falls back to pkexec or su.
+func CommandModern(args ...string) (*exec.Cmd, error) {
+	return commandWith(escalatePolicy{}, args...)
+}
+
+// commandWith returns the escalated command for args under the given policy.
+// Method selection is delegated to DecidePrivilege so both paths share one
+// preference table.
+func commandWith(p escalatePolicy, args ...string) (*exec.Cmd, error) {
+	decision, err := DecidePrivilege(args...)
+	if err != nil {
+		return nil, err
 	}
 
-	if platform.IsMacOS() {
-		// On macOS, if sudo is available, ensure it's authenticated
-		if HasSudo() {
-			if exec.Command("sudo", "-n", "true").Run() == nil {
-				return nil
-			}
-			fmt.Println()
-			pw := exec.Command("sudo", "-v")
-			pw.Stdout = os.Stdout
-			pw.Stderr = os.Stderr
-			pw.Stdin = os.Stdin
-			return pw.Run()
-		}
-		// If no sudo, that's okay for user directory operations
-		return nil
+	if !p.accepts(decision.Method) {
+		return nil, errNoModernMethod
 	}
 
-	if IsRoot() {
-		return nil
-	}
-
-	if HasSudo() {
-		if exec.Command("sudo", "-n", "true").Run() == nil {
-			return nil
-		}
-		fmt.Println()
-		pw := exec.Command("sudo", "-v")
-		pw.Stdout = os.Stdout
-		pw.Stderr = os.Stderr
-		pw.Stdin = os.Stdin
-		return pw.Run()
-	}
-
-	if HasDoas() {
-		return nil
-	}
-
-	return fmt.Errorf("sudo or doas is required for this operation")
+	return exec.Command(decision.Exec, decision.Args...), nil
 }
 
 // Invalidate invalidates all available privilege escalation caches.

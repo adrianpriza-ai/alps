@@ -1,9 +1,11 @@
 package aur
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 
@@ -57,11 +59,11 @@ func hasInPath(name string) bool {
 // "double-checked locking" pattern in Go and is safe because the map
 // is only ever written under the lock.
 //
-// NOTE: newPkgCache() is called fresh in buildInstallPlan, BuildLocal,
-// and checkDeps, so cross-invocation caching does not happen. If two
-// packages share deps, the second runs pacman -Qi/-Si for the same
-// names again. Hoisting the cache to the package level (or to aurCache)
-// would fix this, but contention is low in practice.
+// NOTE: newPkgCache() is called fresh in buildInstallPlan and BuildLocal,
+// so cross-invocation caching does not happen. If two packages share deps,
+// the second runs pacman -Qi/-Si for the same names again. Hoisting the
+// cache to the package level (or to aurCache) would fix this, but
+// contention is low in practice.
 type pkgCache struct {
 	mu        sync.Mutex
 	installed map[string]bool
@@ -124,18 +126,21 @@ func (c *pkgCache) HasProvider(name string) bool {
 	return v
 }
 
-// unsatisfiedDeps finds unmet dependencies.
+// unsatisfiedDeps finds unmet dependencies. Version constraints stay intact
+// so `pacman -T` reports an installed-but-too-old package as missing. When
+// pacman itself cannot be run, every dep is reported as missing.
 func unsatisfiedDeps(deps []string) []string {
 	if len(deps) == 0 {
 		return nil
 	}
-	stripped := make([]string, len(deps))
-	for i, d := range deps {
-		stripped[i] = stripVerConstraint(d)
-	}
-	out, err := exec.Command("pacman", append([]string{"-T"}, stripped...)...).CombinedOutput()
-	if err == nil {
-		return nil // all satisfied
+	out, err := exec.Command("pacman", append([]string{"-T"}, deps...)...).CombinedOutput()
+	if err != nil {
+		var exitErr *exec.ExitError
+		pacmanUnreachable := !errors.As(err, &exitErr) ||
+			(strings.TrimSpace(string(out)) == "" && exitErr.ExitCode() != 127)
+		if pacmanUnreachable {
+			return deps
+		}
 	}
 	var result []string
 	for _, line := range strings.Split(string(out), "\n") {
@@ -150,26 +155,6 @@ func unsatisfiedDeps(deps []string) []string {
 // hasProvider checks if a dep is satisfied.
 func hasProvider(dep string) bool {
 	return exec.Command("pacman", "-T", dep).Run() == nil
-}
-
-// checkDeps checks dependencies.
-func checkDeps(pkg *Package) (missingRepo []string, aurOnly []string, err error) {
-	cache := newPkgCache()
-	allDeps := append(pkg.Depends, pkg.MakeDepends...)
-	for _, dep := range unsatisfiedDeps(allDeps) {
-		name := stripVerConstraint(dep)
-		if cache.InRepo(name) {
-			missingRepo = append(missingRepo, name)
-			continue
-		}
-		if Exists(name) {
-			aurOnly = append(aurOnly, name)
-		} else {
-			err = fmt.Errorf("dep %q not found anywhere", name)
-			return
-		}
-	}
-	return
 }
 
 func isInstalled(name string) bool {
@@ -350,11 +335,14 @@ func compareSegments(a, b string) int {
 			if aNum < bNum {
 				return -1
 			}
-			// Equal numeric values: longer digit string is newer (e.g. 1.0.01 > 1.0.1)
-			if len(aVal) > len(bVal) {
+			// Equal numeric values compare equal regardless of leading zeros,
+			// matching real vercmp (1.0.01 == 1.0.1).
+			aDigits := strings.TrimLeft(aVal, "0")
+			bDigits := strings.TrimLeft(bVal, "0")
+			if len(aDigits) > len(bDigits) {
 				return 1
 			}
-			if len(aVal) < len(bVal) {
+			if len(aDigits) < len(bDigits) {
 				return -1
 			}
 		} else {
@@ -506,7 +494,8 @@ func FindAUROrphans() ([]string, error) {
 	orphansOut, err := exec.Command("pacman", "-Qtdq").Output()
 	if err != nil {
 		// pacman -Qtdq returns exit code 1 if no orphans found, which is normal
-		if strings.Contains(err.Error(), "exit status 1") {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return []string{}, nil
 		}
 		return nil, fmt.Errorf("pacman -Qtdq failed: %w", err)
@@ -527,7 +516,12 @@ func FindAUROrphans() ([]string, error) {
 
 	// Find intersection: AUR packages that are also orphans
 	var aurOrphans []string
+	names := make([]string, 0, len(aurPackages))
 	for name := range aurPackages {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
 		if orphanNames[name] {
 			aurOrphans = append(aurOrphans, name)
 		}

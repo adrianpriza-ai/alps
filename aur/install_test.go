@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // gpgTempHome creates a short-path GPG homedir under /tmp rather than using
@@ -281,7 +282,7 @@ func TestFindBuiltPackages(t *testing.T) {
 		}
 	}
 
-	pkgs, err := findBuiltPackages(dir)
+	pkgs, err := findBuiltPackages(dir, time.Time{})
 	if err != nil {
 		t.Fatalf("findBuiltPackages failed: %v", err)
 	}
@@ -304,7 +305,7 @@ func TestFindBuiltPackages(t *testing.T) {
 // for an empty directory.
 func TestFindBuiltPackagesEmpty(t *testing.T) {
 	dir := t.TempDir()
-	pkgs, err := findBuiltPackages(dir)
+	pkgs, err := findBuiltPackages(dir, time.Time{})
 	if err != nil {
 		t.Fatalf("findBuiltPackages failed: %v", err)
 	}
@@ -316,9 +317,126 @@ func TestFindBuiltPackagesEmpty(t *testing.T) {
 // TestFindBuiltPackagesNonexistent verifies that findBuiltPackages returns
 // an error for a nonexistent directory.
 func TestFindBuiltPackagesNonexistent(t *testing.T) {
-	_, err := findBuiltPackages("/nonexistent/path/12345")
+	_, err := findBuiltPackages("/nonexistent/path/12345", time.Time{})
 	if err == nil {
 		t.Error("expected error for nonexistent directory, got nil")
+	}
+}
+
+// TestFindBuiltPackagesSinceFiltersOldFiles verifies that findBuiltPackages
+// skips archives whose mtime predates the given timestamp, so archives left
+// behind by an earlier build are not handed to pacman -U.
+func TestFindBuiltPackagesSinceFiltersOldFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	oldPath := filepath.Join(dir, "old.pkg.tar.zst")
+	newPath := filepath.Join(dir, "new.pkg.tar.zst")
+	for _, p := range []string{oldPath, newPath} {
+		if err := os.WriteFile(p, []byte("content"), 0644); err != nil {
+			t.Fatalf("failed to create %s: %v", p, err)
+		}
+	}
+	hourAgo := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(oldPath, hourAgo, hourAgo); err != nil {
+		t.Fatalf("os.Chtimes failed: %v", err)
+	}
+
+	pkgs, err := findBuiltPackages(dir, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("findBuiltPackages failed: %v", err)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("expected 1 package, got %d: %v", len(pkgs), pkgs)
+	}
+	if got := filepath.Base(pkgs[0]); got != "new.pkg.tar.zst" {
+		t.Errorf("findBuiltPackages kept %q, want only new.pkg.tar.zst", got)
+	}
+}
+
+// TestFindReusableBuiltPackageReturnsSplitPackageSet verifies that the reuse
+// path collects every sibling archive of a split package at the requested
+// version, deduplicates same-name archives, and drops stale versions.
+// inspectBuiltPackage shells out to pacman -Qp, so a stub pacman on PATH
+// parses "<name>-<pkgver>-<pkgrel>-<arch>.pkg.tar.*" names into "<name> <version>".
+func TestFindReusableBuiltPackageReturnsSplitPackageSet(t *testing.T) {
+	dir := t.TempDir()
+	writeArchive := func(name string) {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte{0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x01}, 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	writeArchive("foo-1.0-1-x86_64.pkg.tar.zst")
+	writeArchive("foo-docs-1.0-1-x86_64.pkg.tar.zst")
+	writeArchive("foo-1.0-1-x86_64.pkg.tar")     // duplicate of the first by name+version
+	writeArchive("foo-0.9-1-x86_64.pkg.tar.zst") // stale
+
+	pacmanDir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"base=$(basename \"$2\")\n" +
+		"stem=${base%.pkg.tar.*}\n" +
+		"ver=$(echo \"$stem\" | awk -F- '{print $(NF-2) \"-\" $(NF-1)}')\n" +
+		"echo \"$stem\" | awk -F- -v v=\"$ver\" '{name=$1; for (i=2; i<=NF-3; i++) name=name \"-\" $i; print name, v}'\n"
+	if err := os.WriteFile(filepath.Join(pacmanDir, "pacman"), []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write stub pacman: %v", err)
+	}
+	t.Setenv("PATH", pacmanDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	pkg := &Package{Name: "foo", Version: "1.0-1", PackageBase: "foo"}
+	matches, err := findReusableBuiltPackage(pkg, dir)
+	if err != nil {
+		t.Fatalf("findReusableBuiltPackage failed: %v", err)
+	}
+
+	got := map[string]string{}
+	for _, m := range matches {
+		got[m.Name] = m.Version
+	}
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 matching archives, got %d: %+v", len(matches), matches)
+	}
+	if got["foo"] != "1.0-1" || got["foo-docs"] != "1.0-1" {
+		t.Errorf("expected foo and foo-docs at 1.0-1, got %v", got)
+	}
+}
+
+// TestValidUserName verifies the guard applied to SUDO_USER/DOAS_USER before
+// the value is passed to sudo -u / doas -u.
+func TestValidUserName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"root", true},
+		{"alice", true},
+		{"a.b-c_1", true},
+		{"", false},
+		{"-rf", false},
+		{"a b", false},
+		{"a;b", false},
+		{"../../x", false},
+	}
+	for _, tt := range tests {
+		if got := validUserName(tt.name); got != tt.want {
+			t.Errorf("validUserName(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestOriginalUserRejectsInvalidNames verifies that an environment-supplied
+// user name failing validation makes originalUser return empty, which sends
+// unprivilegedCommand down its refusing-to-run-as-root error path.
+func TestOriginalUserRejectsInvalidNames(t *testing.T) {
+	t.Setenv("SUDO_USER", "-rf")
+	t.Setenv("DOAS_USER", "")
+	if got := originalUser(); got != "" {
+		t.Errorf("originalUser with SUDO_USER=-rf = %q, want empty", got)
+	}
+
+	t.Setenv("SUDO_USER", "alice")
+	if got := originalUser(); got != "alice" {
+		t.Errorf("originalUser with SUDO_USER=alice = %q, want alice", got)
 	}
 }
 

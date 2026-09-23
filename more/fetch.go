@@ -278,7 +278,12 @@ func resolveServer(servers []string) (string, error) {
 	for _, s := range servers {
 		go func(url string) {
 			resp, err := client.Head(url)
-			if err != nil || resp.StatusCode >= 400 {
+			if err != nil {
+				ch <- result{url, false}
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode >= 400 {
 				ch <- result{url, false}
 				return
 			}
@@ -397,6 +402,7 @@ func isForgeHost(rawURL string) bool {
 		"gitee.com",   // Gitee — Chinese GitHub equivalent
 		"gitcode.com", // GitCode — CSDN's git platform
 		"atomgit.com", // AtomGit — open-source by China
+		"cnb.cool",    // CNB — Tencent's Cloud Native Build platform
 		// Gitea / Forgejo instances
 		"gitea.com", // Gitea official SaaS
 		// AI/ML platform with Git-hosted repos
@@ -513,6 +519,8 @@ func remoteRawURL(ref RemoteRef, branch string) string {
 		return fmt.Sprintf("https://%s/%s/-/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
 	case "atomgit":
 		return fmt.Sprintf("https://%s/%s/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
+	case "cnb":
+		return fmt.Sprintf("https://%s/%s/-/git/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
 	case "gitea":
 		return fmt.Sprintf("https://%s/%s/raw/%s/ALPSMORE", ref.Host, ref.RepoPath, branch)
 	case "sourcehut":
@@ -655,6 +663,8 @@ func defaultHost(provider string) string {
 		return "codeberg.org"
 	case "huggingface":
 		return "huggingface.co"
+	case "cnb":
+		return "cnb.cool"
 	default:
 		return ""
 	}
@@ -673,6 +683,8 @@ func providerFromHost(host string) string {
 		return "gitcode"
 	case host == "atomgit.com":
 		return "atomgit"
+	case host == "cnb.cool":
+		return "cnb"
 	case host == "gitea.com":
 		return "gitea"
 	case host == "sr.ht" || strings.HasSuffix(host, ".sr.ht"):
@@ -680,8 +692,15 @@ func providerFromHost(host string) string {
 	case host == "huggingface.co":
 		return "huggingface"
 	default:
-		// Self-hosted GitLab and other GitLab-compatible forges.
-		return "gitlab"
+		// Self-hosted GitLab and other GitLab-compatible forges are identified
+		// by containing a dot in the host (e.g. gitlab.example.org).
+		// A bare host like "user" (from "user/repo") is not a real forge and
+		// returns "" so ParseRemoteURL can report a clear error instead of
+		// silently building a bogus URL.
+		if strings.Contains(host, ".") {
+			return "gitlab"
+		}
+		return ""
 	}
 }
 

@@ -57,9 +57,8 @@ func stripUnknownTokens(s string) string {
 // scratch directory (os.TempDir()/.alps-run-*; /tmp on Linux, $PREFIX/tmp on
 // Termux)
 type ExecutionManifest struct {
-	BuildEnv  []string // Build environment commands (before installation)
-	AfterEnv  []string // After environment commands (installation macros)
-	ScriptNum int      // Counter for generating script numbers
+	BuildEnv []string // Build environment commands (before installation)
+	AfterEnv []string // After environment commands (installation macros)
 }
 
 // Scrape extracts command blocks from an Entry based on the operation type
@@ -154,9 +153,8 @@ var AfterEnvMacros = map[string]bool{
 //     (install/upgrade on Linux as non-root), and any inner sudo/doas/pkexec commands are stripped by stripSudo.
 func Filter(lines []string, ctx *MacroContext, op platform.OperationType) (*ExecutionManifest, error) {
 	manifest := &ExecutionManifest{
-		BuildEnv:  []string{},
-		AfterEnv:  []string{},
-		ScriptNum: 0,
+		BuildEnv: []string{},
+		AfterEnv: []string{},
 	}
 
 	stripEsc := shouldStripEscalation(op, ctx)
@@ -187,6 +185,11 @@ func expandPlaceholdersGlobally(lines []string, ctx *MacroContext) []string {
 func processLines(lines []string, stripEsc bool, manifest *ExecutionManifest, op platform.OperationType) (*ExecutionManifest, error) {
 	var currentBuffer []string
 	currentSection := "buildEnv" // tracks which manifest section the buffer targets
+	if isRemovalOp(op) {
+		// remove/purge commands act on installed system files and run through
+		// the privileged after_env pass; installs keep build_env unprivileged.
+		currentSection = "afterEnv"
+	}
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -205,11 +208,14 @@ func processLines(lines []string, stripEsc bool, manifest *ExecutionManifest, op
 			categorizeMacro(line, macro, manifest, op)
 
 			// Update section tracker: if the macro landed in AfterEnv, subsequent
-			// plain commands should also buffer into AfterEnv.
-			if AfterEnvMacros[macro.Name] {
-				currentSection = "afterEnv"
-			} else if BuildEnvMacros[macro.Name] {
-				currentSection = "buildEnv"
+			// plain commands should also buffer into AfterEnv. Only update for
+			// macros that actually run (not skipped for this operation).
+			if !skipMacroForOp(macro.Name, op) {
+				if AfterEnvMacros[macro.Name] {
+					currentSection = "afterEnv"
+				} else if BuildEnvMacros[macro.Name] {
+					currentSection = "buildEnv"
+				}
 			}
 		} else {
 			processedLine := processShellCommand(line, stripEsc)
@@ -233,7 +239,7 @@ func flushBuffer(buffer []string, section string, manifest *ExecutionManifest) e
 		return nil
 	}
 
-	scriptPath, err := writeTempScript(buffer, manifest.ScriptNum)
+	scriptPath, err := writeTempScript(buffer)
 	if err != nil {
 		return fmt.Errorf("failed to write temp script: %w", err)
 	}
@@ -246,7 +252,6 @@ func flushBuffer(buffer []string, section string, manifest *ExecutionManifest) e
 	default:
 		manifest.BuildEnv = append(manifest.BuildEnv, cmd)
 	}
-	manifest.ScriptNum++
 	return nil
 }
 
@@ -340,7 +345,7 @@ func ensureRunScratchDir() (string, error) {
 // Security: the scratch directory has a random 0700 name and scripts keep
 // restrictive owner-only permissions, so no fixed, predictable path exists in
 // the shared temp dir for another user to race or pre-create.
-func writeTempScript(lines []string, _ int) (string, error) {
+func writeTempScript(lines []string) (string, error) {
 	dir, err := ensureRunScratchDir()
 	if err != nil {
 		return "", err
@@ -398,9 +403,8 @@ func ReadManifest() (*ExecutionManifest, error) {
 	}
 
 	manifest := &ExecutionManifest{
-		BuildEnv:  []string{},
-		AfterEnv:  []string{},
-		ScriptNum: 0,
+		BuildEnv: []string{},
+		AfterEnv: []string{},
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -539,6 +543,11 @@ func executeAfterEnv(commands []string, useSudo bool, ctx *MacroContext, op plat
 		return nil
 	}
 
+	// Allow tests to disable sudo for operations that don't need it
+	if os.Getenv("ALPS_TEST_NO_SUDO") == "1" {
+		useSudo = false
+	}
+
 	label := envStepLabel(op)
 	fmt.Printf("  %s executing %s (%d command(s))\n", currentStyle().SymArrow, label, len(commands))
 	for _, cmd := range commands {
@@ -616,7 +625,8 @@ var commonFlags = []string{
 }
 
 // stripPrivEsc removes privilege escalation commands (sudo, doas, pkexec, su)
-// and their common flags from the beginning of a command string.
+// and their common flags from the beginning of a command string, and also from
+// the start of each segment after shell operators (&&, ||, ;, |).
 func stripPrivEsc(cmd string) string {
 	trimmed := strings.TrimSpace(cmd)
 
@@ -629,25 +639,158 @@ func stripPrivEsc(cmd string) string {
 		}
 	}
 
-	if !stripped {
-		return cmd
-	}
-
-	// Strip common flags that may follow the escalation command
-	for {
-		skipped := false
-		for _, flag := range commonFlags {
-			if strings.HasPrefix(trimmed, flag) {
-				trimmed = strings.TrimSpace(trimmed[len(flag):])
-				skipped = true
+	if stripped {
+		for {
+			skipped := false
+			for _, flag := range commonFlags {
+				if strings.HasPrefix(trimmed, flag) {
+					trimmed = strings.TrimSpace(trimmed[len(flag):])
+					skipped = true
+					break
+				}
+			}
+			if !skipped {
 				break
 			}
 		}
-		if !skipped {
-			break
+	}
+
+	return stripPrivEscAfterOps(trimmed)
+}
+
+// shellOperators are the command-separator sequences that stripPrivEscAfterOps
+// splits on. "&" alone is intentionally excluded (it backgrounds a process).
+var shellOperators = []string{"&&", "||", ";", "|"}
+
+// splitShellOps splits a command on shell operators (&&, ||, ;, |) that appear
+// outside of quotes. It returns the text segments (including surrounding
+// whitespace) and the operator that followed each segment.
+func splitShellOps(cmd string) (segments []string, ops []string) {
+	var cur strings.Builder
+	inSingle, inDouble := false, false
+	i := 0
+	for i < len(cmd) {
+		c := cmd[i]
+
+		if inSingle {
+			cur.WriteByte(c)
+			if c == '\'' {
+				inSingle = false
+			}
+			i++
+			continue
+		}
+		if inDouble {
+			cur.WriteByte(c)
+			if c == '"' && (i == 0 || cmd[i-1] != '\\') {
+				inDouble = false
+			}
+			i++
+			continue
+		}
+
+		if c == '\'' {
+			inSingle = true
+			cur.WriteByte(c)
+			i++
+			continue
+		}
+		if c == '"' {
+			inDouble = true
+			cur.WriteByte(c)
+			i++
+			continue
+		}
+
+		// Two-char operators (&&, ||) take priority over single-char.
+		matched := false
+		if i+1 < len(cmd) {
+			two := cmd[i : i+2]
+			for _, op := range shellOperators {
+				if len(op) == 2 && two == op {
+					segments = append(segments, cur.String())
+					ops = append(ops, op)
+					cur.Reset()
+					i += 2
+					matched = true
+					break
+				}
+			}
+		}
+		if matched {
+			continue
+		}
+
+		// Single-char operators (; and |).
+		one := string(c)
+		for _, op := range shellOperators {
+			if len(op) == 1 && one == op {
+				segments = append(segments, cur.String())
+				ops = append(ops, op)
+				cur.Reset()
+				i++
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+
+		cur.WriteByte(c)
+		i++
+	}
+	segments = append(segments, cur.String())
+	return segments, ops
+}
+
+// stripPrivEscAfterOps scans the command for shell operators outside quotes and
+// strips privilege-escalation prefixes from the segment that follows each one.
+// The first segment is also stripped, so callers can use this on a raw command
+// that starts with sudo.
+func stripPrivEscAfterOps(cmd string) string {
+	segments, ops := splitShellOps(cmd)
+	for i := range segments {
+		segments[i] = stripOnePrivEsc(segments[i])
+	}
+	var b strings.Builder
+	for i, seg := range segments {
+		if i > 0 {
+			b.WriteString(ops[i-1])
+		}
+		b.WriteString(seg)
+	}
+	return b.String()
+}
+
+// stripOnePrivEsc strips a privilege-escalation prefix (and its flags) from the
+// start of a string, preserving leading and trailing whitespace.
+func stripOnePrivEsc(seg string) string {
+	// Separate leading whitespace from content.
+	content := strings.TrimLeft(seg, " \t")
+	lead := seg[:len(seg)-len(content)]
+
+	for _, prefix := range privEscPrefixes {
+		if strings.HasPrefix(content, prefix) {
+			rest := strings.TrimPrefix(content, prefix)
+			// Strip common flags that follow the escalation command.
+			for {
+				skipped := false
+				for _, flag := range commonFlags {
+					if strings.HasPrefix(rest, flag) {
+						rest = strings.TrimPrefix(rest, flag)
+						skipped = true
+						break
+					}
+				}
+				if !skipped {
+					break
+				}
+			}
+			return lead + rest
 		}
 	}
-	return trimmed
+	return seg
 }
 
 // stripSudo is an alias for stripPrivEsc for backward compatibility.

@@ -2,9 +2,13 @@ package config
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	"github.com/adrianpriza-ai/alps/platform"
 )
 
 type Style struct {
@@ -35,28 +39,32 @@ type Config struct {
 	Aliases       map[string]string
 	GlobalPath    string
 	UserPath      string
+	// Version is the build version, set by main from the -ldflags-injected
+	// value; it is empty when Config is built in library or test use.
 	Version       string
+	AURRequireGPG bool
 }
 
 var defaults = map[string]string{
-	"color_primary": `\e[36m`,
-	"color_success": `\e[32m`,
-	"color_warning": `\e[33m`,
-	"color_error":   `\e[31m`,
-	"color_info":    `\e[34m`,
-	"color_dim":     `\e[2m`,
-	"color_reset":   `\e[0m`,
-	"color_bold":    `\e[1m`,
-	"sym_ok":        "✓",
-	"sym_err":       "✗",
-	"sym_warn":      "⚠",
-	"sym_info":      "◆",
-	"sym_pkg":       "::",
-	"sym_arrow":     "->",
-	"sym_bullet":    "::",
-	"show_header":   "true",
-	"title_style":   "default",
-	"header_text":   "alps",
+	"color_primary":   `\e[36m`,
+	"color_success":   `\e[32m`,
+	"color_warning":   `\e[33m`,
+	"color_error":     `\e[31m`,
+	"color_info":      `\e[34m`,
+	"color_dim":       `\e[2m`,
+	"color_reset":     `\e[0m`,
+	"color_bold":      `\e[1m`,
+	"sym_ok":          "✓",
+	"sym_err":         "✗",
+	"sym_warn":        "⚠",
+	"sym_info":        "◆",
+	"sym_pkg":         "::",
+	"sym_arrow":       "->",
+	"sym_bullet":      "::",
+	"show_header":     "true",
+	"title_style":     "default",
+	"header_text":     "ALPS",
+	"aur_require_gpg": "false",
 }
 
 // DefaultAliases are built-in short aliases.
@@ -89,11 +97,13 @@ var DefaultSubCmdAliases = map[string]string{
 	"del": "remove",
 }
 
-func globalConfigPath() string { return "/etc/alps/config" }
-
-// isTTY checks if running in a Linux TTY.
-func isTTY() bool {
-	return os.Getenv("TERM") == "linux" || os.Getenv("TERM") == "dumb" || os.Getenv("TERM") == ""
+// globalConfigPath returns the system-wide config path. ALPS_GLOBAL_CONFIG
+// overrides it when set — a seam for tests and packaging, not a user feature.
+func globalConfigPath() string {
+	if p := os.Getenv("ALPS_GLOBAL_CONFIG"); p != "" {
+		return p
+	}
+	return "/etc/alps/config"
 }
 
 func userConfigPath() string {
@@ -105,6 +115,15 @@ func userConfigPath() string {
 	return filepath.Join(base, "alps", "config")
 }
 
+// Load reads /etc/alps/config (or ALPS_GLOBAL_CONFIG) and then the user's
+// config, layering the user file over the global one. The two files merge
+// with different rules:
+//
+//   - every key/value is last-one-wins, so the user file overrides the
+//     global file;
+//   - title_line entries are per-file: the user file's header lines replace
+//     the global file's when the user file defines any, so a user banner
+//     fully replaces the distro banner instead of stacking on top of it.
 func Load() *Config {
 	kv := make(map[string]string, len(defaults))
 	for k, v := range defaults {
@@ -113,13 +132,17 @@ func Load() *Config {
 
 	aliases := make(map[string]string)
 	configAliases := make(map[string]string)
-	headerLines := []string{}
 
 	globalPath := globalConfigPath()
 	userPath := userConfigPath()
 
-	parseFile(globalPath, kv, aliases, configAliases, &headerLines)
-	parseFile(userPath, kv, aliases, configAliases, &headerLines)
+	globalHeaders := parseFile(globalPath, kv, aliases, configAliases)
+	userHeaders := parseFile(userPath, kv, aliases, configAliases)
+
+	headerLines := globalHeaders
+	if len(userHeaders) > 0 {
+		headerLines = userHeaders
+	}
 
 	// Fill in default aliases only if not overridden by config
 	for k, v := range DefaultAliases {
@@ -128,8 +151,8 @@ func Load() *Config {
 		}
 	}
 
-	// Override symbols for TTY
-	if isTTY() {
+	// Override symbols for ASCII terminals
+	if platform.UsesASCIIFallback() {
 		kv["sym_ok"] = " OK "
 		kv["sym_err"] = "ERR "
 		kv["sym_warn"] = "WARN"
@@ -162,17 +185,30 @@ func Load() *Config {
 		ConfigAliases: configAliases,
 		GlobalPath:    globalPath,
 		UserPath:      userPath,
+		AURRequireGPG: kv["aur_require_gpg"] == "true",
 	}
 }
 
-func parseFile(path string, kv map[string]string, aliases map[string]string, configAliases map[string]string, headerLines *[]string) {
+// parseFile reads one config file into kv and the alias maps and returns the
+// header lines (title_line entries, unescaped) defined by this file. A
+// missing file is normal and returns no lines. Any other read error — a
+// permission problem, or a line longer than the scanner limit — is reported
+// on stderr instead of silently producing a partial parse.
+func parseFile(path string, kv map[string]string, aliases map[string]string, configAliases map[string]string) []string {
 	f, err := os.Open(path)
 	if err != nil {
-		return // file not found is OK
+		if os.IsNotExist(err) {
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "alps: cannot read config %s: %v\n", path, err)
+		return nil
 	}
 	defer f.Close()
 
+	var headerLines []string
 	scanner := bufio.NewScanner(f)
+	// Raise the token limit so multi-KiB ASCII-art title_line entries parse.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -204,16 +240,41 @@ func parseFile(path string, kv map[string]string, aliases map[string]string, con
 			aliases[aliasName] = val
 			configAliases[aliasName] = val
 		case strings.HasPrefix(lowerKey, "title_line"):
-			*headerLines = append(*headerLines, unescape(val))
+			headerLines = append(headerLines, unescape(val))
 		default:
 			kv[lowerKey] = val
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "alps: stopped reading config %s: %v\n", path, err)
+	}
+	return headerLines
 }
 
-// unescape converts escape sequences.
+// unescape converts the escape spellings a config value may use — \e, \033
+// and \x1b — into the ESC control character. Colour values and title_line
+// lines are unescaped; sym_* values are taken literally, so an escape
+// spelling written there is printed as-is.
 func unescape(s string) string {
+	s = strings.ReplaceAll(s, `\x1b`, "\033")
 	s = strings.ReplaceAll(s, `\e`, "\033")
 	s = strings.ReplaceAll(s, `\033`, "\033")
 	return s
+}
+
+// cachedOnce/cachedCfg back LoadCached.
+var (
+	cachedOnce sync.Once
+	cachedCfg  *Config
+)
+
+// LoadCached returns the same config as Load, read once and memoized for
+// the process lifetime. Use it on hot paths that cannot receive a *Config
+// from the caller; Load stays uncached so tests can point the config paths
+// at fresh locations and re-load.
+func LoadCached() *Config {
+	cachedOnce.Do(func() {
+		cachedCfg = Load()
+	})
+	return cachedCfg
 }

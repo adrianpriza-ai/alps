@@ -1,6 +1,8 @@
 package more
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -594,6 +596,19 @@ func TestStripSudo(t *testing.T) {
 		{"sudo", "sudo"},
 		{"echo doas something", "echo doas something"},
 		{"pkexec-bin is a tool", "pkexec-bin is a tool"},
+		// sudo after shell operators (I1)
+		{"cd /x && sudo make install", "cd /x && make install"},
+		{"cd /x && sudo -E make install", "cd /x && make install"},
+		{"ls && doas cp foo bar", "ls && cp foo bar"},
+		{"echo hi; sudo rm -rf /", "echo hi; rm -rf /"},
+		{"echo hi || sudo rm -rf /", "echo hi || rm -rf /"},
+		{"cmd | sudo tee /etc/file", "cmd | tee /etc/file"},
+		{"cd /x && sudo make install && sudo ldconfig", "cd /x && make install && ldconfig"},
+		// operators inside quotes must be left alone
+		{"echo 'sudo && doas'", "echo 'sudo && doas'"},
+		{"echo \"&& sudo\"", "echo \"&& sudo\""},
+		// background & must not be treated as an operator
+		{"sudo cp foo bar &", "cp foo bar &"},
 	}
 
 	for _, tc := range tests {
@@ -623,6 +638,7 @@ func TestIsForgeHost(t *testing.T) {
 		"https://gitee.com/user/repo",
 		"https://gitcode.com/user/repo",
 		"https://atomgit.com/user/repo",
+		"https://cnb.cool/group/repo",
 		// Gitea / Forgejo instances
 		"https://gitea.com/user/repo",
 		// Official alps-more manifest mirrors (GitHub/Codeberg Pages)
@@ -826,6 +842,63 @@ func TestUpgradeAllNoPackages(t *testing.T) {
 	err := UpgradeAll(cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestUpgradeAllSorted verifies that UpgradeAll processes packages in sorted
+// order (I10). We write fake installed records and capture stdout, checking
+// that stale packages appear in alphabetical order.
+func TestUpgradeAllSorted(t *testing.T) {
+	tmpDir := redirectInstalledFile(t)
+
+	// Write fake installed records. Find() will fail (no cache), so these will
+	// be reported as stale, but the output order is still checked.
+	records := map[string]InstalledRecord{
+		"zebra":   {Version: "1.0", Source: "local"},
+		"alpha":   {Version: "2.0", Source: "local"},
+		"mango":   {Version: "3.0", Source: "local"},
+	}
+	data, err := json.MarshalIndent(records, "", "  ")
+	if err != nil {
+		t.Fatalf("failed to marshal records: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "installed.json"), data, 0644); err != nil {
+		t.Fatalf("failed to write installed.json: %v", err)
+	}
+
+	// Capture stdout.
+	var buf bytes.Buffer
+	oldOut := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	t.Cleanup(func() {
+		os.Stdout = oldOut
+	})
+
+	cfg := &config.Config{
+		Style: config.Style{
+			SymOK:    "ok",
+			SymErr:   "err",
+			SymWarn:  "warn",
+			SymInfo:  "info",
+			SymArrow: "->",
+		},
+	}
+	_ = UpgradeAll(cfg)
+	w.Close()
+	buf.ReadFrom(r)
+
+	output := buf.String()
+	// Packages should appear in alphabetical order.
+	alphaIdx := strings.Index(output, "alpha")
+	mangoIdx := strings.Index(output, "mango")
+	zebraIdx := strings.Index(output, "zebra")
+	if alphaIdx < 0 || mangoIdx < 0 || zebraIdx < 0 {
+		t.Fatalf("output missing package names: %s", output)
+	}
+	if !(alphaIdx < mangoIdx && mangoIdx < zebraIdx) {
+		t.Errorf("packages not in sorted order: alpha=%d mango=%d zebra=%d\noutput: %s",
+			alphaIdx, mangoIdx, zebraIdx, output)
 	}
 }
 
@@ -1393,6 +1466,234 @@ sha256sums_end
 	}
 }
 
+// --- checksum key expansion, inline comments and digest normalization ---
+
+// TestChecksumKeysExpandPlaceholders verifies that a checksum key declared with
+// a placeholder matches the expanded destination filename at download time, and
+// that the unused-checksum check agrees with the expanded key.
+func TestChecksumKeysExpandPlaceholders(t *testing.T) {
+	arch := platform.NormalizeArch(runtime.GOARCH)
+	hash := strings.Repeat("ab", 32)
+	input := []byte(`[pkg]
+version = 1.0.0
+arch = ` + arch + `
+sha256sums_begin
+  {FILE} tool-{ARCH}
+  {SUMS} ` + hash + `
+  {SIZE} 50
+sha256sums_end
+
+cmd_begin
+  {DOWNLOAD} https://example.com/tool-{ARCH}
+cmd_end
+`)
+
+	entries, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	e := entries["pkg"]
+	if e == nil {
+		t.Fatal("expected package pkg")
+	}
+	// The on-disk entry keeps the declared (raw) key; expansion is runtime-only.
+	if _, ok := e.SHA256ByName["tool-{ARCH}"]; !ok {
+		t.Errorf("SHA256ByName = %v, want the raw declared key", e.SHA256ByName)
+	}
+
+	ctx := NewMacroContext(e, "")
+	got, err := requireNextSha256(ctx, "tool-"+arch)
+	if err != nil {
+		t.Fatalf("requireNextSha256(tool-%s) returned error: %v", arch, err)
+	}
+	if got != hash {
+		t.Errorf("digest = %q, want %q", got, hash)
+	}
+	if size, ok := ctx.SHA256SizeByName["tool-"+arch]; !ok || size != 50*1024*1024 {
+		t.Errorf("SHA256SizeByName[tool-%s] = %d (ok=%v), want 50 MiB", arch, size, ok)
+	}
+	if unused := unusedNamedChecksums(e); len(unused) != 0 {
+		t.Errorf("unusedNamedChecksums = %v, want none for an expanded key", unused)
+	}
+}
+
+// TestParseDocMinimalExample parses the ALPSMORE.md minimal example verbatim,
+// inline comments included.
+func TestParseDocMinimalExample(t *testing.T) {
+	hash := strings.Repeat("ab", 32)
+	input := []byte(`[my-tool]
+desc = My command-line tool
+version = 1.0.0
+arch = x86_64, aarch64
+os = linux, debian, ubuntu
+deps = curl/wget  # requires curl OR wget
+safety = strict  # default mode
+
+sha256sums_begin
+  {FILE} tool-{ARCH}
+  {SUMS} ` + hash + `
+sha256sums_end
+
+cmd_begin
+  {DOWNLOAD} https://github.com/me/tool/releases/download/v{VERSION}/tool-{ARCH}
+  {EXTRACT} tool-{ARCH}
+  {INSTALL_BIN} tool /usr/bin/
+cmd_end
+`)
+
+	entries, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	e := entries["my-tool"]
+	if e == nil {
+		t.Fatal("expected package my-tool")
+	}
+	if e.Safety != "strict" {
+		t.Errorf("Safety = %q, want strict (trailing comment must be stripped)", e.Safety)
+	}
+	if len(e.Deps) != 1 || e.Deps[0] != "curl/wget" {
+		t.Errorf("Deps = %v, want [curl/wget]", e.Deps)
+	}
+	if e.Version != "1.0.0" {
+		t.Errorf("Version = %q, want 1.0.0", e.Version)
+	}
+	if len(e.CmdLines) != 3 {
+		t.Errorf("CmdLines = %v, want the three cmd_begin lines", e.CmdLines)
+	}
+}
+
+func TestParseFreeModeWithComment(t *testing.T) {
+	entries, err := Parse([]byte("[pkg]\nsafety = free  # full control\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := entries["pkg"].Safety; got != "free" {
+		t.Errorf("Safety = %q, want free", got)
+	}
+}
+
+func TestParseSumsBlockTrailingComments(t *testing.T) {
+	hash := strings.Repeat("ab", 32)
+	input := []byte(`[pkg]
+sha256sums_begin
+  {FILE} a.tar.gz  # the tarball
+  {SUMS} ` + hash + `  # its digest
+  {SIZE} 50  # cap this one at 50 MB
+sha256sums_end
+`)
+
+	entries, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	e := entries["pkg"]
+	if e.SHA256ByName["a.tar.gz"] != hash {
+		t.Errorf("SHA256ByName = %v, want key %q", e.SHA256ByName, "a.tar.gz")
+	}
+	if got := e.SHA256SizeByName["a.tar.gz"]; got != 50*1024*1024 {
+		t.Errorf("SHA256SizeByName[a.tar.gz] = %d, want 50 MiB", got)
+	}
+}
+
+func TestParseInlineCommentQuoted(t *testing.T) {
+	entries, err := Parse([]byte("[pkg]\ndesc = Fix the '#' prompt  # trailing\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := entries["pkg"].Desc; got != "Fix the '#' prompt" {
+		t.Errorf("Desc = %q, want %q", got, "Fix the '#' prompt")
+	}
+}
+
+func TestParseInlineCommentNotStrippedInCmd(t *testing.T) {
+	input := []byte("[pkg]\ncmd_begin\n  echo '# not a comment' # yes a comment\ncmd_end\n")
+	entries, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "echo '# not a comment' # yes a comment"
+	got := entries["pkg"].CmdLines
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("CmdLines = %v, want [%q]", got, want)
+	}
+}
+
+// TestParseSHA256SumsUppercaseNormalized verifies every declaration style stores
+// the digest lowercased, so the case-sensitive compare at verify time matches.
+func TestParseSHA256SumsUppercaseNormalized(t *testing.T) {
+	lower := strings.Repeat("ab", 32)
+	upper := strings.ToUpper(lower)
+	cases := []struct {
+		name  string
+		input string
+		got   func(*Entry) string
+	}{
+		{
+			name:  "named pair",
+			input: "[pkg]\nsha256sums = file1.tar.gz=" + upper + "\n",
+			got:   func(e *Entry) string { return e.SHA256ByName["file1.tar.gz"] },
+		},
+		{
+			name:  "positional",
+			input: "[pkg]\nsha256sums = " + upper + "\n",
+			got: func(e *Entry) string {
+				if len(e.SHA256Sums) == 0 {
+					return ""
+				}
+				return e.SHA256Sums[0]
+			},
+		},
+		{
+			name:  "pasted line",
+			input: "[pkg]\nsha256sums =\n  " + upper + "  file1.tar.gz\n",
+			got:   func(e *Entry) string { return e.SHA256ByName["file1.tar.gz"] },
+		},
+		{
+			name:  "block",
+			input: "[pkg]\nsha256sums_begin\n  {FILE} file1.tar.gz\n  {SUMS} " + upper + "\nsha256sums_end\n",
+			got:   func(e *Entry) string { return e.SHA256ByName["file1.tar.gz"] },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entries, err := Parse([]byte(tc.input))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := tc.got(entries["pkg"]); got != lower {
+				t.Errorf("stored digest = %q, want normalized %q", got, lower)
+			}
+		})
+	}
+}
+
+// TestParseSumsBinaryMarker verifies both the text ("hash  file") and binary
+// ("hash *file") shapes that sha256sum emits produce the same bare filename.
+func TestParseSumsBinaryMarker(t *testing.T) {
+	hash := strings.Repeat("ab", 32)
+	input := []byte("[pkg]\nsha256sums =\n  " + hash + "  file-text.tar.gz\n  " + hash + " *file-bin.tar.gz\n")
+
+	entries, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	e := entries["pkg"]
+	if len(e.SHA256ByName) != 2 {
+		t.Fatalf("SHA256ByName = %v, want exactly two keys", e.SHA256ByName)
+	}
+	for _, name := range []string{"file-text.tar.gz", "file-bin.tar.gz"} {
+		if e.SHA256ByName[name] != hash {
+			t.Errorf("SHA256ByName[%q] = %q, want %q", name, e.SHA256ByName[name], hash)
+		}
+	}
+
+	ctx := NewMacroContext(e, "")
+	if got, err := requireNextSha256(ctx, "file-bin.tar.gz"); err != nil || got != hash {
+		t.Errorf("requireNextSha256(file-bin.tar.gz) = %q, %v; want %q", got, err, hash)
+	}
+}
+
 // --- unused named checksum detection ---
 
 func TestUnusedNamedChecksums(t *testing.T) {
@@ -1468,6 +1769,24 @@ func TestUnusedNamedChecksums(t *testing.T) {
 				Name:         "pkg",
 				SHA256ByName: map[string]string{"new.bin": hash},
 				UpgradeLines: []string{"{DOWNLOAD} https://example.com/new.bin"},
+			},
+			want: nil,
+		},
+		{
+			name: "remove block downloads count",
+			entry: &Entry{
+				Name:         "pkg",
+				SHA256ByName: map[string]string{"cleanup.sh": hash},
+				RemoveLines:  []string{"{DOWNLOAD} https://example.com/cleanup.sh"},
+			},
+			want: nil,
+		},
+		{
+			name: "purge block downloads count",
+			entry: &Entry{
+				Name:         "pkg",
+				SHA256ByName: map[string]string{"purge.sh": hash},
+				PurgeLines:   []string{"{DOWNLOAD} https://example.com/purge.sh"},
 			},
 			want: nil,
 		},

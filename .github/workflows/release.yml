@@ -517,8 +517,13 @@ jobs:
             echo "${{ secrets.APT_GPG_PRIVATE_KEY }}" | gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --import
             gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --detach-sign --armor --output dists/stable/Release.gpg dists/stable/Release
             gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --clearsign --output dists/stable/InRelease dists/stable/Release
-            # Export public key for distribution
-            gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --armor --export --output alps-archive-keyring.gpg
+            # Export public key for distribution as a BINARY keyring.
+            # signed-by= is verified by gpgv, which only reads binary
+            # OpenPGP keyrings — an ASCII-armored .gpg file here makes
+            # gpgv fail on the "-----BEGIN PGP..." header, which surfaces
+            # to users as a misleading NO_PUBKEY / "repository is not
+            # signed" error even though the signature itself is fine.
+            gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --export --output alps-archive-keyring.gpg
           else
             echo "Warning: APT_GPG_PRIVATE_KEY not set, skipping repository signing"
             echo "Repository will be unsigned - this is not recommended for production"

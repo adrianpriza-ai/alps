@@ -5,7 +5,6 @@
 package aur
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,16 +14,19 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/user"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/adrianpriza-ai/alps/config"
+	"github.com/adrianpriza-ai/alps/platform"
+	"github.com/adrianpriza-ai/alps/ui"
 )
+
+// Version is the alps version string used in the User-Agent header.
+const Version = "dev"
 
 // Types and constants
 
@@ -74,17 +76,20 @@ type rpcResponse struct {
 // backoff (base 1 s, doubled each attempt) plus ±25 % jitter.
 // Bad request errors (4xx other than 429) and AUR-level errors are returned
 // immediately without retrying.
-func fetchRPC(rawURL string) (*rpcResponse, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, nil)
+// The backoff respects ctx.Done() for cancellation.
+func fetchRPC(ctx context.Context, rawURL string) (*rpcResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("AUR request build failed (%s): %w", rawURL, err)
 	}
+	req.Header.Set("User-Agent", "alps/"+Version)
+	req.Header.Set("Accept", "application/json")
 
 	var lastErr error
 	backoff := time.Second // initial wait before first retry
 
 	for attempt := 1; attempt <= aurMaxRetries; attempt++ {
-		attemptReq := req.Clone(req.Context())
+		attemptReq := req.Clone(ctx)
 
 		resp, err := aurHTTPClient.Do(attemptReq)
 		if err != nil {
@@ -120,7 +125,11 @@ func fetchRPC(rawURL string) (*rpcResponse, error) {
 
 		if attempt < aurMaxRetries {
 			jitter := time.Duration(float64(backoff) * (0.75 + 0.5*rand.Float64()))
-			time.Sleep(jitter)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(jitter):
+			}
 			backoff *= 2
 		}
 	}
@@ -146,7 +155,7 @@ func Search(query string) ([]Package, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to build search URL: %w", err)
 	}
-	result, err := fetchRPC(u)
+	result, err := fetchRPC(context.Background(), u)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +221,7 @@ func Info(name string) (*Package, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to build info URL: %w", err)
 	}
-	result, err := fetchRPC(u)
+	result, err := fetchRPC(context.Background(), u)
 	if err != nil {
 		return nil, err
 	}
@@ -320,19 +329,11 @@ func PrintPackageInfo(w io.Writer, p *Package) {
 
 // Utilities — validation, I/O, caching helpers
 
-// validPkgName matches allowed Arch package name characters.
-// See: https://wiki.archlinux.org/title/Package_naming_guidelines
-var validPkgName = regexp.MustCompile(`^[a-zA-Z0-9@._+\-]+$`)
-
-// validatePkgName checks that a package name contains only safe characters.
+// validatePkgName checks that a package name is safe to use in paths and
+// shell commands. It applies the shared platform rules so the AUR client and
+// the platform helper accept exactly the same set of names.
 func validatePkgName(name string) error {
-	if name == "" {
-		return fmt.Errorf("empty package name")
-	}
-	if !validPkgName.MatchString(name) {
-		return fmt.Errorf("invalid package name: %q", name)
-	}
-	return nil
+	return platform.ValidatePkgName(name)
 }
 
 // validatePkgNames validates a slice of package names.
@@ -362,52 +363,27 @@ func editorIsSafe(editor string) bool {
 }
 
 func configSymbols() (ok, warn, arrow string) {
-	s := config.Load().Style
+	s := config.LoadCached().Style
 	return s.SymOK, s.SymWarn, s.SymArrow
 }
 
 func warnStderr(format string, a ...any) {
-	cfg := config.Load()
-	s := cfg.Style
+	s := config.LoadCached().Style
 	text := fmt.Sprintf(format, a...)
 	fmt.Fprintf(os.Stderr, "  %s%s%s  %s%s\n", s.ColorWarning, s.SymWarn, s.ColorReset, text, s.ColorReset)
 }
 
-// readLine reads a line from stdin.
+// readLine reads a line from stdin via the shared ui helper.
 func readLine() string {
-	scanner := bufio.NewReader(os.Stdin)
-	line, _ := scanner.ReadString('\n')
-	return strings.TrimSpace(line)
+	return ui.ReadLine()
 }
 
-// readYesNo prompts for yes/no. Empty input uses the default.
+// readYesNo prompts for yes/no. Empty input uses the default. On I/O error
+// or a non-terminal stdin the answer is no.
 // After one invalid answer it re-prompts; persistent non-y/n input
 // defaults to false (safe/conservative).
 func readYesNo(prompt string, defaultYes bool) bool {
-	if defaultYes {
-		fmt.Printf("%s [Y/n] ", prompt)
-	} else {
-		fmt.Printf("%s [y/N] ", prompt)
-	}
-	line := readLine()
-	if line == "" {
-		return defaultYes
-	}
-	switch strings.ToLower(line) {
-	case "y", "yes":
-		return true
-	case "n", "no":
-		return false
-	default:
-		fmt.Printf("  Please enter y or n: ")
-		line = readLine()
-		switch strings.ToLower(line) {
-		case "y", "yes":
-			return true
-		default:
-			return false
-		}
-	}
+	return ui.PromptYesNo(prompt, defaultYes)
 }
 
 // stripVerConstraint removes version constraints from a dependency string.
@@ -456,28 +432,17 @@ func aurCacheDir(pkgName string) (string, error) {
 	return clean, nil
 }
 
-// AURCacheRoot returns the root directory for AUR build caches.
-// When running under sudo or doas, it resolves the invoking user's home
-// directory so cache files are not written into /root/.cache/alps/aur with
-// root ownership.
+// AURCacheRoot returns the root directory for AUR build caches. It is the
+// per-invoking-user build cache: alps runs as root under sudo/doas, but makepkg
+// must not, so the cache lives under the invoking user's ~/.cache/alps/aur. The
+// home resolution (SUDO_USER/DOAS_USER then $HOME) is shared with the completion
+// names cache via platform.UserCacheRoot, so the writer and reader agree.
 func AURCacheRoot() (string, error) {
-	// If running under sudo or doas, resolve the invoking user's home directory
-	// so cache files are not written into /root/.cache/alps/aur with root ownership.
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
-		if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
-			return filepath.Join(u.HomeDir, ".cache", "alps", "aur"), nil
-		}
-	}
-	if doasUser := os.Getenv("DOAS_USER"); doasUser != "" && doasUser != "root" {
-		if u, err := user.Lookup(doasUser); err == nil && u.HomeDir != "" {
-			return filepath.Join(u.HomeDir, ".cache", "alps", "aur"), nil
-		}
-	}
-	home, err := os.UserHomeDir()
+	root, err := platform.UserCacheRoot()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".cache", "alps", "aur"), nil
+	return filepath.Join(root, "aur"), nil
 }
 
 // CleanCache removes the build cache.

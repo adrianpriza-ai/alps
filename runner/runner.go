@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,13 +13,15 @@ import (
 
 // Command represents a structured command with explicit metadata.
 // This replaces shell-string execution with typed, safe command construction.
+// That guarantee only holds for direct commands (Shell=false): a shell command
+// is handed to `sh -c` verbatim, without escaping — see BuildShellCommand.
 type Command struct {
 	Program    string   // Executable to run
 	Args       []string // Arguments to the program
 	Dir        string   // Working directory (empty = current)
-	Env        []string // Environment variables (empty = inherit)
+	Env        []string // Environment variables appended over the inherited environment (empty = inherit); keys can be added or overridden, never unset
 	Privileged bool     // Whether privilege escalation is required
-	Shell      bool     // Whether to execute via shell (sh -c)
+	Shell      bool     // Whether to execute via shell (sh -c); the command string is passed to the shell unescaped
 }
 
 // Runner is the interface for command execution.
@@ -30,11 +33,19 @@ type Runner interface {
 // DefaultRunner implements Runner with standard privilege escalation and execution.
 type DefaultRunner struct {
 	dryRun bool
+	out    io.Writer // destination for non-error output such as dry-run lines
 }
 
-// NewDefaultRunner creates a new DefaultRunner.
+// NewDefaultRunner creates a new DefaultRunner. Dry-run output is written to
+// os.Stdout unless WithWriter redirects it.
 func NewDefaultRunner(dryRun bool) *DefaultRunner {
-	return &DefaultRunner{dryRun: dryRun}
+	return &DefaultRunner{dryRun: dryRun, out: os.Stdout}
+}
+
+// WithWriter sets the destination for runner output such as dry-run lines.
+func (r *DefaultRunner) WithWriter(out io.Writer) *DefaultRunner {
+	r.out = out
+	return r
 }
 
 // Run executes a command according to its configuration.
@@ -59,31 +70,14 @@ func (r *DefaultRunner) runDirectCommand(ctx context.Context, cmd Command) error
 		if err != nil {
 			return fmt.Errorf("privilege escalation failed: %w", err)
 		}
-		// Build command from decision
 		privCmd := exec.CommandContext(ctx, decision.Exec, decision.Args...)
-		privCmd.Stdout = os.Stdout
-		privCmd.Stderr = os.Stderr
-		privCmd.Stdin = os.Stdin
-		if cmd.Dir != "" {
-			privCmd.Dir = cmd.Dir
-		}
-		if len(cmd.Env) > 0 {
-			privCmd.Env = append(os.Environ(), cmd.Env...)
-		}
+		applyIO(privCmd, cmd)
 		return privCmd.Run()
 	}
 
 	// Direct execution without privilege escalation
 	execCmd := exec.CommandContext(ctx, cmd.Program, args...)
-	execCmd.Stdout = os.Stdout
-	execCmd.Stderr = os.Stderr
-	execCmd.Stdin = os.Stdin
-	if cmd.Dir != "" {
-		execCmd.Dir = cmd.Dir
-	}
-	if len(cmd.Env) > 0 {
-		execCmd.Env = append(os.Environ(), cmd.Env...)
-	}
+	applyIO(execCmd, cmd)
 	return execCmd.Run()
 }
 
@@ -103,32 +97,29 @@ func (r *DefaultRunner) runShellCommand(ctx context.Context, cmd Command) error 
 		if err != nil {
 			return fmt.Errorf("privilege escalation failed: %w", err)
 		}
-		// Build command from decision
 		privCmd := exec.CommandContext(ctx, decision.Exec, decision.Args...)
-		privCmd.Stdout = os.Stdout
-		privCmd.Stderr = os.Stderr
-		privCmd.Stdin = os.Stdin
-		if cmd.Dir != "" {
-			privCmd.Dir = cmd.Dir
-		}
-		if len(cmd.Env) > 0 {
-			privCmd.Env = append(os.Environ(), cmd.Env...)
-		}
+		applyIO(privCmd, cmd)
 		return privCmd.Run()
 	}
 
 	// Direct shell execution without privilege escalation
 	execCmd := exec.CommandContext(ctx, "sh", shellArgs...)
-	execCmd.Stdout = os.Stdout
-	execCmd.Stderr = os.Stderr
-	execCmd.Stdin = os.Stdin
+	applyIO(execCmd, cmd)
+	return execCmd.Run()
+}
+
+// applyIO points the command at the process stdio streams and applies the
+// command's working directory and environment overrides.
+func applyIO(c *exec.Cmd, cmd Command) {
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	c.Stdin = os.Stdin
 	if cmd.Dir != "" {
-		execCmd.Dir = cmd.Dir
+		c.Dir = cmd.Dir
 	}
 	if len(cmd.Env) > 0 {
-		execCmd.Env = append(os.Environ(), cmd.Env...)
+		c.Env = append(os.Environ(), cmd.Env...)
 	}
-	return execCmd.Run()
 }
 
 // dryRunCommand prints what would be executed without actually running it.
@@ -155,7 +146,11 @@ func (r *DefaultRunner) dryRunCommand(cmd Command) error {
 		cmdStr = cmdStr + " (in " + cmd.Dir + ")"
 	}
 
-	fmt.Printf("DRY RUN: %s\n", cmdStr)
+	out := r.out
+	if out == nil {
+		out = os.Stdout
+	}
+	fmt.Fprintf(out, "DRY-RUN: %s\n", cmdStr)
 	return nil
 }
 
@@ -169,8 +164,14 @@ func BuildCommand(program string, args ...string) Command {
 	}
 }
 
-// BuildShellCommand creates a Command that will be executed via shell.
-// This should only be used when shell interpretation is explicitly required.
+// BuildShellCommand creates a Command that will be executed via `sh -c`.
+//
+// The command string is passed to the shell verbatim: nothing is escaped or
+// quoted, so every shell metacharacter it contains (';', '|', '$(...)',
+// globs, quotes) is live and will be interpreted by the shell. It may only
+// be used with trusted, already-validated input (today: ALPSMORE manifest
+// command lines via more/parser.go). Arguments that must be treated as
+// literal data need single-quoting before they reach this constructor.
 func BuildShellCommand(shellCmd string) Command {
 	return Command{
 		Program: shellCmd,
@@ -190,7 +191,11 @@ func (c Command) WithDir(dir string) Command {
 	return c
 }
 
-// WithEnv sets environment variables for a command.
+// WithEnv sets environment variables for a command. Keys can only be added
+// or overridden on top of the inherited environment — they can never be
+// unset. A security-sensitive caller that needs a minimal environment must
+// build the env slice itself and assign Command.Env (see aur.safeMakepkgEnv
+// for that pattern).
 func (c Command) WithEnv(env ...string) Command {
 	c.Env = env
 	return c

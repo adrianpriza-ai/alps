@@ -1,10 +1,99 @@
 package aurbackend
 
 import (
+	"os"
+	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/adrianpriza-ai/alps/aur"
+	"github.com/adrianpriza-ai/alps/config"
 )
+
+// TestFilterNonIgnoredSkipsGroupMembers verifies that an expanded ignore set
+// keeps group members out of the upgrade list.
+func TestFilterNonIgnoredSkipsGroupMembers(t *testing.T) {
+	installed := map[string]string{"foo": "1.0", "baz": "2.0"}
+	ignoreSet := map[string]bool{"foo": true}
+
+	kept := filterNonIgnored(installed, ignoreSet, "->")
+	if len(kept) != 1 || kept[0] != "baz" {
+		t.Errorf("filterNonIgnored = %v, want [baz]", kept)
+	}
+}
+
+// TestFilterNonIgnoredIsSorted verifies that the kept names come out in
+// sorted order regardless of Go's randomized map iteration.
+func TestFilterNonIgnoredIsSorted(t *testing.T) {
+	installed := map[string]string{"zebra": "1.0", "apple": "2.0", "mango": "3.0"}
+
+	for i := 0; i < 20; i++ {
+		kept := filterNonIgnored(installed, map[string]bool{}, "->")
+		if !sort.StringsAreSorted(kept) {
+			t.Fatalf("filterNonIgnored produced unsorted output: %v", kept)
+		}
+	}
+}
+
+// TestFindOutdatedIsSortedAndDeterministic verifies that findOutdated walks
+// installed packages in sorted order, so the upgrade list and its output are
+// identical across runs.
+func TestFindOutdatedIsSortedAndDeterministic(t *testing.T) {
+	installed := map[string]string{
+		"zebra":  "1.0",
+		"apple":  "0.9",
+		"mango":  "1.2",
+		"hidden": "1.0", // in the ignore set
+		"gone":   "1.0", // not in latest
+	}
+	latest := map[string]*aur.Package{
+		"zebra":  {Name: "zebra", Version: "1.1"},
+		"apple":  {Name: "apple", Version: "1.0"},
+		"mango":  {Name: "mango", Version: "1.3"},
+		"hidden": {Name: "hidden", Version: "9.9"},
+	}
+	ignoreSet := map[string]bool{"hidden": true}
+
+	want := []string{"apple", "mango", "zebra"}
+	for i := 0; i < 20; i++ {
+		got := findOutdated(installed, latest, ignoreSet, config.Style{})
+		if len(got) != len(want) {
+			t.Fatalf("findOutdated returned %d packages (%v), want %v", len(got), got, want)
+		}
+		for j, pkg := range got {
+			if pkg.Name != want[j] {
+				t.Fatalf("findOutdated order = %v, want %v", got, want)
+			}
+		}
+	}
+}
+
+// TestBuildIgnoreSetExpandsGroups verifies that IgnoreGroup entries are
+// expanded into their member packages via pacman -Qg and joined with the
+// IgnorePkg set. Unknown groups (pacman -Qg fails) are skipped silently.
+func TestBuildIgnoreSetExpandsGroups(t *testing.T) {
+	pacmanDir := t.TempDir()
+	pacmanScript := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"-Qg\" ] && [ \"$2\" = \"mygroup\" ]; then\n" +
+		"  echo \"mygroup foo\"\n" +
+		"  echo \"mygroup bar\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(pacmanDir, "pacman"), []byte(pacmanScript), 0755); err != nil {
+		t.Fatalf("failed to write stub pacman: %v", err)
+	}
+	pacmanConfScript := "#!/bin/sh\necho 'IgnoreGroup = mygroup nosuchgroup'\n"
+	if err := os.WriteFile(filepath.Join(pacmanDir, "pacman-conf"), []byte(pacmanConfScript), 0755); err != nil {
+		t.Fatalf("failed to write stub pacman-conf: %v", err)
+	}
+	t.Setenv("PATH", pacmanDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ignoreSet := buildIgnoreSet()
+	if !ignoreSet["foo"] || !ignoreSet["bar"] {
+		t.Errorf("expected group members foo and bar in the ignore set, got %v", ignoreSet)
+	}
+}
 
 // TestVercmpEqual verifies that identical versions return 0 (equal).
 func TestVercmpEqual(t *testing.T) {
