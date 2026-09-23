@@ -13,7 +13,7 @@ import (
 // configuration lazily and that resetStyleCache drops the memoized value so a
 // config change takes effect on the next call.
 func TestCurrentStyleReloadsAfterReset(t *testing.T) {
-	t.Setenv("TERM", "xterm-256color") // avoid the TTY symbol override in config.Load
+	t.Setenv("TERM", "xterm-256color") // keep symbol rendering deterministic; config sym_* wins either way
 	cfgDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfgDir)
 	t.Cleanup(resetStyleCache) // re-read real config for later tests

@@ -133,6 +133,16 @@ func Load() *Config {
 	aliases := make(map[string]string)
 	configAliases := make(map[string]string)
 
+	// ASCII terminals swap the built-in Unicode symbol defaults for ASCII
+	// before the config files are parsed, so a configured sym_* value still
+	// wins over the fallback.
+	if platform.UsesASCIIFallback() {
+		kv["sym_ok"] = " OK "
+		kv["sym_err"] = "ERR "
+		kv["sym_warn"] = "WARN"
+		kv["sym_info"] = "INFO"
+	}
+
 	globalPath := globalConfigPath()
 	userPath := userConfigPath()
 
@@ -149,14 +159,6 @@ func Load() *Config {
 		if _, exists := aliases[k]; !exists {
 			aliases[k] = v
 		}
-	}
-
-	// Override symbols for ASCII terminals
-	if platform.UsesASCIIFallback() {
-		kv["sym_ok"] = " OK "
-		kv["sym_err"] = "ERR "
-		kv["sym_warn"] = "WARN"
-		kv["sym_info"] = "INFO"
 	}
 
 	return &Config{

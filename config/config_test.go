@@ -250,3 +250,27 @@ func TestSymValuesAreTakenLiterally(t *testing.T) {
 		t.Errorf("ColorPrimary = %q, want the unescaped %q", got, want)
 	}
 }
+
+// TestASCIIFallbackForUnconfiguredSymbols pins the other half of the
+// precedence: on a primitive TERM the built-in Unicode symbol defaults
+// become ASCII, while configured sym_* values still win.
+func TestASCIIFallbackForUnconfiguredSymbols(t *testing.T) {
+	t.Setenv("TERM", "linux")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "missing"))
+	t.Setenv("ALPS_GLOBAL_CONFIG", filepath.Join(t.TempDir(), "missing", "config"))
+
+	cfg := Load()
+
+	if got, want := cfg.Style.SymOK, " OK "; got != want {
+		t.Errorf("SymOK = %q, want the ASCII fallback %q", got, want)
+	}
+	if got, want := cfg.Style.SymErr, "ERR "; got != want {
+		t.Errorf("SymErr = %q, want the ASCII fallback %q", got, want)
+	}
+	if got, want := cfg.Style.SymWarn, "WARN"; got != want {
+		t.Errorf("SymWarn = %q, want the ASCII fallback %q", got, want)
+	}
+	if got, want := cfg.Style.SymInfo, "INFO"; got != want {
+		t.Errorf("SymInfo = %q, want the ASCII fallback %q", got, want)
+	}
+}
