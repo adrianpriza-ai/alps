@@ -36,15 +36,15 @@ func TestValidatePkgNameValid(t *testing.T) {
 
 func TestValidatePkgNameInvalid(t *testing.T) {
 	invalid := []string{
-		"",            // empty
-		"foo bar",     // space
-		"foo/bar",     // slash
-		"foo;bar",     // semicolon
-		"$(rm -rf)",   // shell injection
-		"pkg\nname",   // newline
-		"..foo",       // traversal sequence
-		"a..b",        // traversal sequence
-		".hidden",     // leading dot
+		"",                       // empty
+		"foo bar",                // space
+		"foo/bar",                // slash
+		"foo;bar",                // semicolon
+		"$(rm -rf)",              // shell injection
+		"pkg\nname",              // newline
+		"..foo",                  // traversal sequence
+		"a..b",                   // traversal sequence
+		".hidden",                // leading dot
 		strings.Repeat("a", 256), // over-long
 	}
 	for _, name := range invalid {

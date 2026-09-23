@@ -443,7 +443,7 @@ func TestFormatSizeUnitStep(t *testing.T) {
 		{1023 * 1024, "1023,0 KiB"},
 		{1023*1024 + 512, "1023,5 KiB"},
 		{1024 * 1024, "1,0 MiB"},
-		{1024*1024 - 1, "1,0 MiB"},       // 1023.9... KiB rounds to 1024.0 → steps to MiB
+		{1024*1024 - 1, "1,0 MiB"}, // 1023.9... KiB rounds to 1024.0 → steps to MiB
 		{1536 * 1024 * 1024, "1,5 GiB"},
 	}
 	for _, tc := range tests {

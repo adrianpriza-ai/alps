@@ -495,12 +495,12 @@ func pacmanInstallRepoPkgs(repoPkgs []string, dryRun, noConfirm, force bool, cfg
 		}
 	}
 	pacmanArgs := append([]string{"-S"}, repoPkgs...)
-	
+
 	// Build extra flags using the flag pipeline
 	flags := pack.Flags{NoConfirm: noConfirm, Force: force}
 	extraFlags := pack.BuildExtraFlagsExt("pacman", flags)
 	pacmanArgs = append(pacmanArgs, extraFlags...)
-	
+
 	// In dry-run mode, append the native simulation flag to show the package plan
 	if dryRun {
 		dryRunFlag := pack.GetDryRunFlag("pacman")
@@ -508,7 +508,7 @@ func pacmanInstallRepoPkgs(repoPkgs []string, dryRun, noConfirm, force bool, cfg
 			pacmanArgs = append(pacmanArgs, dryRunFlag)
 		}
 	}
-	
+
 	var cmd *exec.Cmd
 	var err error
 	if dryRun {
@@ -1221,12 +1221,12 @@ func runAptWithSnapFallback(args []string, dryRun bool, cfg *config.Config) {
 
 	if len(repoPkgs) > 0 {
 		aptArgs := append([]string{realBackend, "install"}, repoPkgs...)
-		
+
 		// Build extra flags using the flag pipeline
 		installFlags := pack.Flags{NoConfirm: noConfirm, Force: flags.Force}
 		extraFlags := pack.BuildExtraFlagsExt(realBackend, installFlags)
 		aptArgs = append(aptArgs, extraFlags...)
-		
+
 		// In dry-run mode, append the native simulation flag to show the package plan
 		if dryRun {
 			dryRunFlag := pack.GetDryRunFlag(realBackend)
@@ -1234,7 +1234,7 @@ func runAptWithSnapFallback(args []string, dryRun bool, cfg *config.Config) {
 				aptArgs = append(aptArgs, dryRunFlag)
 			}
 		}
-		
+
 		var cmd *exec.Cmd
 		var err error
 		if dryRun {
@@ -1366,11 +1366,11 @@ func runAptFullUpgrade(args []string, f pack.Flags, cfg *config.Config) {
 
 	// Step 2: apt upgrade
 	upgradeArgs := []string{realBackend, "upgrade"}
-	
+
 	// Build extra flags using the flag pipeline
 	extraFlags := pack.BuildExtraFlagsExt(realBackend, f)
 	upgradeArgs = append(upgradeArgs, extraFlags...)
-	
+
 	if err := runAptStep(upgradeArgs...); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			ui.Msg(cfg, ui.LevelWarn, "Upgrade cancelled.")

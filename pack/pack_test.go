@@ -32,13 +32,13 @@ func TestPacmanDryRunFlagValidForAllTransactionVerbs(t *testing.T) {
 
 func TestDryRunEmitted(t *testing.T) {
 	simulating := map[string]bool{
-		"apt":      true,
-		"apt-get":  true,
-		"dnf":      true,
-		"pacman":   true,
-		"zypper":   true,
-		"apk":      true,
-		"brew":     false,
+		"apt":     true,
+		"apt-get": true,
+		"dnf":     true,
+		"pacman":  true,
+		"zypper":  true,
+		"apk":     true,
+		"brew":    false,
 	}
 	for _, name := range AllNames() {
 		want := simulating[name]
@@ -174,12 +174,12 @@ func TestBuildExtraFlagsExtCombined(t *testing.T) {
 // Verify that backends with native simulation flags return them via GetDryRunFlag.
 func TestDryRunFlagPresence(t *testing.T) {
 	backendsWithDryRun := map[string]string{
-		"apt":      "--dry-run",
-		"apt-get":  "--dry-run",
-		"pacman":   "-p",
-		"apk":      "--simulate",
-		"dnf":      "--assumeno",
-		"zypper":   "--dry-run",
+		"apt":     "--dry-run",
+		"apt-get": "--dry-run",
+		"pacman":  "-p",
+		"apk":     "--simulate",
+		"dnf":     "--assumeno",
+		"zypper":  "--dry-run",
 	}
 	for backend, expectedFlag := range backendsWithDryRun {
 		got := GetDryRunFlag(backend)

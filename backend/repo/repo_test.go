@@ -4,52 +4,52 @@ import "testing"
 
 func TestUpgradeTarget(t *testing.T) {
 	tests := []struct {
-		name            string
-		entryVersion    string
+		name             string
+		entryVersion     string
 		installedVersion string
-		wantTarget      string
-		wantUpgradable  bool
-		wantOk          bool
+		wantTarget       string
+		wantUpgradable   bool
+		wantOk           bool
 	}{
 		{
-			name:            "empty entry version - no version info",
-			entryVersion:    "",
+			name:             "empty entry version - no version info",
+			entryVersion:     "",
 			installedVersion: "1.2.0",
-			wantTarget:      "",
-			wantUpgradable:  false,
-			wantOk:          false,
+			wantTarget:       "",
+			wantUpgradable:   false,
+			wantOk:           false,
 		},
 		{
-			name:            "empty installed version with non-empty entry - upgradable",
-			entryVersion:    "1.2.0",
+			name:             "empty installed version with non-empty entry - upgradable",
+			entryVersion:     "1.2.0",
 			installedVersion: "",
-			wantTarget:      "1.2.0",
-			wantUpgradable:  true,
-			wantOk:          true,
+			wantTarget:       "1.2.0",
+			wantUpgradable:   true,
+			wantOk:           true,
 		},
 		{
-			name:            "both non-empty and equal - not upgradable",
-			entryVersion:    "1.2.0",
+			name:             "both non-empty and equal - not upgradable",
+			entryVersion:     "1.2.0",
 			installedVersion: "1.2.0",
-			wantTarget:      "",
-			wantUpgradable:  false,
-			wantOk:          true,
+			wantTarget:       "",
+			wantUpgradable:   false,
+			wantOk:           true,
 		},
 		{
-			name:            "both non-empty and different - upgradable",
-			entryVersion:    "1.3.0",
+			name:             "both non-empty and different - upgradable",
+			entryVersion:     "1.3.0",
 			installedVersion: "1.2.0",
-			wantTarget:      "1.3.0",
-			wantUpgradable:  true,
-			wantOk:          true,
+			wantTarget:       "1.3.0",
+			wantUpgradable:   true,
+			wantOk:           true,
 		},
 		{
-			name:            "both empty - no version info",
-			entryVersion:    "",
+			name:             "both empty - no version info",
+			entryVersion:     "",
 			installedVersion: "",
-			wantTarget:      "",
-			wantUpgradable:  false,
-			wantOk:          false,
+			wantTarget:       "",
+			wantUpgradable:   false,
+			wantOk:           false,
 		},
 	}
 

@@ -110,9 +110,9 @@ func TestNormalizeArch(t *testing.T) {
 		{"amd64", "6", "x86_64"}, // GOARM does not affect non-arm
 		{"arm64", "", "aarch64"},
 		{"386", "", "i686"},
-		{"arm", "", "armv7l"},   // historical default preserved
+		{"arm", "", "armv7l"}, // historical default preserved
 		{"arm", "5", "armv5l"},
-		{"arm", "6", "armv6l"},  // Pi Zero / original Pi
+		{"arm", "6", "armv6l"}, // Pi Zero / original Pi
 		{"arm", "7", "armv7l"},
 		{"riscv64", "", "riscv64"}, // unknown arches pass through
 	}

@@ -854,9 +854,9 @@ func TestUpgradeAllSorted(t *testing.T) {
 	// Write fake installed records. Find() will fail (no cache), so these will
 	// be reported as stale, but the output order is still checked.
 	records := map[string]InstalledRecord{
-		"zebra":   {Version: "1.0", Source: "local"},
-		"alpha":   {Version: "2.0", Source: "local"},
-		"mango":   {Version: "3.0", Source: "local"},
+		"zebra": {Version: "1.0", Source: "local"},
+		"alpha": {Version: "2.0", Source: "local"},
+		"mango": {Version: "3.0", Source: "local"},
 	}
 	data, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {

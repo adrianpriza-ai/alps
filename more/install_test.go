@@ -28,7 +28,7 @@ import (
 func TestInstallRemovePipelineRealCommands(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // point the build cache at a temp dir
 	redirectInstalledFile(t)
-	t.Setenv("TERM", "") // keep any progress/style output inert
+	t.Setenv("TERM", "")               // keep any progress/style output inert
 	t.Setenv("ALPS_TEST_NO_SUDO", "1") // Disable sudo for this test
 
 	name := "pipeline-test"
@@ -146,7 +146,7 @@ func TestExecuteBashRunAcceptsUppercaseDigest(t *testing.T) {
 func TestInstallDownloadBlockChecksum(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // point the build cache at a temp dir
 	redirectInstalledFile(t)
-	t.Setenv("TERM", "") // keep any progress/style output inert
+	t.Setenv("TERM", "")               // keep any progress/style output inert
 	t.Setenv("ALPS_TEST_NO_SUDO", "1") // Disable sudo for this test
 
 	body := []byte("block-checksum payload\n")
