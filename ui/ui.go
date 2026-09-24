@@ -14,7 +14,8 @@ import (
 	"github.com/adrianpriza-ai/alps/more"
 	"github.com/adrianpriza-ai/alps/pack"
 	"github.com/adrianpriza-ai/alps/platform"
-	"golang.org/x/term"
+	"syscall"
+	"unsafe"
 )
 
 type Level int
@@ -65,15 +66,35 @@ func promptSuffix(defaultYes bool) string {
 	return "[y/N]"
 }
 
-// stdinIsTerminal reports whether stdin is an interactive terminal.
+// stdinIsTerminal reports whether stdin is an interactive terminal, by
+// issuing the TCGETS ioctl that also golang.org/x/term uses for this check.
 func stdinIsTerminal() bool {
-	return term.IsTerminal(int(os.Stdin.Fd()))
+	var t syscall.Termios
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, os.Stdin.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&t)))
+	return errno == 0
+}
+
+var (
+	stdinFile   *os.File
+	stdinReader *bufio.Reader
+)
+
+// stdin returns the shared buffered reader for os.Stdin. One reader serves
+// the whole process, so input already buffered by an earlier prompt stays
+// available to the next one. The reader is rebuilt whenever os.Stdin is
+// replaced (tests swap it).
+func stdin() *bufio.Reader {
+	if stdinFile != os.Stdin {
+		stdinFile = os.Stdin
+		stdinReader = bufio.NewReader(stdinFile)
+	}
+	return stdinReader
 }
 
 // ReadLine reads one line from stdin and returns it trimmed. A read error
 // (EOF, closed stdin) yields the empty string.
 func ReadLine() string {
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	line, err := stdin().ReadString('\n')
 	if err != nil && line == "" {
 		return ""
 	}
@@ -90,7 +111,7 @@ func PromptYesNo(prompt string, defaultYes bool) bool {
 	}
 
 	fmt.Printf("%s %s ", prompt, promptSuffix(defaultYes))
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	line, err := stdin().ReadString('\n')
 	if err != nil && strings.TrimSpace(line) == "" {
 		// A failed read is not a blank answer: refuse rather than assume yes.
 		return false

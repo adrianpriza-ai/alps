@@ -251,6 +251,31 @@ func TestReadLineEOFReturnsEmpty(t *testing.T) {
 	}
 }
 
+// TestSequentialReadsShareBufferedInput pins the shared stdin reader: input
+// queued behind the first line (e.g. pasted "y\ny\n") must still be there for
+// the next read. Per-call readers swallowed the queued line, so sequential
+// prompts hit a premature EOF or hung waiting for already-consumed input.
+// PromptYesNo inherits the same reader but has a terminal gate, so this goes
+// through ReadLine, which reads the same buffered source.
+func TestSequentialReadsShareBufferedInput(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.WriteString("first\nsecond\n"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	swapStdin(t, r)
+	if got := ReadLine(); got != "first" {
+		t.Fatalf("first ReadLine() = %q, want %q", got, "first")
+	}
+	if got := ReadLine(); got != "second" {
+		t.Fatalf("second ReadLine() = %q, want %q (queued input was swallowed)", got, "second")
+	}
+}
+
 // TestPromptOutputFormats ensures the [Y/n] / [y/N] hints follow defaultYes.
 func TestPromptOutputFormats(t *testing.T) {
 	cases := []struct {
