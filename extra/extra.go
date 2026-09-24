@@ -110,8 +110,7 @@ func IsAvailable(backendName string) bool {
 	case "snap":
 		return platform.HasSnapd()
 	case "flatpak":
-		_, err := exec.LookPath("flatpak")
-		return err == nil
+		return platform.HasFlatpak()
 	case "winget":
 		return platform.IsWSL() && isWingetAvailable()
 	default:

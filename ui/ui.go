@@ -14,6 +14,7 @@ import (
 	"github.com/adrianpriza-ai/alps/more"
 	"github.com/adrianpriza-ai/alps/pack"
 	"github.com/adrianpriza-ai/alps/platform"
+	"golang.org/x/term"
 )
 
 type Level int
@@ -64,14 +65,9 @@ func promptSuffix(defaultYes bool) string {
 	return "[y/N]"
 }
 
-// stdinIsTerminal reports whether stdin is a character device, i.e. an
-// interactive terminal rather than a pipe, a file, or /dev/null.
+// stdinIsTerminal reports whether stdin is an interactive terminal.
 func stdinIsTerminal() bool {
-	info, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // ReadLine reads one line from stdin and returns it trimmed. A read error
@@ -220,18 +216,13 @@ func PrintHelp(cfg *config.Config) {
 		fmt.Println()
 	}
 
-	if isFlatpakAvailable() {
+	if extra.IsAvailable("flatpak") {
 		printSectionTitle(cfg, "Flatpak")
 		printRows(cfg, 23, cli.SubCmdHelp("flatpak"))
 		fmt.Println()
 	}
 
 	fmt.Printf("  %sOther commands are passed directly to your system's package manager.%s\n\n", s.ColorDim, s.ColorReset)
-}
-
-func isFlatpakAvailable() bool {
-	_, err := exec.LookPath("flatpak")
-	return err == nil
 }
 
 // aliasColWidth is the padding width for the short-alias column so the
@@ -341,14 +332,9 @@ func PrintDiagnostic(cfg *config.Config) {
 			}
 		}
 	} else {
-		distro = "unknown"
-		if data, err := os.ReadFile("/etc/os-release"); err == nil {
-			for _, line := range strings.Split(string(data), "\n") {
-				if strings.HasPrefix(line, "PRETTY_NAME=") {
-					distro = strings.Trim(line[12:], `"'`)
-					break
-				}
-			}
+		distro = platform.DistroName()
+		if distro == "" {
+			distro = "unknown"
 		}
 	}
 
@@ -367,10 +353,10 @@ func PrintDiagnostic(cfg *config.Config) {
 
 	extras := []string{}
 	if !platform.IsTermux() {
-		if _, err := exec.LookPath("flatpak"); err == nil {
+		if extra.IsAvailable("flatpak") {
 			extras = append(extras, "flatpak")
 		}
-		if _, err := exec.LookPath("snap"); err == nil {
+		if extra.IsAvailable("snap") {
 			extras = append(extras, "snap")
 		}
 		if _, err := exec.LookPath("paru"); err == nil {

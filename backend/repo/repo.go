@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -90,7 +91,9 @@ func (b *Backend) List(args []string) error {
 			fmt.Println()
 			return nil
 		default:
-			return fmt.Errorf("unknown list action %q (valid: install, remove)", args[0])
+			err := fmt.Errorf("unknown list action %q (valid: install, remove)", args[0])
+			ui.Msgf(b.cfg, ui.LevelError, "%v", err)
+			return err
 		}
 	}
 
@@ -322,6 +325,17 @@ func (b *Backend) Search(query string) error {
 	return nil
 }
 
+// sortedInstalledNames returns the installed package names in sorted order so
+// repeated upgrade previews print identically.
+func sortedInstalledNames(records map[string]more.InstalledRecord) []string {
+	names := make([]string, 0, len(records))
+	for name := range records {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // upgradeTarget reports whether a package should be upgraded, and to which
 // version. ok is false when the entry carries no version to compare against.
 func upgradeTarget(entryVersion, installedVersion string) (target string, upgradable, ok bool) {
@@ -349,21 +363,81 @@ func upgradeSummary(upgraded, skipped, failed int) (string, bool) {
 	return summary, failed > 0
 }
 
+// pkgPreview holds the pre-check result for a single package. It stores the
+// resolved entry and installed record so the execute phase can call
+// more.UpgradeEntry / more.UpgradeFromSource directly without re-reading the
+// installed DB or re-checking versions.
+type pkgPreview struct {
+	name     string
+	from, to string
+	err      string // non-empty if the package can't be upgraded
+	entry    *more.Entry
+	rec      *more.InstalledRecord
+	remote   string // non-empty if sourced from github/gitlab
+}
+
+// previewResolution carries what the preview builder needs about one
+// package's candidate entry.
+type previewResolution struct {
+	entry  *more.Entry
+	remote string // non-empty when the entry comes from github/gitlab
+	err    error  // non-nil when the candidate entry could not be resolved
+}
+
+// previewResolver resolves the candidate entry for one installed record.
+type previewResolver func(name string, rec more.InstalledRecord) previewResolution
+
+// buildUpgradePreviews builds one preview row per installed record, walking
+// the names in sorted order so repeated runs print identically. resolve
+// supplies the candidate entry; a resolution error becomes the row's skip
+// reason, as does an entry with no version information.
+func buildUpgradePreviews(records map[string]more.InstalledRecord, resolve previewResolver) []pkgPreview {
+	previews := make([]pkgPreview, 0, len(records))
+	for _, name := range sortedInstalledNames(records) {
+		rec := records[name]
+		recCopy := rec // avoid pointer aliasing across iterations
+		res := resolve(name, recCopy)
+		if res.err != nil {
+			previews = append(previews, pkgPreview{name: name, err: res.err.Error(), rec: &recCopy, remote: res.remote})
+			continue
+		}
+		target, upgradable, ok := upgradeTarget(res.entry.Version, recCopy.Version)
+		if !ok {
+			previews = append(previews, pkgPreview{name: name, err: "no version information — skipped", rec: &recCopy, remote: res.remote})
+			continue
+		}
+		if upgradable {
+			previews = append(previews, pkgPreview{name: name, from: recCopy.Version, to: target, entry: res.entry, rec: &recCopy, remote: res.remote})
+		} else {
+			previews = append(previews, pkgPreview{name: name, from: recCopy.Version, to: recCopy.Version, entry: res.entry, rec: &recCopy, remote: res.remote})
+		}
+	}
+	return previews
+}
+
+// resolveUpgradeAll resolves the candidate entry for one installed package
+// during "upgrade all": remote-source packages are fetched fresh, everything
+// else is looked up in the repo cache.
+func (b *Backend) resolveUpgradeAll() previewResolver {
+	return func(name string, rec more.InstalledRecord) previewResolution {
+		if more.IsRemoteSource(rec.Source) {
+			fe, fetchErr := more.FetchALPSMOREFromSource(rec.Source)
+			if fetchErr != nil {
+				return previewResolution{remote: rec.Source, err: fmt.Errorf("fetch failed: %v", fetchErr)}
+			}
+			fe.Source = rec.Source
+			return previewResolution{entry: fe, remote: rec.Source}
+		}
+		e, findErr := more.Find(name, b.cfg)
+		if findErr != nil {
+			return previewResolution{err: errors.New("stale — no longer in repo")}
+		}
+		return previewResolution{entry: e}
+	}
+}
+
 // Upgrade upgrades installed packages
 func (b *Backend) Upgrade(pkgs []string, dryRun bool) error {
-	// pkgPreview holds the pre-check result for a single package.
-	// It stores the resolved entry and installed record so the execute
-	// phase can call more.UpgradeEntry / more.UpgradeFromSource directly
-	// without re-reading the installed DB or re-checking versions.
-	type pkgPreview struct {
-		name     string
-		from, to string
-		err      string // non-empty if the package can't be upgraded
-		entry    *more.Entry
-		rec      *more.InstalledRecord
-		remote   string // non-empty if sourced from github/gitlab
-	}
-
 	var previews []pkgPreview
 
 	if len(pkgs) == 0 {
@@ -379,98 +453,36 @@ func (b *Backend) Upgrade(pkgs []string, dryRun bool) error {
 		}
 
 		fmt.Println()
-		names := make([]string, 0, len(records))
-		for name := range records {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			rec := records[name]
-			recCopy := rec // avoid pointer aliasing across iterations
-			if more.IsRemoteSource(recCopy.Source) {
-				fe, fetchErr := more.FetchALPSMOREFromSource(recCopy.Source)
-				if fetchErr != nil {
-					previews = append(previews, pkgPreview{name: name, err: fmt.Sprintf("fetch failed: %v", fetchErr), rec: &recCopy, remote: recCopy.Source})
-					continue
-				}
-				fe.Source = recCopy.Source
-				target, upgradable, ok := upgradeTarget(fe.Version, recCopy.Version)
-				if !ok {
-					previews = append(previews, pkgPreview{name: name, err: "no version information — skipped", rec: &recCopy, remote: recCopy.Source})
-					continue
-				}
-				if upgradable {
-					previews = append(previews, pkgPreview{name: name, from: recCopy.Version, to: target, entry: fe, rec: &recCopy, remote: recCopy.Source})
-				} else {
-					previews = append(previews, pkgPreview{name: name, from: recCopy.Version, to: recCopy.Version, rec: &recCopy, remote: recCopy.Source})
-				}
-				continue
-			}
-			e, findErr := more.Find(name, b.cfg)
-			if findErr != nil {
-				previews = append(previews, pkgPreview{name: name, err: "stale — no longer in repo", rec: &recCopy})
-				continue
-			}
-			target, upgradable, ok := upgradeTarget(e.Version, recCopy.Version)
-			if !ok {
-				previews = append(previews, pkgPreview{name: name, err: "no version information — skipped", rec: &recCopy})
-				continue
-			}
-			if upgradable {
-				previews = append(previews, pkgPreview{name: name, from: recCopy.Version, to: target, entry: e, rec: &recCopy})
-			} else {
-				previews = append(previews, pkgPreview{name: name, from: recCopy.Version, to: recCopy.Version, entry: e, rec: &recCopy})
-			}
-		}
+		previews = append(previews, buildUpgradePreviews(records, b.resolveUpgradeAll())...)
 	} else {
-		// Upgrade specific packages: build a preview for each.
+		// Upgrade specific packages: build a preview for each. The installed
+		// check is per-name, so wrap the records in a one-entry map and let
+		// buildUpgradePreviews decide upgradability.
+		resolve := func(pkgName string, rec more.InstalledRecord) previewResolution {
+			if more.IsRemoteSource(rec.Source) {
+				// Remote packages are fetched and checked at upgrade time
+				// since the repo cache won't have their entry.
+				fe, fetchErr := more.FetchALPSMOREFromSource(rec.Source)
+				if fetchErr != nil {
+					return previewResolution{remote: rec.Source, err: fmt.Errorf("fetch failed: %v", fetchErr)}
+				}
+				fe.Source = rec.Source
+				return previewResolution{entry: fe, remote: rec.Source}
+			}
+			e, findErr := more.Find(pkgName, b.cfg)
+			if findErr != nil {
+				return previewResolution{err: findErr}
+			}
+			return previewResolution{entry: e}
+		}
+
 		for _, pkgName := range pkgs {
 			rec, isInstalled := more.GetInstalled(pkgName)
 			if !isInstalled {
 				previews = append(previews, pkgPreview{name: pkgName, err: "not installed"})
 				continue
 			}
-			recCopy := rec // take address safely across iterations
-
-			// Remote packages are fetched and checked at upgrade time
-			// since the repo cache won't have their entry.
-			if more.IsRemoteSource(recCopy.Source) {
-				// Fetch the remote ALPSMORE to get the latest version for preview.
-				fe, fetchErr := more.FetchALPSMOREFromSource(recCopy.Source)
-				if fetchErr != nil {
-					previews = append(previews, pkgPreview{name: pkgName, err: fmt.Sprintf("fetch failed: %v", fetchErr), rec: &recCopy, remote: recCopy.Source})
-					continue
-				}
-				fe.Source = recCopy.Source
-				target, upgradable, ok := upgradeTarget(fe.Version, recCopy.Version)
-				if !ok {
-					previews = append(previews, pkgPreview{name: pkgName, err: "no version information — skipped", rec: &recCopy, remote: recCopy.Source})
-					continue
-				}
-				if upgradable {
-					previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: target, entry: fe, rec: &recCopy, remote: recCopy.Source})
-				} else {
-					previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: recCopy.Version, rec: &recCopy, remote: recCopy.Source})
-				}
-				continue
-			}
-
-			e, findErr := more.Find(pkgName, b.cfg)
-			if findErr != nil {
-				previews = append(previews, pkgPreview{name: pkgName, err: findErr.Error(), rec: &recCopy})
-				continue
-			}
-
-			target, upgradable, ok := upgradeTarget(e.Version, recCopy.Version)
-			if !ok {
-				previews = append(previews, pkgPreview{name: pkgName, err: "no version information — skipped", rec: &recCopy})
-				continue
-			}
-			if upgradable {
-				previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: target, entry: e, rec: &recCopy})
-			} else {
-				previews = append(previews, pkgPreview{name: pkgName, from: recCopy.Version, to: recCopy.Version, entry: e, rec: &recCopy})
-			}
+			previews = append(previews, buildUpgradePreviews(map[string]more.InstalledRecord{pkgName: rec}, resolve)...)
 		}
 	}
 
@@ -478,21 +490,24 @@ func (b *Backend) Upgrade(pkgs []string, dryRun bool) error {
 		return nil
 	}
 
-	// Count how many packages actually need upgrading.
-	var upgradable int
+	// Count how many packages actually need upgrading and how many are
+	// skipped (stale, fetch failure, no version info, not installed).
+	var upgradable, skippedPreviews int
 	for _, p := range previews {
-		if p.err == "" && p.from != p.to && p.to != "" {
+		if p.err != "" {
+			skippedPreviews++
+		} else if p.from != p.to && p.to != "" {
 			upgradable++
 		}
 	}
 
-	if upgradable == 0 {
+	if upgradable == 0 && skippedPreviews == 0 {
 		ui.Msg(b.cfg, ui.LevelOK, "All alps-more packages are up to date.")
 		return nil
 	}
 
-	// Show the full preview.
-	ui.Msgf(b.cfg, ui.LevelInfo, "Upgrade %d package(s)?", upgradable)
+	// Show the full preview. Skipped packages print with a warning marker so
+	// the user sees why they are excluded.
 	fmt.Println()
 	for _, p := range previews {
 		if p.err != "" {
@@ -518,11 +533,26 @@ func (b *Backend) Upgrade(pkgs []string, dryRun bool) error {
 	fmt.Println()
 
 	if dryRun {
-		ui.Msgf(b.cfg, ui.LevelWarn, "DRY-RUN: would upgrade %d package(s)", upgradable)
+		if upgradable > 0 {
+			ui.Msgf(b.cfg, ui.LevelWarn, "DRY-RUN: would upgrade %d package(s)", upgradable)
+		} else {
+			ui.Msg(b.cfg, ui.LevelWarn, "DRY-RUN: nothing to upgrade")
+		}
 		return nil
 	}
 
-	if !ui.Confirm() {
+	if upgradable == 0 {
+		// Nothing to execute; the preview above already lists why each
+		// package was skipped. Keep the summary so the counts stay visible.
+		fmt.Println()
+		summary, _ := upgradeSummary(0, skippedPreviews, 0)
+		ui.Msg(b.cfg, ui.LevelInfo, summary)
+		return nil
+	}
+
+	// The count doubles as the confirmation prompt: one question, asked
+	// after the preview it describes.
+	if !ui.PromptYesNo(fmt.Sprintf("  Upgrade %d package(s)?", upgradable), true) {
 		ui.Msg(b.cfg, ui.LevelWarn, "Upgrade cancelled.")
 		return nil
 	}

@@ -42,8 +42,13 @@ func TestConfirmRefusesOnDevNull(t *testing.T) {
 	defer f.Close()
 
 	swapStdin(t, f)
-	if Confirm() {
+	confirmed := false
+	notice := captureStderr(t, func() { confirmed = Confirm() })
+	if confirmed {
 		t.Fatal("Confirm() returned true with stdin at /dev/null")
+	}
+	if !strings.Contains(notice, "no terminal available") {
+		t.Fatalf("Confirm() notice = %q, want no-terminal warning", notice)
 	}
 }
 
@@ -79,6 +84,30 @@ func captureStdout(t *testing.T, fn func()) string {
 	os.Stdout = w
 	fn()
 	os.Stdout = orig
+	w.Close()
+
+	var sb strings.Builder
+	buf := make([]byte, 4096)
+	for {
+		n, err := r.Read(buf)
+		sb.Write(buf[:n])
+		if err != nil {
+			break
+		}
+	}
+	return sb.String()
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	fn()
+	os.Stderr = orig
 	w.Close()
 
 	var sb strings.Builder
@@ -262,5 +291,24 @@ func TestDiagnosticSurfacesUnreadableState(t *testing.T) {
 	}
 	if !strings.Contains(out, "state unreadable") {
 		t.Errorf("diagnostic does not report the unreadable state file; got:\n%s", out)
+	}
+}
+
+func TestDiagnosticSurfacesCorruptState(t *testing.T) {
+	stateDir := t.TempDir()
+	stateFile := filepath.Join(stateDir, "installed.json")
+	if err := os.WriteFile(stateFile, []byte(`{"broken":`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ALPS_LIB_DIR", stateDir)
+
+	cfg := &config.Config{Version: "v1.2.3", Style: config.Style{ShowHeader: false}}
+	out := captureStdout(t, func() { PrintDiagnostic(cfg) })
+
+	if strings.Contains(out, "0 package(s)") {
+		t.Errorf("diagnostic reports \"0 package(s)\" for corrupt state; got:\n%s", out)
+	}
+	if !strings.Contains(out, "state unreadable") || !strings.Contains(out, "installed state is corrupt") {
+		t.Errorf("diagnostic does not surface corrupt state; got:\n%s", out)
 	}
 }

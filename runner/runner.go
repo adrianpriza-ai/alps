@@ -193,9 +193,12 @@ func (c Command) WithDir(dir string) Command {
 
 // WithEnv sets environment variables for a command. Keys can only be added
 // or overridden on top of the inherited environment — they can never be
-// unset. A security-sensitive caller that needs a minimal environment must
-// build the env slice itself and assign Command.Env (see aur.safeMakepkgEnv
-// for that pattern).
+// unset. A minimal environment is not reachable through the runner either:
+// whenever Command.Env is non-empty the runner prepends os.Environ() to it,
+// so the process environment is always inherited in full. A
+// security-sensitive caller that needs a minimal environment must build a
+// raw exec.Cmd and assign its Env directly (see aur.safeMakepkgEnv for that
+// pattern).
 func (c Command) WithEnv(env ...string) Command {
 	c.Env = env
 	return c

@@ -44,6 +44,11 @@ const (
 	unlimitedDownloadSize = int64(-1)
 )
 
+// serverProbeClient performs the HEAD reachability probes for resolveServer.
+// It is a package-level variable so tests can substitute a client that
+// records response-body closes.
+var serverProbeClient = &http.Client{Timeout: serverTimeout}
+
 // defaultServers are the official alps-more mirrors.
 var defaultServers = []string{
 	"https://adrianpriza-ai.github.io/alps-more/",
@@ -273,7 +278,7 @@ func resolveServer(servers []string) (string, error) {
 	}
 
 	ch := make(chan result, len(servers))
-	client := &http.Client{Timeout: serverTimeout}
+	client := serverProbeClient
 
 	for _, s := range servers {
 		go func(url string) {

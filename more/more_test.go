@@ -1312,6 +1312,9 @@ func TestParseSHA256SumsBlockErrors(t *testing.T) {
 		{"named pairs then block", "[pkg]\nsha256sums = file1.tar.gz=" + hashA + "\nsha256sums_begin\n  {FILE} file2.tar.gz\n  {SUMS} " + hashB + "\nsha256sums_end\n"},
 		{"paste then block", "[pkg]\nsha256sums =\n  " + hashA + "  file1.tar.gz\nsha256sums_begin\n  {FILE} file2.tar.gz\n  {SUMS} " + hashB + "\nsha256sums_end\n"},
 		{"block inside cmd_begin", "[pkg]\ncmd_begin\n  sha256sums_begin\ncmd_end\n"},
+		{"stray end without begin", "[pkg]\nsha256sums_end\n"},
+		{"stray end inside cmd_begin", "[pkg]\ncmd_begin\n  sha256sums_end\ncmd_end\n"},
+		{"stray end after closed block", "[pkg]\nsha256sums_begin\n  {FILE} file1.tar.gz\n  {SUMS} " + hashA + "\nsha256sums_end\nsha256sums_end\n"},
 		{"unclosed block at next section", "[pkg]\nsha256sums_begin\n  {FILE} file1.tar.gz\n  {SUMS} " + hashA + "\n\n[other]\n"},
 		{"unclosed block at EOF", "[pkg]\nsha256sums_begin\n  {FILE} file1.tar.gz\n  {SUMS} " + hashA + "\n"},
 		{"two blocks without end", "[pkg]\nsha256sums_begin\nsha256sums_begin\n"},
@@ -1880,5 +1883,96 @@ func TestFindEntry(t *testing.T) {
 	e, err := findEntry(entries, "pkg-linux", "ubuntu", []string{"debian"})
 	if err != nil || e == nil || e.Name != "pkg-linux" {
 		t.Errorf("expected pkg-linux entry, got entry=%v, err=%v", e, err)
+	}
+}
+
+// TestRunOperationUpgradeRejectsInvalidEntry verifies that upgrade operations
+// run Validate before executing anything (B5): an entry that no longer lists
+// the host architecture must be refused, never executed. The control entry
+// passes validation and gets as far as running its free-mode build command.
+func TestRunOperationUpgradeRejectsInvalidEntry(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome) // point the build cache at a temp dir
+	redirectInstalledFile(t)
+
+	sysArch := platform.NormalizeArch(runtime.GOARCH)
+	markerIn := func(pkg string) string {
+		return filepath.Join(tmpHome, ".cache", "alps", "more", pkg, "upgrade-marker.txt")
+	}
+
+	bad := &Entry{
+		Name:    "upgrade-bad-arch",
+		Version: "2.0.0",
+		Arch:    []string{"aarch64"}, // deliberately not the host arch
+		OS:      []string{"linux"},
+		Safety:  "free",
+		UpgradeLines: []string{
+			"echo upgrade-ran > upgrade-marker.txt",
+		},
+	}
+	if err := runOperation(bad, platform.OperationUpgrade); err == nil {
+		t.Fatal("expected runOperation to reject an upgrade whose arch does not match the host")
+	} else if !strings.Contains(err.Error(), sysArch) {
+		t.Errorf("error should mention the host architecture %s, got: %v", sysArch, err)
+	}
+
+	// The rejected upgrade must not have executed anything.
+	if _, err := os.Stat(markerIn(bad.Name)); err == nil {
+		t.Error("upgrade commands ran despite the arch rejection")
+	}
+
+	// Control: a compatible entry passes validation and executes. CmdLines is
+	// present because validateInstallCommands requires it for upgrades too
+	// (Scrape falls back to it when UpgradeLines is empty), and free mode
+	// requires a remove block.
+	good := &Entry{
+		Name:    "upgrade-good",
+		Version: "2.0.0",
+		Arch:    []string{sysArch},
+		OS:      []string{"linux"},
+		Safety:  "free",
+		UpgradeLines: []string{
+			"echo upgrade-ran > upgrade-marker.txt",
+		},
+		CmdLines: []string{
+			"echo upgrade-ran > upgrade-marker.txt",
+		},
+		RemoveLines: []string{
+			"rm -f upgrade-marker.txt",
+		},
+	}
+	if err := runOperation(good, platform.OperationUpgrade); err != nil {
+		t.Fatalf("control upgrade with matching arch failed: %v", err)
+	}
+	data, err := os.ReadFile(markerIn(good.Name))
+	if err != nil {
+		t.Fatalf("control upgrade did not run its command: %v", err)
+	}
+	if !strings.Contains(string(data), "upgrade-ran") {
+		t.Errorf("upgrade marker = %q, want it to contain 'upgrade-ran'", string(data))
+	}
+}
+
+// TestRunOperationUpgradeRejectsNoCommands verifies the B5 upgrade validation
+// also refuses an entry whose revision lost both its upgrade and install blocks.
+func TestRunOperationUpgradeRejectsNoCommands(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	redirectInstalledFile(t)
+
+	e := &Entry{
+		Name:         "upgrade-no-commands",
+		Version:      "2.0.0",
+		Arch:         []string{platform.NormalizeArch(runtime.GOARCH)},
+		OS:           []string{"linux"},
+		Safety:       "free",
+		UpgradeLines: nil,
+		CmdLines:     nil,
+	}
+	err := runOperation(e, platform.OperationUpgrade)
+	if err == nil {
+		t.Fatal("expected runOperation to reject an upgrade with no commands")
+	}
+	if !strings.Contains(err.Error(), "no install commands") && !strings.Contains(err.Error(), "no upgrade or install commands") {
+		t.Errorf("error should mention the missing commands, got: %v", err)
 	}
 }

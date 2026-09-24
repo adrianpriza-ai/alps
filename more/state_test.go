@@ -106,45 +106,64 @@ func TestInstalledRecordEmptyFieldsRoundTrip(t *testing.T) {
 // TestReadInstalledMissingFile verifies ReadInstalled returns an empty map
 // (no error) when the installed.json file does not exist.
 func TestReadInstalledMissingFile(t *testing.T) {
-	// ReadInstalled reads from getInstalledFile(). On most CI/test environments
-	// the file does not exist, so it should return an empty map.
-	// We can't easily redirect the path without refactoring, but we can verify
-	// the function handles the missing-file case correctly by testing the
-	// underlying JSON-unmarshal-with-fallback logic.
-	emptyData := []byte("")
-	var records map[string]InstalledRecord
-	if err := json.Unmarshal(emptyData, &records); err != nil {
-		// json.Unmarshal on empty bytes returns "unexpected end of JSON input"
-		// which is the case ReadInstalled handles by checking len(bytes.TrimSpace(data)) == 0
-		if len(emptyData) == 0 || len(bytes.TrimSpace(emptyData)) == 0 {
-			// This matches ReadInstalled's behavior: empty file → empty map
-			records = make(map[string]InstalledRecord)
-		} else {
-			t.Fatalf("unexpected error: %v", err)
-		}
+	redirectInstalledFile(t)
+
+	records, err := ReadInstalled()
+	if err != nil {
+		t.Fatalf("ReadInstalled() error = %v, want nil", err)
 	}
 	if len(records) != 0 {
-		t.Errorf("expected empty map for missing file, got %d records", len(records))
+		t.Errorf("ReadInstalled() returned %d records, want 0", len(records))
 	}
 }
 
-// TestReadInstalledCorruptJSON verifies that corrupt JSON is handled gracefully.
-// The actual ReadInstalled function backs up the corrupt file and resets to an
-// empty map. We test the JSON-level behavior: unmarshal of corrupt data returns
-// an error, and the backup+reset path is exercised.
-func TestReadInstalledCorruptJSON(t *testing.T) {
-	corruptData := []byte(`{"mytool": {version: "broken"}}`)
+// TestReadInstalledEmptyFile verifies an existing empty state is corruption;
+// a missing state file remains the valid representation of no packages.
+func TestReadInstalledEmptyFile(t *testing.T) {
+	for _, data := range []string{"", " \n\t"} {
+		dir := redirectInstalledFile(t)
+		path := filepath.Join(dir, "installed.json")
+		if err := os.WriteFile(path, []byte(data), 0644); err != nil {
+			t.Fatal(err)
+		}
 
-	var records map[string]InstalledRecord
-	err := json.Unmarshal(corruptData, &records)
-	if err == nil {
-		t.Fatal("expected error when unmarshaling corrupt JSON, got nil")
+		records, err := ReadInstalled()
+		if err == nil || !strings.Contains(err.Error(), "installed state is corrupt") {
+			t.Fatalf("ReadInstalled() error = %v, want corrupt empty-state error", err)
+		}
+		if records != nil {
+			t.Errorf("ReadInstalled() records = %v, want nil for empty state", records)
+		}
+	}
+}
+
+// TestReadInstalledCorruptJSON verifies corrupt state is surfaced and left
+// untouched instead of being reported as a successful empty installation.
+func TestReadInstalledCorruptJSON(t *testing.T) {
+	dir := redirectInstalledFile(t)
+	path := filepath.Join(dir, "installed.json")
+	corruptData := []byte(`{"mytool": {version: "broken"}}`)
+	if err := os.WriteFile(path, corruptData, 0644); err != nil {
+		t.Fatal(err)
 	}
 
-	// Verify that the backup+reset path produces an empty map.
-	records = make(map[string]InstalledRecord)
-	if len(records) != 0 {
-		t.Errorf("expected empty map after corrupt JSON reset, got %d records", len(records))
+	records, err := ReadInstalled()
+	if err == nil {
+		t.Fatal("ReadInstalled() error = nil, want corrupt-state error")
+	}
+	if !strings.Contains(err.Error(), "installed state is corrupt") {
+		t.Errorf("ReadInstalled() error = %q, want corrupt-state context", err)
+	}
+	if records != nil {
+		t.Errorf("ReadInstalled() records = %v, want nil on corrupt state", records)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, corruptData) {
+		t.Errorf("corrupt state changed after read: got %q, want %q", after, corruptData)
 	}
 }
 
@@ -379,44 +398,6 @@ func TestMarkInstalledEntryWithOwnedItemsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestInstalledRecordBackupOnCorrupt verifies the backup logic for corrupt JSON:
-// write a corrupt file, then verify ReadInstalled creates a .bak backup.
-// This test exercises the real ReadInstalled code path by writing to a temp dir
-// and temporarily overriding getInstalledFile via the installed file path.
-func TestInstalledRecordBackupOnCorrupt(t *testing.T) {
-	// Create a temp dir with a corrupt installed.json.
-	tmpDir := t.TempDir()
-	corruptPath := filepath.Join(tmpDir, "installed.json")
-	corruptData := []byte(`{not valid json!!!`)
-	if err := os.WriteFile(corruptPath, corruptData, 0644); err != nil {
-		t.Fatalf("failed to write corrupt file: %v", err)
-	}
-
-	// Verify the file exists and is corrupt.
-	data, err := os.ReadFile(corruptPath)
-	if err != nil {
-		t.Fatalf("failed to read corrupt file: %v", err)
-	}
-
-	var records map[string]InstalledRecord
-	if err := json.Unmarshal(data, &records); err == nil {
-		t.Fatal("expected unmarshal to fail on corrupt data")
-	}
-
-	// Simulate the backup+reset path from ReadInstalled.
-	backupPath := corruptPath + ".bak"
-	_ = os.WriteFile(backupPath, data, 0644)
-	records = make(map[string]InstalledRecord)
-
-	// Verify backup was created.
-	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
-		t.Error("backup file should exist after corrupt JSON handling")
-	}
-	if len(records) != 0 {
-		t.Errorf("expected empty map after reset, got %d records", len(records))
-	}
-}
-
 // TestLockTimeout verifies that openAndLockFile returns an error when the lock
 // is held by another process, rather than blocking forever (I8).
 func TestLockTimeout(t *testing.T) {
@@ -456,47 +437,5 @@ func TestLockTimeout(t *testing.T) {
 	}
 	if elapsed > 2*time.Second {
 		t.Errorf("lock acquisition took too long: %v", elapsed)
-	}
-}
-
-// TestInstalledRecordBackupDurable verifies that the backup file created on
-// corrupt-JSON reset is durable (written via writeFileDurable) and has the
-// expected mode (I9).
-func TestInstalledRecordBackupDurable(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-	tmpDir := t.TempDir()
-	corruptData := []byte(`{not valid json!!!`)
-
-	// Write corrupt installed.json directly (bypassing ReadInstalled's path
-	// detection) and call the backup logic to verify writeFileDurable is used.
-	installedPath := filepath.Join(tmpDir, "installed.json")
-	if err := os.WriteFile(installedPath, corruptData, 0644); err != nil {
-		t.Fatalf("failed to write corrupt file: %v", err)
-	}
-
-	// Simulate the backup path from ReadInstalled.
-	backupPath := filepath.Clean(installedPath + ".bak")
-	if err := writeFileDurable(backupPath, corruptData, 0644); err != nil {
-		t.Fatalf("writeFileDurable failed: %v", err)
-	}
-
-	// Verify backup content matches.
-	got, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatalf("failed to read backup: %v", err)
-	}
-	if !bytes.Equal(got, corruptData) {
-		t.Errorf("backup content mismatch: got %q, want %q", got, corruptData)
-	}
-
-	// Verify backup mode.
-	info, err := os.Stat(backupPath)
-	if err != nil {
-		t.Fatalf("failed to stat backup: %v", err)
-	}
-	if info.Mode().Perm() != 0644 {
-		t.Errorf("backup file mode = %o, want 0644", info.Mode().Perm())
 	}
 }

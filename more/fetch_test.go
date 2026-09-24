@@ -2,11 +2,14 @@ package more
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestParseALPSMOREWithHeader verifies that a valid ALPSMORE with a [name] header
@@ -513,4 +516,95 @@ func TestParseRemoteURLBareHost(t *testing.T) {
 	if !strings.Contains(err.Error(), "unsupported git host") {
 		t.Errorf("expected 'unsupported git host' error, got: %v", err)
 	}
+}
+
+// closeCountingTransport wraps every response body so Close() calls are
+// counted. Only resolveServer's explicit Body.Close() lands on the wrapper —
+// keep-alive internals close the raw transport body, not this one.
+type closeCountingTransport struct {
+	inner  http.RoundTripper
+	closes *int32
+}
+
+func (t *closeCountingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.inner.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil {
+		return resp, err
+	}
+	resp.Body = closeCountingBody{ReadCloser: resp.Body, closes: t.closes}
+	return resp, nil
+}
+
+type closeCountingBody struct {
+	io.ReadCloser
+	closes *int32
+}
+
+func (b closeCountingBody) Close() error {
+	atomic.AddInt32(b.closes, 1)
+	return b.ReadCloser.Close()
+}
+
+// waitForCloses polls until closes reaches want, failing the test after a
+// short deadline. The close happens in the probing goroutine after the result
+// is sent, so a plain check after resolveServer returns would race.
+func waitForCloses(t *testing.T, closes *int32, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := atomic.LoadInt32(closes); got == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("response bodies closed %d times, want %d", atomic.LoadInt32(closes), want)
+}
+
+// TestResolveServerClosesHEADBodies verifies that resolveServer closes every
+// HEAD response body it opens, reachable or not (B10). An unclosed body leaks
+// a connection per probe and can exhaust descriptors across repeated runs.
+func TestResolveServerClosesHEADBodies(t *testing.T) {
+	var closes int32
+	mkServer := func(status int) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		}))
+	}
+
+	oldClient := serverProbeClient
+	serverProbeClient = &http.Client{
+		Timeout: serverTimeout,
+		Transport: &closeCountingTransport{
+			inner:  http.DefaultTransport,
+			closes: &closes,
+		},
+	}
+	t.Cleanup(func() { serverProbeClient = oldClient })
+
+	// All-unreachable path: every probe returns 404, resolveServer waits for
+	// all results, and every body must still be closed.
+	s1, s2, s3 := mkServer(http.StatusNotFound), mkServer(http.StatusNotFound), mkServer(http.StatusNotFound)
+	defer s1.Close()
+	defer s2.Close()
+	defer s3.Close()
+
+	atomic.StoreInt32(&closes, 0)
+	if _, err := resolveServer([]string{s1.URL, s2.URL, s3.URL}); err == nil {
+		t.Fatal("expected resolveServer to fail when every probe returns 404")
+	}
+	waitForCloses(t, &closes, 3)
+
+	// Success path: the reachable server's body is closed too.
+	s4 := mkServer(http.StatusOK)
+	defer s4.Close()
+
+	atomic.StoreInt32(&closes, 0)
+	got, err := resolveServer([]string{s4.URL})
+	if err != nil {
+		t.Fatalf("resolveServer failed against a reachable server: %v", err)
+	}
+	if got != s4.URL {
+		t.Errorf("resolveServer = %q, want %q", got, s4.URL)
+	}
+	waitForCloses(t, &closes, 1)
 }

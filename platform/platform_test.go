@@ -3,6 +3,7 @@ package platform
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -16,6 +17,117 @@ import (
 func TestIsRootEffectiveUID(t *testing.T) {
 	if IsRoot() != (os.Geteuid() == 0) {
 		t.Errorf("IsRoot() = %v, want os.Geteuid() == 0 (euid %d)", IsRoot(), os.Geteuid())
+	}
+}
+
+func TestParseOSRelease(t *testing.T) {
+	info := parseOSRelease([]byte(`
+NAME="Test Linux"
+ID=Pop_OS
+ID_LIKE="Debian Ubuntu"
+PRETTY_NAME='Test Linux 1.0'
+VERSION_ID="24.04"
+`))
+	if info.id != "pop_os" {
+		t.Errorf("ID = %q, want %q", info.id, "pop_os")
+	}
+	if want := []string{"debian", "ubuntu"}; !reflect.DeepEqual(info.idLike, want) {
+		t.Errorf("ID_LIKE = %v, want %v", info.idLike, want)
+	}
+	if info.name != "Test Linux 1.0" {
+		t.Errorf("PRETTY_NAME = %q, want %q", info.name, "Test Linux 1.0")
+	}
+	if info.version != "24.04" {
+		t.Errorf("VERSION_ID = %q, want %q", info.version, "24.04")
+	}
+}
+
+func TestDistroFamilyClassification(t *testing.T) {
+	tests := []struct {
+		id          string
+		archBased   bool
+		debianBased bool
+	}{
+		{"arch", true, false},
+		{"manjaro", true, false},
+		{"endeavouros", true, false},
+		{"garuda", true, false},
+		{"artix", true, false},
+		{"debian", false, true},
+		{"ubuntu", false, true},
+		{"linuxmint", false, true},
+		{"pop", false, true},
+		{"elementary", false, true},
+		{"kali", false, true},
+		{"fedora", false, false},
+		{"", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.id, func(t *testing.T) {
+			if got := isArchDistro(tc.id); got != tc.archBased {
+				t.Errorf("isArchDistro(%q) = %v, want %v", tc.id, got, tc.archBased)
+			}
+			if got := isDebianDistro(tc.id); got != tc.debianBased {
+				t.Errorf("isDebianDistro(%q) = %v, want %v", tc.id, got, tc.debianBased)
+			}
+		})
+	}
+}
+
+func TestHasFlatpak(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("flatpak is not a Windows backend")
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "flatpak"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if !HasFlatpak() {
+		t.Fatal("HasFlatpak() = false with flatpak in PATH")
+	}
+
+	t.Setenv("PATH", t.TempDir())
+	if HasFlatpak() {
+		t.Fatal("HasFlatpak() = true without flatpak in PATH")
+	}
+}
+
+func TestSnapdUsable(t *testing.T) {
+	tests := []struct {
+		name        string
+		binaryFound bool
+		blocked     bool
+		active      bool
+		want        bool
+	}{
+		{"usable", true, false, true, true},
+		{"missing binary", false, false, false, false},
+		{"inactive daemon", true, false, false, false},
+		{"blocked by nosnap.pref", true, true, true, false},
+		{"missing and blocked", false, true, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := snapdUsable(tc.binaryFound, tc.blocked, tc.active); got != tc.want {
+				t.Errorf("snapdUsable(%v, %v, %v) = %v, want %v",
+					tc.binaryFound, tc.blocked, tc.active, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTermuxDistroMetadata(t *testing.T) {
+	t.Setenv("TERMUX_VERSION", "0.119.0")
+	if got := DistroID(); got != "termux" {
+		t.Errorf("DistroID() = %q, want termux", got)
+	}
+	if want := []string{"termux"}; !reflect.DeepEqual(DistroIDLike(), want) {
+		t.Errorf("DistroIDLike() = %v, want %v", DistroIDLike(), want)
+	}
+	if got := DistroVersion(); got != "0.119.0" {
+		t.Errorf("DistroVersion() = %q, want 0.119.0", got)
 	}
 }
 

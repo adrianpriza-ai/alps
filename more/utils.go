@@ -2,9 +2,6 @@ package more
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
-	"runtime"
 	"strings"
 
 	"github.com/adrianpriza-ai/alps/platform"
@@ -48,69 +45,18 @@ func wrapWithFakeroot(cmd string, ctx *MacroContext) string {
 	return cmd
 }
 
-// detectDistro reads /etc/os-release (or uses platform helpers) to return the
-// distro ID and the ID_LIKE list for matching package OS fields.
-func detectDistro() (id string, idLike []string) {
-	// Termux has no /etc/os-release — it is its own environment
-	if platform.IsTermux() {
-		return "termux", []string{"termux"}
-	}
-
-	// macOS detection
-	if runtime.GOOS == "darwin" {
-		return "macos", []string{"darwin", "macos"}
-	}
-
-	data, err := os.ReadFile("/etc/os-release")
-	if err != nil {
+// detectDistro returns the canonical distribution ID and ID_LIKE values.
+func detectDistro() (string, []string) {
+	id := platform.DistroID()
+	if id == "" {
 		return "unknown", nil
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "ID=") {
-			id = strings.Trim(line[3:], `"'`)
-		} else if strings.HasPrefix(line, "ID_LIKE=") {
-			raw := strings.Trim(line[8:], `"'`)
-			idLike = strings.Fields(raw)
-		}
-	}
-
-	// Inject "wsl" so entries with os=wsl explicitly match on WSL hosts
-	if platform.IsWSL() {
-		idLike = append(idLike, "wsl")
-	}
-	return
+	return id, platform.DistroIDLike()
 }
 
-// detectDistroVersion returns the version string for the current distro.
 func detectDistroVersion() string {
-	if platform.IsTermux() {
-		ver := os.Getenv("TERMUX_VERSION")
-		if ver != "" {
-			return ver
-		}
-		return "unknown"
-	}
-
-	// macOS version detection
-	if runtime.GOOS == "darwin" {
-		cmd := exec.Command("sw_vers", "-productVersion")
-		output, err := cmd.Output()
-		if err == nil {
-			return strings.TrimSpace(string(output))
-		}
-		return "unknown"
-	}
-
-	data, err := os.ReadFile("/etc/os-release")
-	if err != nil {
-		return "unknown"
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "VERSION_ID=") {
-			return strings.Trim(line[11:], `"'`)
-		}
+	if version := platform.DistroVersion(); version != "" {
+		return version
 	}
 	return "unknown"
 }
@@ -120,13 +66,13 @@ func osMatches(osList []string, distro string, idLike []string) bool {
 	for _, o := range osList {
 		o = strings.ToLower(strings.TrimSpace(o))
 		if o == "linux" {
-			if !platform.IsTermux() && runtime.GOOS != "darwin" {
+			if !platform.IsTermux() && !platform.IsMacOS() {
 				return true
 			}
 			continue
 		}
 		if o == "darwin" || o == "macos" {
-			if runtime.GOOS == "darwin" {
+			if platform.IsMacOS() {
 				return true
 			}
 			continue

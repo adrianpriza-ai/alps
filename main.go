@@ -259,7 +259,7 @@ func runWithBackendFlagsExt(cmdArgs []string, args []string, cfg *config.Config,
 	}
 
 	// Use the new runner for consistent command execution
-	r := runner.NewDefaultRunner(f.DryRun)
+	r := runner.NewDefaultRunner(f.DryRun).WithWriter(os.Stdout)
 	cmd := runner.BuildCommand(cmdArgs[0], fullArgs...)
 	if sudo {
 		cmd = cmd.WithPrivilege()
@@ -605,8 +605,7 @@ func runPacmanSearch(args []string, cfg *config.Config) {
 }
 
 func isArch() bool {
-	_, err := exec.LookPath("pacman")
-	return err == nil
+	return platform.IsArchBased()
 }
 
 func runAUR(args []string, cfg *config.Config) {

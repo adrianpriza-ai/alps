@@ -72,61 +72,159 @@ func UsesASCIIFallback() bool {
 	return term == "linux" || term == "dumb" || term == ""
 }
 
-// DistroID returns the distribution ID from /etc/os-release, or "termux"
-// inside Termux. It is empty when the file is missing or has no ID field.
+type osReleaseInfo struct {
+	id      string
+	idLike  []string
+	name    string
+	version string
+}
+
+func parseOSRelease(data []byte) osReleaseInfo {
+	var info osReleaseInfo
+	for _, raw := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(raw), "=")
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') ||
+			(value[0] == '\'' && value[len(value)-1] == '\'')) {
+			value = value[1 : len(value)-1]
+		}
+
+		switch key {
+		case "ID":
+			info.id = strings.ToLower(value)
+		case "ID_LIKE":
+			for _, id := range strings.Fields(value) {
+				info.idLike = append(info.idLike, strings.ToLower(id))
+			}
+		case "PRETTY_NAME":
+			info.name = value
+		case "VERSION_ID":
+			info.version = value
+		}
+	}
+	return info
+}
+
+func readOSRelease() osReleaseInfo {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return osReleaseInfo{}
+	}
+	return parseOSRelease(data)
+}
+
+// DistroID returns the canonical distribution ID. Termux and macOS use their
+// platform IDs; other systems are identified from /etc/os-release.
 func DistroID() string {
 	if IsTermux() {
 		return "termux"
 	}
-	data, err := os.ReadFile("/etc/os-release")
-	if err != nil {
-		return ""
+	if IsMacOS() {
+		return "macos"
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "ID=") {
-			return strings.ToLower(strings.Trim(line[3:], `"'`))
+	return readOSRelease().id
+}
+
+// DistroIDLike returns the lower-case ID_LIKE values for the current system.
+func DistroIDLike() []string {
+	if IsTermux() {
+		return []string{"termux"}
+	}
+	if IsMacOS() {
+		return []string{"darwin", "macos"}
+	}
+
+	likes := readOSRelease().idLike
+	if IsWSL() {
+		found := false
+		for _, id := range likes {
+			if id == "wsl" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			likes = append(likes, "wsl")
 		}
 	}
-	return ""
+	return likes
+}
+
+// DistroName returns PRETTY_NAME from /etc/os-release. Termux and macOS use
+// their native platform names.
+func DistroName() string {
+	if IsTermux() {
+		return "Termux"
+	}
+	if IsMacOS() {
+		return "macOS"
+	}
+	return readOSRelease().name
+}
+
+// DistroVersion returns the current distribution version, or an empty string
+// when it cannot be detected.
+func DistroVersion() string {
+	if IsTermux() {
+		return os.Getenv("TERMUX_VERSION")
+	}
+	if IsMacOS() {
+		out, err := exec.Command("sw_vers", "-productVersion").Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+	return readOSRelease().version
 }
 
 var archDistros = []string{"arch", "manjaro", "endeavouros", "garuda", "artix"}
 var debianDistros = []string{"debian", "ubuntu", "linuxmint", "pop", "elementary", "kali"}
 
-// IsArchBased reports whether the detected distribution is Arch or an
-// Arch derivative (manjaro, endeavouros, garuda, artix).
-func IsArchBased() bool {
-	d := DistroID()
-	for _, id := range archDistros {
-		if d == id {
+func distroIn(id string, families []string) bool {
+	for _, family := range families {
+		if id == family {
 			return true
 		}
 	}
 	return false
 }
 
+func isArchDistro(id string) bool   { return distroIn(id, archDistros) }
+func isDebianDistro(id string) bool { return distroIn(id, debianDistros) }
+
+// IsArchBased reports whether the detected distribution is Arch or an
+// Arch derivative (manjaro, endeavouros, garuda, artix).
+func IsArchBased() bool { return isArchDistro(DistroID()) }
+
 // IsDebianBased reports whether the detected distribution is Debian or a
 // Debian derivative (ubuntu, linuxmint, pop, elementary, kali).
-func IsDebianBased() bool {
-	d := DistroID()
-	for _, id := range debianDistros {
-		if d == id {
-			return true
-		}
-	}
-	return false
+func IsDebianBased() bool { return isDebianDistro(DistroID()) }
+
+func binaryAvailable(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+// HasFlatpak reports whether the flatpak binary is available in PATH.
+func HasFlatpak() bool { return binaryAvailable("flatpak") }
+
+func snapdUsable(binaryFound, blocked, active bool) bool {
+	return binaryFound && !blocked && active
 }
 
 // HasSnapd reports whether snap is usable: the snap binary is in PATH, no
 // nosnap.pref pins it off, and the snapd daemon is active.
 func HasSnapd() bool {
-	if _, err := exec.LookPath("snap"); err != nil {
-		return false
-	}
-	if _, err := os.Stat("/etc/apt/preferences.d/nosnap.pref"); err == nil {
-		return false
-	}
-	return exec.Command("systemctl", "is-active", "--quiet", "snapd").Run() == nil
+	binaryFound := binaryAvailable("snap")
+	_, err := os.Stat("/etc/apt/preferences.d/nosnap.pref")
+	blocked := err == nil
+	active := binaryFound && !blocked &&
+		exec.Command("systemctl", "is-active", "--quiet", "snapd").Run() == nil
+	return snapdUsable(binaryFound, blocked, active)
 }
 
 // TermuxPrefix returns the Termux $PREFIX path when running inside Termux,

@@ -1,6 +1,7 @@
 package more
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -276,5 +277,38 @@ func TestExecuteInstallBinRejectsTraversal(t *testing.T) {
 	_, err = executeInstallBin(m2, ctx)
 	if err == nil {
 		t.Fatal("expected error for path traversal in dest")
+	}
+}
+
+// TestExecuteInstallBinBareDest verifies that a bare destination name (no path
+// separator, not absolute) installs into the default bin directory under that
+// name (B8) — using it verbatim would copy the file into the build directory.
+func TestExecuteInstallBinBareDest(t *testing.T) {
+	m := Macro{Name: "INSTALL_BIN", Args: []string{"mytool", "mytool-renamed"}}
+	ctx := testCtx()
+	cmd, err := executeInstallBin(m, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := filepath.Join(defaultBinDir(), "mytool-renamed")
+
+	// Tracked path is the resolved absolute destination.
+	if len(ctx.InstalledPaths) != 1 {
+		t.Fatalf("expected 1 installed path, got %d", len(ctx.InstalledPaths))
+	}
+	if ctx.InstalledPaths[0].Path != want {
+		t.Errorf("tracked path = %q, want %q", ctx.InstalledPaths[0].Path, want)
+	}
+	if !filepath.IsAbs(ctx.InstalledPaths[0].Path) {
+		t.Errorf("tracked path %q should be absolute", ctx.InstalledPaths[0].Path)
+	}
+
+	// Command copies into the default bin dir, not a relative build-dir name.
+	if !strings.Contains(cmd, "cp 'mytool' '"+want+"'") {
+		t.Errorf("command should copy to %q, got: %s", want, cmd)
+	}
+	if !strings.Contains(cmd, filepath.Dir(want)) {
+		t.Errorf("command should mkdir the default bin dir, got: %s", cmd)
 	}
 }

@@ -46,18 +46,16 @@ func ReadInstalled() (map[string]InstalledRecord, error) {
 		return nil, fmt.Errorf("failed to read installed state: %w", err)
 	}
 
-	// Empty file is valid — treat as empty map
 	if len(bytes.TrimSpace(data)) == 0 {
-		return make(map[string]InstalledRecord), nil
+		return nil, fmt.Errorf("installed state is corrupt: file is empty")
 	}
 
 	var records map[string]InstalledRecord
 	if err := json.Unmarshal(data, &records); err != nil {
-		// Corrupt JSON — back up and reset so alps keeps working
-		backup := filepath.Clean(getInstalledFile() + ".bak")
-		_ = writeFileDurable(backup, data, 0644) // #nosec G703
-		fmt.Printf("  %s  installed.json is corrupt — backed up to %s, resetting.\n", currentStyle().SymWarn, backup)
-		return make(map[string]InstalledRecord), nil
+		return nil, fmt.Errorf("installed state is corrupt: %w", err)
+	}
+	if records == nil {
+		return nil, fmt.Errorf("installed state is corrupt: expected a JSON object")
 	}
 	return records, nil
 }

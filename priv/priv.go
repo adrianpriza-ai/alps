@@ -255,9 +255,19 @@ func EnsureModern() error {
 	return ensureWith(escalatePolicy{})
 }
 
+// EnsureSudoOnly is a compatibility alias for EnsureModern.
+func EnsureSudoOnly() error {
+	return EnsureModern()
+}
+
 // CommandModern is like Command but never falls back to pkexec or su.
 func CommandModern(args ...string) (*exec.Cmd, error) {
 	return commandWith(escalatePolicy{}, args...)
+}
+
+// CommandSudoOnly is a compatibility alias for CommandModern.
+func CommandSudoOnly(args ...string) (*exec.Cmd, error) {
+	return CommandModern(args...)
 }
 
 // commandWith returns the escalated command for args under the given policy.
