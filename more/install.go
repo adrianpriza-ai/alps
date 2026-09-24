@@ -451,7 +451,7 @@ func runOperation(e *Entry, op platform.OperationType) error {
 	// Upgrades re-resolve the entry from the repo cache or a remote ALPSMORE, so
 	// validate it here too — installs are already validated by the caller.
 	if op == platform.OperationUpgrade {
-		if err := Validate(e); err != nil {
+		if err := ValidateForOp(e, op); err != nil {
 			return err
 		}
 	}

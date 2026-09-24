@@ -1896,6 +1896,7 @@ func TestRunOperationUpgradeRejectsInvalidEntry(t *testing.T) {
 	redirectInstalledFile(t)
 
 	sysArch := platform.NormalizeArch(runtime.GOARCH)
+	sysOS := platform.DistroID() // use the actual host OS so validation passes on all platforms
 	markerIn := func(pkg string) string {
 		return filepath.Join(tmpHome, ".cache", "alps", "more", pkg, "upgrade-marker.txt")
 	}
@@ -1904,7 +1905,7 @@ func TestRunOperationUpgradeRejectsInvalidEntry(t *testing.T) {
 		Name:    "upgrade-bad-arch",
 		Version: "2.0.0",
 		Arch:    []string{"aarch64"}, // deliberately not the host arch
-		OS:      []string{"linux"},
+		OS:      []string{sysOS},
 		Safety:  "free",
 		UpgradeLines: []string{
 			"echo upgrade-ran > upgrade-marker.txt",
@@ -1929,7 +1930,7 @@ func TestRunOperationUpgradeRejectsInvalidEntry(t *testing.T) {
 		Name:    "upgrade-good",
 		Version: "2.0.0",
 		Arch:    []string{sysArch},
-		OS:      []string{"linux"},
+		OS:      []string{sysOS},
 		Safety:  "free",
 		UpgradeLines: []string{
 			"echo upgrade-ran > upgrade-marker.txt",
@@ -1963,7 +1964,7 @@ func TestRunOperationUpgradeRejectsNoCommands(t *testing.T) {
 		Name:         "upgrade-no-commands",
 		Version:      "2.0.0",
 		Arch:         []string{platform.NormalizeArch(runtime.GOARCH)},
-		OS:           []string{"linux"},
+		OS:           []string{platform.DistroID()},
 		Safety:       "free",
 		UpgradeLines: nil,
 		CmdLines:     nil,

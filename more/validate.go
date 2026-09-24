@@ -479,6 +479,46 @@ func Validate(e *Entry) error {
 	return nil
 }
 
+// ValidateForOp runs validation checks appropriate for the given operation.
+// For upgrades, upgrade_lines is accepted as a substitute for cmd_lines,
+// matching Scrape's fallback behaviour. For all other operations it is
+// equivalent to Validate.
+func ValidateForOp(e *Entry, op platform.OperationType) error {
+	if err := validateArchitecture(e); err != nil {
+		return err
+	}
+
+	if err := validateOS(e); err != nil {
+		return err
+	}
+
+	if err := validateDependencies(e); err != nil {
+		return err
+	}
+
+	if op == platform.OperationUpgrade {
+		if err := validateUpgradeCommands(e); err != nil {
+			return err
+		}
+	} else {
+		if err := validateInstallCommands(e); err != nil {
+			return err
+		}
+	}
+
+	validateSafetyMode(e)
+
+	if err := validateSafetyRequirements(e); err != nil {
+		return err
+	}
+
+	if e.Safety == "strict" {
+		warnUnusedNamedChecksums(e)
+	}
+
+	return nil
+}
+
 // unusedNamedChecksums returns the destination filenames declared in the
 // entry's named sha256sums that no {DOWNLOAD} or {BASH_RUN} in the install,
 // upgrade, remove, or purge commands ever downloads. Matching mirrors runtime behavior: the FILE
@@ -639,6 +679,19 @@ func validateInstallCommands(e *Entry) error {
 	if len(e.CmdLines) == 0 {
 		return fmt.Errorf(
 			"package %q has no install commands (cmd_begin/cmd_end) defined — cannot install",
+			e.Name,
+		)
+	}
+	return nil
+}
+
+// validateUpgradeCommands checks that at least one set of upgrade-path commands
+// is defined. Scrape accepts upgrade_lines and falls back to cmd_lines, so
+// either is sufficient; both absent means nothing can run.
+func validateUpgradeCommands(e *Entry) error {
+	if len(e.UpgradeLines) == 0 && len(e.CmdLines) == 0 {
+		return fmt.Errorf(
+			"package %q has no upgrade or install commands — cannot upgrade",
 			e.Name,
 		)
 	}
