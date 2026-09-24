@@ -1901,10 +1901,17 @@ func TestRunOperationUpgradeRejectsInvalidEntry(t *testing.T) {
 		return filepath.Join(tmpHome, ".cache", "alps", "more", pkg, "upgrade-marker.txt")
 	}
 
+	// Pick an arch that is guaranteed to differ from the host so the bad entry
+	// always fails architecture validation regardless of which machine runs the test.
+	wrongArch := "aarch64"
+	if sysArch == "aarch64" {
+		wrongArch = "x86_64"
+	}
+
 	bad := &Entry{
 		Name:    "upgrade-bad-arch",
 		Version: "2.0.0",
-		Arch:    []string{"aarch64"}, // deliberately not the host arch
+		Arch:    []string{wrongArch}, // deliberately not the host arch
 		OS:      []string{sysOS},
 		Safety:  "free",
 		UpgradeLines: []string{
