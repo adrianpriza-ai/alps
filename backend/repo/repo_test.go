@@ -150,10 +150,10 @@ func TestSortedInstalledNamesDeterministic(t *testing.T) {
 // builder must walk records in sorted order and classify each row.
 func TestBuildUpgradePreviewsOrderAndContent(t *testing.T) {
 	records := map[string]more.InstalledRecord{
-		"ztool":  {Version: "1.0.0"},
-		"alpha":  {Version: "2.0.0"},
-		"nover":  {Version: "3.0.0"},
-		"beta":   {Version: "0.9.0"},
+		"ztool": {Version: "1.0.0"},
+		"alpha": {Version: "2.0.0"},
+		"nover": {Version: "3.0.0"},
+		"beta":  {Version: "0.9.0"},
 	}
 	entries := map[string]string{
 		"alpha": "2.0.0", // up to date
