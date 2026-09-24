@@ -14,8 +14,6 @@ import (
 	"github.com/adrianpriza-ai/alps/more"
 	"github.com/adrianpriza-ai/alps/pack"
 	"github.com/adrianpriza-ai/alps/platform"
-	"syscall"
-	"unsafe"
 )
 
 type Level int
@@ -66,12 +64,10 @@ func promptSuffix(defaultYes bool) string {
 	return "[y/N]"
 }
 
-// stdinIsTerminal reports whether stdin is an interactive terminal, by
-// issuing the TCGETS ioctl that also golang.org/x/term uses for this check.
+// stdinIsTerminal reports whether stdin is an interactive terminal. The
+// syscall-based check lives in tty_linux.go / tty_darwin.go.
 func stdinIsTerminal() bool {
-	var t syscall.Termios
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, os.Stdin.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&t)))
-	return errno == 0
+	return isTerminal(os.Stdin.Fd())
 }
 
 var (
