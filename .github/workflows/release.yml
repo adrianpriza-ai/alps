@@ -207,6 +207,7 @@ jobs:
             mkdir -p pkg/usr/share/fish/vendor_completions.d
             mkdir -p pkg/usr/share/bash-completion/completions
             mkdir -p pkg/usr/share/zsh/site-functions
+            mkdir -p pkg/usr/share/keyrings
             mkdir -p pkg/etc/apt/sources.list.d
             mkdir -p pkg/DEBIAN
 
@@ -216,6 +217,9 @@ jobs:
             cp /tmp/alps-completions/alps.fish pkg/usr/share/fish/vendor_completions.d/alps.fish
             cp /tmp/alps-completions/alps pkg/usr/share/bash-completion/completions/alps
             cp /tmp/alps-completions/_alps pkg/usr/share/zsh/site-functions/_alps
+
+            cp packaging/alps-archive-keyring.gpg pkg/usr/share/keyrings/alps-archive-keyring.gpg
+            chmod 644 pkg/usr/share/keyrings/alps-archive-keyring.gpg
 
             echo "deb [signed-by=/usr/share/keyrings/alps-archive-keyring.gpg] https://adrianpriza-ai.github.io/alps-apt stable main" \
               > pkg/etc/apt/sources.list.d/alps.list
@@ -236,14 +240,19 @@ jobs:
             echo '#!/bin/sh' > pkg/DEBIAN/postinst
             echo 'set -e' >> pkg/DEBIAN/postinst
             echo '' >> pkg/DEBIAN/postinst
-            echo '# Install the ALPS archive GPG key' >> pkg/DEBIAN/postinst
-            echo 'if [ ! -f /usr/share/keyrings/alps-archive-keyring.gpg ]; then' >> pkg/DEBIAN/postinst
-            echo '  mkdir -p /usr/share/keyrings' >> pkg/DEBIAN/postinst
-            echo '  curl -fsSL https://adrianpriza-ai.github.io/alps-apt/alps-archive-keyring.gpg -o /usr/share/keyrings/alps-archive-keyring.gpg' >> pkg/DEBIAN/postinst
+            echo '# Ensure keyring permissions and dearmor if older ASCII version exists' >> pkg/DEBIAN/postinst
+            echo 'chmod 644 /usr/share/keyrings/alps-archive-keyring.gpg 2>/dev/null || true' >> pkg/DEBIAN/postinst
+            echo 'if [ -f /usr/share/keyrings/alps-archive-keyring.gpg ] && grep -q -- "BEGIN PGP" /usr/share/keyrings/alps-archive-keyring.gpg 2>/dev/null; then' >> pkg/DEBIAN/postinst
+            echo '  if command -v gpg >/dev/null 2>&1; then' >> pkg/DEBIAN/postinst
+            echo '    gpg --dearmor -o /usr/share/keyrings/alps-archive-keyring.gpg.tmp /usr/share/keyrings/alps-archive-keyring.gpg 2>/dev/null && \' >> pkg/DEBIAN/postinst
+            echo '      mv -f /usr/share/keyrings/alps-archive-keyring.gpg.tmp /usr/share/keyrings/alps-archive-keyring.gpg 2>/dev/null || true' >> pkg/DEBIAN/postinst
+            echo '  fi' >> pkg/DEBIAN/postinst
             echo 'fi' >> pkg/DEBIAN/postinst
             echo '' >> pkg/DEBIAN/postinst
-            echo '# Update package list' >> pkg/DEBIAN/postinst
-            echo 'apt update || true' >> pkg/DEBIAN/postinst
+            echo '# Update package list for alps repository' >> pkg/DEBIAN/postinst
+            echo 'if command -v apt-get >/dev/null 2>&1; then' >> pkg/DEBIAN/postinst
+            echo '  apt-get update -o Dir::Etc::sourcelist="sources.list.d/alps.list" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0" 2>/dev/null || apt-get update 2>/dev/null || true' >> pkg/DEBIAN/postinst
+            echo 'fi' >> pkg/DEBIAN/postinst
             echo 'exit 0' >> pkg/DEBIAN/postinst
             chmod 755 pkg/DEBIAN/postinst
 
@@ -293,30 +302,31 @@ jobs:
 
           mkdir -p termux-debs
 
-          # Maintainer script: registers the alps-apt repo inside Termux's own
-          # apt config, mirroring what the desktop .deb's postinst does, so
-          # `pkg update && pkg upgrade alps` keeps working after this install.
           mkdir -p /tmp/termux-control
           cat > /tmp/termux-control/postinst << 'EOF'
           #!/data/data/com.termux/files/usr/bin/sh
           set -e
 
           PREFIX="/data/data/com.termux/files/usr"
+          chmod 644 "$PREFIX/share/keyrings/alps-archive-keyring.gpg" 2>/dev/null || true
 
-          if [ ! -f "$PREFIX/share/keyrings/alps-archive-keyring.gpg" ]; then
-            mkdir -p "$PREFIX/share/keyrings"
-            curl -fsSL https://adrianpriza-ai.github.io/alps-apt/alps-archive-keyring.gpg \
-              -o "$PREFIX/share/keyrings/alps-archive-keyring.gpg"
+          if [ -f "$PREFIX/share/keyrings/alps-archive-keyring.gpg" ] && grep -q -- "BEGIN PGP" "$PREFIX/share/keyrings/alps-archive-keyring.gpg" 2>/dev/null; then
+            if command -v gpg >/dev/null 2>&1; then
+              gpg --dearmor -o "$PREFIX/share/keyrings/alps-archive-keyring.gpg.tmp" "$PREFIX/share/keyrings/alps-archive-keyring.gpg" 2>/dev/null && \
+                mv -f "$PREFIX/share/keyrings/alps-archive-keyring.gpg.tmp" "$PREFIX/share/keyrings/alps-archive-keyring.gpg" 2>/dev/null || true
+            fi
           fi
 
-          mkdir -p "$PREFIX/etc/apt/sources.list.d"
-          echo "deb [signed-by=$PREFIX/share/keyrings/alps-archive-keyring.gpg] https://adrianpriza-ai.github.io/alps-apt stable main" \
-            > "$PREFIX/etc/apt/sources.list.d/alps.list"
-
-          apt update || true
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -o Dir::Etc::sourcelist="sources.list.d/alps.list" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0" 2>/dev/null || apt update 2>/dev/null || true
+          fi
           exit 0
           EOF
           chmod 755 /tmp/termux-control/postinst
+
+          mkdir -p /tmp/termux-apt
+          echo "deb [signed-by=/data/data/com.termux/files/usr/share/keyrings/alps-archive-keyring.gpg] https://adrianpriza-ai.github.io/alps-apt stable main" \
+            > /tmp/termux-apt/alps.list
 
           # Map our build output names to Termux's dpkg architecture names
           # (aarch64 / arm / x86_64 / i686) — these are NOT the same as
@@ -340,13 +350,14 @@ jobs:
             "maintainer": "@adrianpriza-ai",
             "description": "Advanced Linux Package System (Termux build)",
             "arch": "$ARCH",
-            "depends": [],
             "control_files_dir": "/tmp/termux-control",
             "files": {
               "$BIN": "bin/alps",
               "/tmp/alps-completions/alps.fish": "share/fish/vendor_completions.d/alps.fish",
               "/tmp/alps-completions/alps": "share/bash-completion/completions/alps",
-              "/tmp/alps-completions/_alps": "share/zsh/site-functions/_alps"
+              "/tmp/alps-completions/_alps": "share/zsh/site-functions/_alps",
+              "packaging/alps-archive-keyring.gpg": "share/keyrings/alps-archive-keyring.gpg",
+              "/tmp/termux-apt/alps.list": "etc/apt/sources.list.d/alps.list"
             }
           }
           EOF
@@ -381,6 +392,8 @@ jobs:
         run: |
           mkdir -p binaries
           find artifacts/ -type f -exec cp {} binaries/ \;
+          cp packaging/alps-archive-keyring.gpg binaries/
+          cp packaging/alps-archive-keyring.asc binaries/
 
       - name: Generate checksums
         working-directory: binaries
@@ -403,6 +416,17 @@ jobs:
           - **Security**: HTTPS-only downloads, SHA-256 verification, GPG signature checks
           - **Platforms**: Linux (amd64/arm64/armv7), macOS (amd64/arm64), Termux (aarch64/arm/x86_64)
 
+          ### Debian / Ubuntu (APT)
+
+          \`\`\`bash
+          sudo mkdir -p /usr/share/keyrings
+          curl -fsSL https://adrianpriza-ai.github.io/alps-apt/alps-archive-keyring.gpg | sudo tee /usr/share/keyrings/alps-archive-keyring.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/alps-archive-keyring.gpg] https://adrianpriza-ai.github.io/alps-apt stable main" | sudo tee /etc/apt/sources.list.d/alps.list >/dev/null
+          sudo apt update && sudo apt install alps
+          \`\`\`
+
+          Or install a \`.deb\` directly: \`sudo dpkg -i alps_${TAG#v}_<arch>.deb\` (automatically configures the keyring and repository source).
+
           ### Termux
 
           \`\`\`bash
@@ -413,9 +437,9 @@ jobs:
           pkg update && pkg install alps
           \`\`\`
 
-          Or install a single \`.deb\` directly with \`dpkg -i alps-termux_${TAG#v}_<arch>.deb\` (\`<arch>\` is \`aarch64\`, \`arm\`, or \`x86_64\`) — this also registers the repo automatically for future \`pkg upgrade\`s.
+          Or install a single \`.deb\` directly with \`dpkg -i alps-termux_${TAG#v}_<arch>.deb\` (\`<arch>\` is \`aarch64\`, \`arm\`, or \`x86_64\`) — this also registers the repo and keyring automatically for future \`pkg upgrade\`s.
 
-          ### Installation
+          ### Installation Script
 
           \`\`\`bash
           curl -fsSL https://alps-project.pages.dev/install.sh | sh
@@ -444,6 +468,14 @@ jobs:
           TAG=${{ inputs.tag || github.ref_name }}
 
           cd repo
+
+          # Dearmor existing keyring in repo if it was stored with ASCII armor
+          if [ -f alps-archive-keyring.gpg ] && grep -q -- "BEGIN PGP" alps-archive-keyring.gpg; then
+            echo "Converting existing ASCII-armored alps-archive-keyring.gpg to binary..."
+            cp alps-archive-keyring.gpg alps-archive-keyring.asc
+            gpg --dearmor -o alps-archive-keyring.gpg.tmp alps-archive-keyring.gpg
+            mv -f alps-archive-keyring.gpg.tmp alps-archive-keyring.gpg
+          fi
 
           mkdir -p pool/main/amd64
           mkdir -p pool/main/arm64
@@ -515,16 +547,27 @@ jobs:
             echo "${{ secrets.APT_GPG_PRIVATE_KEY }}" | gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --import
             gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --detach-sign --armor --output dists/stable/Release.gpg dists/stable/Release
             gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --clearsign --output dists/stable/InRelease dists/stable/Release
-            # Export public key for distribution as a BINARY keyring.
-            # signed-by= is verified by gpgv, which only reads binary
-            # OpenPGP keyrings — an ASCII-armored .gpg file here makes
-            # gpgv fail on the "-----BEGIN PGP..." header, which surfaces
-            # to users as a misleading NO_PUBKEY / "repository is not
-            # signed" error even though the signature itself is fine.
-            gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.APT_GPG_PASSPHRASE }}" --export --output alps-archive-keyring.gpg
+
+            # Export binary keyring (.gpg) and ASCII-armored (.asc)
+            gpg --batch --yes --export --output alps-archive-keyring.gpg
+            gpg --batch --yes --armor --export --output alps-archive-keyring.asc
           else
-            echo "Warning: APT_GPG_PRIVATE_KEY not set, skipping repository signing"
-            echo "Repository will be unsigned - this is not recommended for production"
+            echo "Warning: APT_GPG_PRIVATE_KEY not set, using repository public key from project packaging"
+            cp ../packaging/alps-archive-keyring.gpg alps-archive-keyring.gpg
+            cp ../packaging/alps-archive-keyring.asc alps-archive-keyring.asc
+            # Clean up stale signatures if private key is not available
+            rm -f dists/stable/InRelease dists/stable/Release.gpg
+          fi
+
+          # Provide keyring inside dists/stable as well
+          cp alps-archive-keyring.gpg dists/stable/alps-archive-keyring.gpg
+          cp alps-archive-keyring.asc dists/stable/alps-archive-keyring.asc
+
+          # Verify repository signature with gpgv
+          if [ -f dists/stable/InRelease ]; then
+            echo "Verifying InRelease signature with exported keyring..."
+            gpgv --keyring ./alps-archive-keyring.gpg dists/stable/InRelease
+            echo "Verification succeeded!"
           fi
 
       - name: Push APT repository
