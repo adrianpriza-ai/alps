@@ -200,6 +200,20 @@ func getBuildDir(pkgName string) (string, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("cannot create build directory %s: %w", dir, err)
 	}
+	// Lint the per-package dir for planted symlinks: macros write scripts and
+	// downloads at fixed names inside it, and a symlink left by an earlier
+	// (or hostile) run could redirect those writes outside the build cache.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("cannot inspect build directory %s: %w", dir, err)
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+				return "", fmt.Errorf("cannot remove symlink %s in build directory: %w", entry.Name(), err)
+			}
+		}
+	}
 	return dir, nil
 }
 

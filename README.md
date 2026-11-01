@@ -51,6 +51,20 @@ wget -qO- https://alps-project.pages.dev/install.sh | sh
 
 Auto-detects Termux, Debian/Ubuntu (.deb), Arch Linux (PKGBUILD), Alpine Linux (APKBUILD) or generic Linux (binary). Safe to re-run for upgrades.
 
+Piping a script straight into a root shell trusts the serving CDN completely. Prefer the two-step variant, which lets you read (or checksum) the script before running it:
+
+```bash
+curl -fsSL https://alps-project.pages.dev/install.sh -o /tmp/alps-install.sh
+sh /tmp/alps-install.sh   # inspect the file first if you want to know exactly what runs
+```
+
+When installing the APT repository keyring, verify its fingerprint against the key checked into [`packaging/alps-archive-keyring.asc`](packaging/alps-archive-keyring.asc) before trusting it:
+
+```bash
+sudo curl -fsSL https://adrianpriza-ai.github.io/alps-apt/alps-archive-keyring.gpg -o /usr/share/keyrings/alps-archive-keyring.gpg
+gpg --show-keys /usr/share/keyrings/alps-archive-keyring.gpg
+```
+
 ### From source
 
 ```bash

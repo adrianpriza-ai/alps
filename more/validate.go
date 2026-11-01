@@ -40,6 +40,12 @@ func Parse(data []byte) (map[string]*Entry, error) {
 				resolveEntry(entries, current)
 			}
 			name := line[1 : len(line)-1]
+			// Section names flow into shell completion word lists and into
+			// shell command lines as {PKGNAME}; reject anything outside the
+			// package-name charset so a crafted index cannot inject content.
+			if err := platform.ValidatePkgName(name); err != nil {
+				return nil, fmt.Errorf("invalid section name %q: %w", name, err)
+			}
 			current = &Entry{Name: name, Safety: "strict"} // default to strict mode
 			inCmd, inRemove, inUpgrade, inPurge, inSums, inSumsBlock = false, false, false, false, false, false
 			continue

@@ -78,8 +78,15 @@ func prepareDownloadDirectory(file string) error {
 
 // httpClient performs the HTTP requests for the DOWNLOAD macro. It is a
 // package-level variable so tests can substitute a client that trusts a
-// local TLS test server.
-var httpClient = &http.Client{Timeout: 10 * time.Minute}
+// local TLS test server. The redirect policy re-runs isSafeDownloadURL on
+// every hop so a mirror cannot redirect a verified HTTPS download to a
+// plaintext or attacker-chosen host.
+var httpClient = newRedirectSafeClient(10*time.Minute, func(u string) error {
+	if !isSafeDownloadURL(u) {
+		return fmt.Errorf("DOWNLOAD requires HTTPS: %s", u)
+	}
+	return nil
+})
 
 // requireNextDownloadSize returns the effective download cap for a file and
 // whether that cap was explicitly lifted with {SIZE} unl. Per-file caps are
@@ -219,9 +226,15 @@ func isValidSha256(s string) bool {
 func downloadToFile(body io.Reader, file string, contentLength int64, ctx *MacroContext, expectedHash string, maxSize int64, unlimited bool) (string, error) {
 	displayName := filepath.Base(file)
 
-	// Write to a temp file in the same directory (ensures rename is atomic)
-	tmpPath := file + ".tmp"
-	out, err := os.Create(tmpPath)
+	// Write to a private temp file in the same directory (ensures rename is
+	// atomic and a symlink planted at the predictable ".tmp" sibling cannot
+	// redirect the verified bytes elsewhere).
+	tmp, err := os.CreateTemp(filepath.Dir(file), "."+displayName+".tmp-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file for %s: %w", displayName, err)
+	}
+	tmpPath := tmp.Name()
+	out := tmp
 	if err != nil {
 		return "", fmt.Errorf("failed to create file %s: %w", tmpPath, err)
 	}

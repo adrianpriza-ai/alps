@@ -223,9 +223,9 @@ func runWithBackendFlagsExt(cmdArgs []string, args []string, cfg *config.Config,
 	// Strip alps meta-flags from args before forwarding to backend.
 	cleanArgs, _ := pack.ParseFlagsExt(args)
 
-	// Append backend-native flags for all active alps flags.
+	// Append backend-native flags for all active alps flags. They are
+	// inserted into fullArgs before the "--" operand separator below.
 	extraFlags := pack.BuildExtraFlagsExt(backend, f)
-	cleanArgs = append(cleanArgs, extraFlags...)
 
 	// Report alps flags the backend cannot honour so they are never dropped silently.
 	for _, w := range pack.UnsupportedFlagWarnings(backend, f.NoConfirm, f.Force) {
@@ -237,6 +237,12 @@ func runWithBackendFlagsExt(cmdArgs []string, args []string, cfg *config.Config,
 
 	fullArgs := make([]string, len(cmdArgs[1:]))
 	copy(fullArgs, cmdArgs[1:])
+	// Backend-native flags implementing alps meta-flags stay before the
+	// separator; the "--" then pins everything that follows as an operand,
+	// so a dash-prefixed value can never be parsed as an option of a
+	// (frequently sudo-elevated) package-manager invocation.
+	fullArgs = append(fullArgs, extraFlags...)
+	fullArgs = append(fullArgs, "--")
 	fullArgs = append(fullArgs, cleanArgs...)
 
 	display := fmtCmd(cmdArgs, cleanArgs)
@@ -302,10 +308,16 @@ func runEditSources(backend string, cfg *config.Config) {
 		os.Exit(1)
 	}
 
-	// Determine the editor to use
+	// Determine the editor to use. The editor runs elevated (often as root),
+	// so the same safety rule as PKGBUILD review applies: a single binary
+	// word, no metacharacters, no flags.
 	editor = os.Getenv("EDITOR")
 	if editor == "" {
 		editor = os.Getenv("VISUAL")
+	}
+	if editor != "" && !aur.EditorIsSafe(editor) {
+		ui.Msgf(cfg, ui.LevelWarn, "Ignoring unsafe EDITOR value %q (must be a single binary name)", editor)
+		editor = ""
 	}
 	if editor == "" {
 		// Try common editors
@@ -757,11 +769,20 @@ func appendAURNamesCache(pkgs []aur.Package) {
 
 	names := make(map[string]bool)
 	for _, p := range pkgs {
+		// Cache contents become completion word lists; AUR data is remote
+		// input, so only names passing the package-name charset are stored
+		// and previously cached lines that fail validation are dropped.
+		if platform.ValidatePkgName(p.Name) != nil {
+			continue
+		}
 		names[p.Name] = true
 	}
 	if data, err := os.ReadFile(path); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			if line = strings.TrimSpace(line); line != "" {
+				if platform.ValidatePkgName(line) != nil {
+					continue
+				}
 				names[line] = true
 			}
 		}

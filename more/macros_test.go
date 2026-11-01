@@ -354,7 +354,10 @@ func TestReplaceVarsAllVariables(t *testing.T) {
 	}
 
 	input := "{ARCH} {OS} {DISTRO} {DISVER} {VERSION} {PKG_DIR} {SERVER} {PKGNAME}"
-	want := "x86_64 linux ubuntu 22.04 1.2.3 /tmp/build https://mirror.example.com mytool"
+	// {PKG_DIR} and {SERVER} are shell-quoted like every other macro-supplied
+	// value: they land inside executed command lines and must never be able
+	// to introduce shell syntax.
+	want := "x86_64 linux ubuntu 22.04 1.2.3 '/tmp/build' 'https://mirror.example.com' mytool"
 
 	got := replaceVars(input, ctx, false)
 	if got != want {

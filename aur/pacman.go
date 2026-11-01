@@ -133,7 +133,7 @@ func unsatisfiedDeps(deps []string) []string {
 	if len(deps) == 0 {
 		return nil
 	}
-	out, err := exec.Command("pacman", append([]string{"-T"}, deps...)...).CombinedOutput()
+	out, err := exec.Command("pacman", append([]string{"-T", "--"}, deps...)...).CombinedOutput()
 	if err != nil {
 		var exitErr *exec.ExitError
 		pacmanUnreachable := !errors.As(err, &exitErr) ||
@@ -154,11 +154,11 @@ func unsatisfiedDeps(deps []string) []string {
 
 // hasProvider checks if a dep is satisfied.
 func hasProvider(dep string) bool {
-	return exec.Command("pacman", "-T", dep).Run() == nil
+	return exec.Command("pacman", "-T", "--", dep).Run() == nil
 }
 
 func isInstalled(name string) bool {
-	return exec.Command("pacman", "-Qi", name).Run() == nil
+	return exec.Command("pacman", "-Qi", "--", name).Run() == nil
 }
 
 // parsePacmanQLine splits a single "name version" line from `pacman -Q`
@@ -175,7 +175,7 @@ func parsePacmanQLine(line string) (name, version string) {
 // pkgInstalledVersion returns the installed version of a package, or an empty string if not installed.
 // Uses pacman -Q (not -Qi) to get the raw name-version string.
 func pkgInstalledVersion(name string) string {
-	out, err := exec.Command("pacman", "-Q", name).Output()
+	out, err := exec.Command("pacman", "-Q", "--", name).Output()
 	if err != nil {
 		return ""
 	}
@@ -188,6 +188,12 @@ func pkgInstalledVersion(name string) string {
 // Falls back to a pure-Go Arch version comparator when vercmp is not
 // installed (containers, CI, non-Arch hosts).
 func Vercmp(a, b string) int {
+	// vercmp has no "--" separator; a version string is never flag-shaped
+	// (Arch versions start with a digit), so dash-prefixed input goes
+	// straight to the pure-Go comparator instead of the argv.
+	if strings.HasPrefix(a, "-") || strings.HasPrefix(b, "-") {
+		return vercmpFallback(a, b)
+	}
 	out, err := exec.Command("vercmp", a, b).Output()
 	if err == nil {
 		switch strings.TrimSpace(string(out)) {

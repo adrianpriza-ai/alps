@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -580,6 +581,15 @@ func TestResolveServerClosesHEADBodies(t *testing.T) {
 		},
 	}
 	t.Cleanup(func() { serverProbeClient = oldClient })
+
+	// The test servers are plain HTTP; lift the production HTTPS-only mirror
+	// gate for the duration of the test.
+	oldAllowed := serverURLAllowed
+	serverURLAllowed = func(u string) bool {
+		parsed, err := url.Parse(u)
+		return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https")
+	}
+	t.Cleanup(func() { serverURLAllowed = oldAllowed })
 
 	// All-unreachable path: every probe returns 404, resolveServer waits for
 	// all results, and every body must still be closed.

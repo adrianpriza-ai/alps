@@ -293,7 +293,7 @@ func PrintSearchResult(w io.Writer, idx int, p Package, source string) {
 		orphan = " (orphaned)"
 	}
 	fmt.Fprintf(w, "%s/%s %s%s%s\n    %s\n",
-		source, p.Name, p.Version, ood, orphan, p.Description)
+		source, ui.SanitizeRemote(p.Name), ui.SanitizeRemote(p.Version), ood, orphan, ui.SanitizeRemote(p.Description))
 }
 
 // PrintPackageInfo writes package details to w.
@@ -302,21 +302,21 @@ func PrintPackageInfo(w io.Writer, p *Package) {
 	if p.OutOfDate != 0 {
 		ood = " [out-of-date]"
 	}
-	fmt.Fprintf(w, "\naur/%s %s%s\n", p.Name, p.Version, ood)
+	fmt.Fprintf(w, "\naur/%s %s%s\n", ui.SanitizeRemote(p.Name), ui.SanitizeRemote(p.Version), ood)
 	if p.Description != "" {
-		fmt.Fprintf(w, "    %s\n", p.Description)
+		fmt.Fprintf(w, "    %s\n", ui.SanitizeRemote(p.Description))
 	}
 	if len(p.License) > 0 {
 		fmt.Fprintf(w, "    License     : %s\n", strings.Join(p.License, ", "))
 	}
 	if p.Maintainer != "" {
-		fmt.Fprintf(w, "    Maintainer  : %s\n", p.Maintainer)
+		fmt.Fprintf(w, "    Maintainer  : %s\n", ui.SanitizeRemote(p.Maintainer))
 	} else {
 		fmt.Fprintf(w, "    Maintainer  : (orphaned)\n")
 	}
 	fmt.Fprintf(w, "    Votes       : %d\n", p.Votes)
 	if p.URL != "" {
-		fmt.Fprintf(w, "    URL         : %s\n", p.URL)
+		fmt.Fprintf(w, "    URL         : %s\n", ui.SanitizeRemote(p.URL))
 	}
 	if len(p.Depends) > 0 {
 		fmt.Fprintf(w, "    Depends     : %s\n", strings.Join(p.Depends, "  "))
@@ -360,6 +360,13 @@ func editorIsSafe(editor string) bool {
 		return false
 	}
 	return true
+}
+
+// EditorIsSafe reports whether an EDITOR value is a safe single binary name
+// with no shell metacharacters or flags. edit-sources executes the editor
+// elevated (often as root), so it applies the same rule as PKGBUILD review.
+func EditorIsSafe(editor string) bool {
+	return editorIsSafe(editor)
 }
 
 func configSymbols() (ok, warn, arrow string) {

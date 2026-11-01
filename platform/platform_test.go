@@ -119,7 +119,11 @@ func TestSnapdUsable(t *testing.T) {
 }
 
 func TestTermuxDistroMetadata(t *testing.T) {
+	// Termux detection requires the prefix directory to exist, so the test
+	// fakes a Termux install with a real temporary prefix.
+	prefix := t.TempDir()
 	t.Setenv("TERMUX_VERSION", "0.119.0")
+	t.Setenv("PREFIX", prefix)
 	if got := DistroID(); got != "termux" {
 		t.Errorf("DistroID() = %q, want termux", got)
 	}
@@ -249,6 +253,9 @@ func TestNormalizeArch(t *testing.T) {
 // Termux it is always empty. PREFIX empty and unset are indistinguishable to
 // os.Getenv, so the table exercises "" for both.
 func TestTermuxPrefix(t *testing.T) {
+	// Detection is gated on the prefix directory actually existing, so the
+	// cases that simulate a Termux environment point PREFIX at a real dir.
+	existingPrefix := t.TempDir()
 	tests := []struct {
 		name      string
 		termuxVer string
@@ -256,9 +263,10 @@ func TestTermuxPrefix(t *testing.T) {
 		want      string
 	}{
 		{"outside Termux", "", "/opt/local", ""},
-		{"via TERMUX_VERSION", "0.119.0", "/custom/prefix", "/custom/prefix"},
-		{"empty PREFIX", "0.119.0", "", "/data/data/com.termux/files/usr"},
-		{"via PREFIX only", "", "/data/data/com.termux/files/usr", "/data/data/com.termux/files/usr"},
+		{"via TERMUX_VERSION with existing prefix", "0.119.0", existingPrefix, existingPrefix},
+		{"TERMUX_VERSION but missing prefix dir", "0.119.0", "/nonexistent-alps-test-prefix", ""},
+		{"empty PREFIX defaults missing", "0.119.0", "", ""},
+		{"PREFIX only but missing dir", "", "/data/data/com.termux/files/usr", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

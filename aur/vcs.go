@@ -247,6 +247,15 @@ func splitVCSEntry(entry string) *vcsSource {
 	if src.Kind == "" {
 		return nil
 	}
+	// bzr sources are parsed but never probed (latestRevision always errors),
+	// so only the kinds that reach git/hg/svn need URL validation.
+	if src.Kind != "bzr" {
+		if err := validateVCSURL(src.Kind, rawURL); err != nil {
+			// A PKGBUILD is untrusted input: a malformed or hostile VCS URL is
+			// treated as "no VCS source" so the probe is never invoked with it.
+			return nil
+		}
+	}
 	src.URL = rawURL
 
 	// Fragment keys follow makepkg: branch=<name>, tag=<name>, commit=<sha>.
@@ -261,6 +270,35 @@ func splitVCSEntry(entry string) *vcsSource {
 		}
 	}
 	return src
+}
+
+// allowedVCSSchemes lists the network schemes a VCS probe may be pointed at.
+// Anything else (including a bare local path that never references a remote
+// the user chose) is refused.
+var allowedVCSSchemes = []string{"https://", "http://", "ssh://", "git://", "file://"}
+
+// validateVCSURL rejects URLs that would turn the revision probe into an
+// execution or option-injection primitive. Git's gitremote-helpers(1)
+// transport syntax runs the text after "ext::" via /bin/sh -c and can load
+// arbitrary "git-remote-<name>" helpers, so "::" transports are refused
+// outright; a leading dash would be parsed as an option by git/hg/svn.
+func validateVCSURL(kind, rawURL string) error {
+	if rawURL == "" {
+		return fmt.Errorf("empty %s URL", kind)
+	}
+	if strings.HasPrefix(rawURL, "-") {
+		return fmt.Errorf("%s URL must not start with '-'", kind)
+	}
+	if strings.Contains(rawURL, "::") {
+		return fmt.Errorf("%s URL must not use 'transport::' syntax", kind)
+	}
+	lower := strings.ToLower(rawURL)
+	for _, scheme := range allowedVCSSchemes {
+		if strings.HasPrefix(lower, scheme) {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported %s URL scheme %q", kind, rawURL)
 }
 
 // latestRevision queries the upstream remote for its current revision:

@@ -2,6 +2,7 @@ package more
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/adrianpriza-ai/alps/platform"
+	"github.com/adrianpriza-ai/alps/runner"
 )
 
 var (
@@ -75,6 +77,11 @@ func MarkInstalledEntryWithOwnedItems(e *Entry, ownedItems []OwnedItem) error {
 }
 
 func MarkInstalledRecord(name string, rec InstalledRecord) error {
+	// The name becomes the installed.json key and later a completion word;
+	// only package-name-charset values may be persisted.
+	if err := platform.ValidatePkgName(name); err != nil {
+		return fmt.Errorf("refusing to record installed entry: %w", err)
+	}
 	return withInstalledLock(func() error {
 		records, err := ReadInstalled()
 		if err != nil {
@@ -153,31 +160,40 @@ func withInstalledLock(fn func() error) error {
 // acquireInstalledLock opens (creating it if needed) and exclusively locks the
 // state lock file, returning the open handle.
 //
-// The lock lives next to installed.json when the current user can create files
-// in that directory — Termux, macOS, root, and tests with a redirected state
-// path. On non-root Linux the state directory (/var/lib/alps) is root-owned,
-// so it falls back to the user's cache directory; concurrent alps runs by the
-// same user then share one lock, which covers the realistic lost-update races
-// (two installs launched from the same account). Mixed root/unprivileged
-// writers use different locks, which is accepted since that combination is not
-// a realistic concurrent scenario.
+// The lock lives next to installed.json so every writer — root or
+// unprivileged — serializes on the same file. When the state directory is
+// root-owned and the current user cannot create the lock directly, it is
+// seeded through the same privileged channel writeCacheFile uses for the
+// state file itself. A user-cache fallback remains only for environments
+// where even the privileged seed fails.
 func acquireInstalledLock() (*os.File, error) {
-	candidates := []string{getInstalledFile() + ".lock"}
-	if !platform.IsTermux() && !platform.IsMacOS() && !platform.IsRoot() {
-		if home, err := os.UserHomeDir(); err == nil {
-			candidates = append(candidates, filepath.Join(home, ".cache", "alps", "installed.json.lock"))
+	lockPath := getInstalledFile() + ".lock"
+
+	lock, err := openAndLockFile(lockPath)
+	if err == nil {
+		return lock, nil
+	}
+	if seedErr := seedLockFile(lockPath); seedErr == nil {
+		if lock, err := openAndLockFile(lockPath); err == nil {
+			return lock, nil
 		}
 	}
 
-	var lastErr error
-	for _, path := range candidates {
-		lock, err := openAndLockFile(path)
-		if err == nil {
+	if home, homeErr := os.UserHomeDir(); homeErr == nil {
+		if lock, fallbackErr := openAndLockFile(filepath.Join(home, ".cache", "alps", "installed.json.lock")); fallbackErr == nil {
 			return lock, nil
 		}
-		lastErr = err
 	}
-	return nil, fmt.Errorf("cannot lock installed state: %w", lastErr)
+	return nil, fmt.Errorf("cannot lock installed state: %w", err)
+}
+
+// seedLockFile creates an empty lock file through the privileged install path
+// used for the state file, so unprivileged writers can share the canonical
+// lock with root writers.
+func seedLockFile(path string) error {
+	r := runner.NewDefaultRunner(false)
+	cmd := runner.BuildCommand("install", "-m", "0644", "/dev/null", path).WithPrivilege()
+	return r.Run(context.Background(), cmd)
 }
 
 // openAndLockFile creates the parent directory, opens the lock file, and takes

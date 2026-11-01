@@ -46,8 +46,34 @@ const (
 
 // serverProbeClient performs the HEAD reachability probes for resolveServer.
 // It is a package-level variable so tests can substitute a client that
-// records response-body closes.
-var serverProbeClient = &http.Client{Timeout: serverTimeout}
+// records response-body closes. The redirect policy re-validates every hop,
+// so a mirror cannot bounce a probe to a non-HTTPS or internal endpoint.
+var serverProbeClient = newRedirectSafeClient(serverTimeout, func(u string) error {
+	if !isSafeDownloadURL(u) {
+		return fmt.Errorf("server probe requires HTTPS: %s", u)
+	}
+	return nil
+})
+
+// newRedirectSafeClient returns an HTTP client whose redirect policy re-runs
+// validate on every hop. Without this the default policy follows up to 10
+// redirects to any http/https target, letting a compromised or misconfigured
+// host bounce a pinned HTTPS fetch to a plaintext or unvalidated URL and
+// void the caller's URL policy entirely.
+func newRedirectSafeClient(timeout time.Duration, validate func(string) error) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			if err := validate(req.URL.String()); err != nil {
+				return fmt.Errorf("redirect to disallowed URL: %w", err)
+			}
+			return nil
+		},
+	}
+}
 
 // defaultServers are the official alps-more mirrors.
 var defaultServers = []string{
@@ -266,6 +292,11 @@ func fetchRace() (data []byte, src string, err error) {
 	return nil, "", fmt.Errorf("all sources failed: %w", lastErr)
 }
 
+// serverURLAllowed reports whether a manifest-declared mirror may be probed.
+// It is a variable so tests can admit local HTTP test servers; production
+// keeps the HTTPS-only rule.
+var serverURLAllowed = isSafeDownloadURL
+
 // resolveServer returns the first reachable server.
 func resolveServer(servers []string) (string, error) {
 	if len(servers) == 0 {
@@ -281,6 +312,12 @@ func resolveServer(servers []string) (string, error) {
 	client := serverProbeClient
 
 	for _, s := range servers {
+		// Manifest-declared mirrors must be HTTPS: a plaintext mirror would
+		// let a network attacker control {SERVER}-substituted commands.
+		if !serverURLAllowed(s) {
+			ch <- result{url: s, ok: false}
+			continue
+		}
 		go func(url string) {
 			resp, err := client.Head(url)
 			if err != nil {
@@ -471,7 +508,7 @@ func fetchBytes(rawURL string, timeout time.Duration, maxSize int64, validate fu
 	if err := validate(rawURL); err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: timeout}
+	client := newRedirectSafeClient(timeout, validate)
 	resp, err := client.Get(rawURL)
 	if err != nil {
 		return nil, err

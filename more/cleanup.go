@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/adrianpriza-ai/alps/platform"
 	"github.com/adrianpriza-ai/alps/runner"
@@ -58,8 +59,13 @@ func cleanupOwnedItems(items []OwnedItem) {
 }
 
 // removePathWithSudo removes a file or symlink with optional sudo privilege escalation.
-// Used by cleanupOwnedItems() for both file and symlink removal.
+// Used by cleanupOwnedItems() for both file and symlink removal. Values replayed
+// from installed.json are exec arguments, but a flag-shaped value from a stale
+// or tampered state file must still never become an rm/rmdir option.
 func removePathWithSudo(path string, useSudo bool) error {
+	if strings.HasPrefix(path, "-") {
+		return fmt.Errorf("refusing to remove flag-shaped path %q", path)
+	}
 	r := runner.NewDefaultRunner(false)
 	cmd := runner.BuildCommand("rm", "-f", path)
 	if useSudo && !(platform.IsTermux() || platform.IsMacOS()) {
@@ -85,6 +91,11 @@ func removeDir(path string) error {
 func removeService(service string) error {
 	if platform.IsTermux() || platform.IsMacOS() {
 		return nil
+	}
+	// The name is replayed from installed.json; a dash-prefixed value would
+	// be parsed as a systemctl option (e.g. --root=) rather than a unit.
+	if strings.HasPrefix(service, "-") {
+		return fmt.Errorf("refusing to manage flag-shaped service name %q", service)
 	}
 
 	r := runner.NewDefaultRunner(false)

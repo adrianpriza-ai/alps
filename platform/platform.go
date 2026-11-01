@@ -30,10 +30,22 @@ import (
 )
 
 // IsTermux reports whether the process is running inside Termux on Android.
-// It checks two environment variables that Termux always sets.
+// The environment variables Termux sets are trivially spoofable and this
+// check gates the entire privilege-escalation decision, so they are only
+// trusted when the Termux prefix directory actually exists on the machine.
 func IsTermux() bool {
-	return os.Getenv("TERMUX_VERSION") != "" ||
-		os.Getenv("PREFIX") == "/data/data/com.termux/files/usr"
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	prefix := os.Getenv("PREFIX")
+	if os.Getenv("TERMUX_VERSION") == "" && prefix != "/data/data/com.termux/files/usr" {
+		return false
+	}
+	if prefix == "" {
+		prefix = "/data/data/com.termux/files/usr"
+	}
+	info, err := os.Stat(prefix)
+	return err == nil && info.IsDir()
 }
 
 // IsMacOS reports whether the process is running on macOS (darwin).
@@ -301,6 +313,11 @@ func ValidatePkgName(name string) error {
 	if strings.HasPrefix(name, ".") {
 		return fmt.Errorf("package name must not start with a dot")
 	}
+	// A dash-prefixed "name" would be parsed as an option when the value
+	// reaches a command line or pacman argv; real package names never are.
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("package name must not start with a dash")
+	}
 	if len(name) > 255 {
 		return fmt.Errorf("package name too long")
 	}
@@ -390,14 +407,20 @@ func LibDir() string {
 // single source of the user-cache location; callers join their own
 // subdirectory (e.g. "aur") onto the result.
 func UserCacheRoot() (string, error) {
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
-		if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
-			return filepath.Join(u.HomeDir, ".cache", "alps"), nil
+	// SUDO_USER/DOAS_USER are only meaningful when this process actually
+	// runs as root: a stale or planted variable in a non-root environment
+	// would otherwise redirect the whole build cache into another account's
+	// home directory.
+	if IsRoot() {
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
+			if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
+				return filepath.Join(u.HomeDir, ".cache", "alps"), nil
+			}
 		}
-	}
-	if doasUser := os.Getenv("DOAS_USER"); doasUser != "" && doasUser != "root" {
-		if u, err := user.Lookup(doasUser); err == nil && u.HomeDir != "" {
-			return filepath.Join(u.HomeDir, ".cache", "alps"), nil
+		if doasUser := os.Getenv("DOAS_USER"); doasUser != "" && doasUser != "root" {
+			if u, err := user.Lookup(doasUser); err == nil && u.HomeDir != "" {
+				return filepath.Join(u.HomeDir, ".cache", "alps"), nil
+			}
 		}
 	}
 	home, err := os.UserHomeDir()

@@ -308,6 +308,22 @@ func genBash(w io.Writer, cmds []string, aliases map[string]string, subcmds map[
 # Install: alps completion bash | sudo tee /usr/share/bash-completion/completions/alps
 # or:      source <(alps completion bash)
 
+# _alps_from_cmd collects candidates from one or more commands without ever
+# re-expanding their output. compgen -W would word-expand every candidate —
+# including $(...) and backticks — so a malicious name cached from remote
+# data could execute when the user presses Tab. Reading the command output
+# line-by-line with IFS= read -r treats it as pure data.
+_alps_from_cmd() {
+    local cur="$1"; shift
+    local n c
+    COMPREPLY=()
+    for c in "$@"; do
+        while IFS= read -r n; do
+            [[ -n $n && $n == "$cur"* ]] && COMPREPLY+=("$n")
+        done < <(eval "$c")
+    done
+}
+
 _alps_completions() {
     local cur prev words cword
     _init_completion || return
@@ -321,10 +337,10 @@ _alps_completions() {
 
     case "${words[1]}" in
         install|ins|i|search|se)
-            COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
+            _alps_from_cmd "$cur" "%s"
             ;;
         remove|rm|purge|pu)
-            COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
+            _alps_from_cmd "$cur" "%s"
             ;;
         repo)
             case "${words[2]}" in
@@ -332,10 +348,10 @@ _alps_completions() {
                     COMPREPLY=($(compgen -W "install remove" -- "$cur"))
                     ;;
                 install|search)
-                    COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
+                    _alps_from_cmd "$cur" "%s"
                     ;;
                 remove|purge|upgrade)
-                    COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
+                    _alps_from_cmd "$cur" "%s"
                     ;;
                 *)
                     COMPREPLY=($(compgen -W "%s" -- "$cur"))
@@ -345,13 +361,13 @@ _alps_completions() {
         aur)
             case "${words[2]}" in
                 install|search)
-                    COMPREPLY=($(compgen -W "$(%s) $(%s)" -- "$cur"))
+                    _alps_from_cmd "$cur" "%s" "%s"
                     ;;
                 info|clone)
-                    COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
+                    _alps_from_cmd "$cur" "%s"
                     ;;
                 remove|update|upgrade)
-                    COMPREPLY=($(compgen -W "$(%s)" -- "$cur"))
+                    _alps_from_cmd "$cur" "%s"
                     ;;
                 build-local)
                     COMPREPLY=($(compgen -d -- "$cur"))

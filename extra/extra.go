@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/adrianpriza-ai/alps/internal/pkgregistry"
 	"github.com/adrianpriza-ai/alps/platform"
@@ -202,11 +203,19 @@ func runCommand(backendName string, args []string, includeStdin bool) error {
 
 // buildVerbArgs assembles the full argument list for a backend verb: the
 // registered command, the verb's trailing arguments, and the native flags
-// implementing the alps meta-flags in f (e.g. flatpak -y).
+// implementing the alps meta-flags in f (e.g. flatpak -y). Flag-shaped
+// trailing operands are rejected (matching the AUR backend's guard): they
+// can only be option injection into the backend process, which runs with
+// sudo for several of these managers.
 func buildVerbArgs(backendName, verb string, f Flags, trailing ...string) ([]string, error) {
 	args, ok := Lookup(backendName, verb)
 	if !ok {
 		return nil, fmt.Errorf("%s not supported by %s", verb, backendName)
+	}
+	for _, t := range trailing {
+		if strings.HasPrefix(t, "-") {
+			return nil, fmt.Errorf("invalid operand %q for %s %s: package names must not start with '-'", t, backendName, verb)
+		}
 	}
 	args = append(args, trailing...)
 	args = append(args, BuildExtraFlagsExt(backendName, f)...)

@@ -99,6 +99,13 @@ func installWithHelper(helper string, pkgNames []string) error {
 	if err := priv.Invalidate(); err != nil {
 		warnStderr("failed to invalidate sudo credentials before %s: %v", helper, err)
 	}
+	// AUR helpers run makepkg on untrusted PKGBUILDs; like the built-in
+	// makepkg path, they must never execute as root. The no-root guarantee
+	// lives in the helper binary, so it is enforced here instead of relying
+	// on the helper's own (possibly older or shimmed) self-check.
+	if os.Geteuid() == 0 {
+		return fmt.Errorf("refusing to run %s as root: AUR helpers build PKGBUILDs unprivileged; run alps without sudo or let the built-in AUR backend handle it", helper)
+	}
 	cmd := exec.Command(helper, args...)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	cmd.Stdout = os.Stdout
@@ -268,7 +275,9 @@ func printInstallSummary(plan *installPlan, warn string) {
 // Fresh installs (no prior checkout) fall back to the full-file review.
 func reviewAURPKGBUILDs(plan *installPlan, arrow string) (map[string]string, error) {
 	reviewed := make(map[string]string)
-	if readYesNo(fmt.Sprintf("  %s Review PKGBUILDs before building?", arrow), false) {
+	// Default to reviewing: PKGBUILDs run arbitrary shell code, so the safe
+	// answer on a bare Enter must be to show them, not to skip the review.
+	if readYesNo(fmt.Sprintf("  %s Review PKGBUILDs before building?", arrow), true) {
 		for _, p := range plan.AURPackages {
 			pkgDir, err := aurCacheDir(p.Name)
 			if err != nil {
@@ -354,7 +363,10 @@ func reviewPKGBUILDUpdate(pkgDir, oldHead, arrow string) (bool, error) {
 
 	viewDiff := readYesNo(fmt.Sprintf("  %s View the PKGBUILD diff? (recommended)", arrow), true)
 	if !viewDiff {
-		return true, nil // declined the detailed view; treat as reviewed
+		// Declining the focused diff does not count as a review: fall through
+		// to the full-file view so the content is still shown before the user
+		// approves the build.
+		return false, nil
 	}
 
 	cmd, err := unprivilegedCommand("git", "-C", pkgDir, "--no-pager", "diff", oldHead, "HEAD", "--", "PKGBUILD")
@@ -405,15 +417,23 @@ func collectUserInputs(plan *installPlan, noConfirm bool) (map[string]string, er
 }
 
 // installRepoDeps installs pacman repository dependencies before building.
+// Dep names come from AUR RPC responses (remote input), so each is validated
+// before it becomes a privileged pacman operand.
 func installRepoDeps(deps []string, noConfirm bool, arrow string) error {
 	if len(deps) == 0 {
 		return nil
+	}
+	for _, dep := range deps {
+		if err := validatePkgName(dep); err != nil {
+			return fmt.Errorf("invalid repo dep %q: %w", dep, err)
+		}
 	}
 	fmt.Printf("\n  %s installing repo deps: %s\n\n", arrow, strings.Join(deps, " "))
 	args := []string{"pacman", "-S", "--needed"}
 	if noConfirm {
 		args = append(args, "--noconfirm")
 	}
+	args = append(args, "--")
 	args = append(args, deps...)
 	cmd, err := priv.Command(args...)
 	if err != nil {
@@ -453,6 +473,7 @@ func removeMakeDeps(makeDeps []string, noConfirm bool, okStr string) error {
 	if noConfirm {
 		rmArgs = append(rmArgs, "--noconfirm")
 	}
+	rmArgs = append(rmArgs, "--")
 	rmArgs = append(rmArgs, toRemove...)
 	rmCmd, err := priv.Command(rmArgs...)
 	if err != nil {
@@ -999,7 +1020,7 @@ func Clone(pkgName string) error {
 	if err != nil {
 		return err
 	}
-	cmd.Env = safeMakepkgEnv()
+	cmd.Env = aurGitEnv()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -1016,6 +1037,18 @@ func Clone(pkgName string) error {
 // printing progress messages.
 func cloneAUR(pkg *Package, pkgDir string) error {
 	return syncAURRepo(pkg.Name, pkgDir, false)
+}
+
+// aurGitEnv returns the environment for AUR git transport commands. The user
+// and system git configs are disabled: `url.<base>.insteadOf` rewriting in
+// ~/.gitconfig applies at transport time, so a stored remote URL can match
+// verifyAURRemote while the fetch silently goes to a different host. The AUR
+// remotes are public anonymous HTTPS URLs, so no credentials are needed.
+func aurGitEnv() []string {
+	return append(safeMakepkgEnv(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+	)
 }
 
 // syncAURRepo ensures pkgDir holds a fresh checkout of pkgName's AUR
@@ -1047,7 +1080,7 @@ func syncAURRepo(pkgName, pkgDir string, quiet bool) error {
 		if err != nil {
 			return err
 		}
-		fetch.Env = safeMakepkgEnv()
+		fetch.Env = aurGitEnv()
 		fetch.Stdout = nil
 		fetch.Stderr = stderrFor(quiet)
 		if err := fetch.Run(); err != nil {
@@ -1058,7 +1091,7 @@ func syncAURRepo(pkgName, pkgDir string, quiet bool) error {
 		if err != nil {
 			return err
 		}
-		reset.Env = safeMakepkgEnv()
+		reset.Env = aurGitEnv()
 		reset.Stdout = nil
 		reset.Stderr = stderrFor(quiet)
 		if err := reset.Run(); err != nil {
@@ -1081,7 +1114,7 @@ func syncAURRepo(pkgName, pkgDir string, quiet bool) error {
 	if err != nil {
 		return err
 	}
-	cmd.Env = safeMakepkgEnv()
+	cmd.Env = aurGitEnv()
 	cmd.Stdout = nil
 	cmd.Stderr = stderrFor(quiet)
 	if err := cmd.Run(); err != nil {
@@ -1212,6 +1245,19 @@ func BuildLocal(dir string, noConfirm bool) error {
 		return err
 	}
 
+	// Review before anything is built or installed: AUR dep PKGBUILDs run
+	// arbitrary shell code during makepkg, so the review gate must come
+	// before the dep build loop and repo-dep installation, not after.
+	if err := reviewAndConfirmLocalBuild(pkgbuildPath, noConfirm, arrow); err != nil {
+		return err
+	}
+	if len(aurOrdered) > 0 {
+		depPlan := &installPlan{AURPackages: aurOrdered}
+		if _, err := reviewAURPKGBUILDs(depPlan, arrow); err != nil {
+			return err
+		}
+	}
+
 	if err := installRepoDeps(repoDeps, noConfirm, arrow); err != nil {
 		return err
 	}
@@ -1247,10 +1293,6 @@ func BuildLocal(dir string, noConfirm bool) error {
 		if pkgDir != "" {
 			builtDirs = append(builtDirs, pkgDir)
 		}
-	}
-
-	if err := reviewAndConfirmLocalBuild(pkgbuildPath, noConfirm, arrow); err != nil {
-		return err
 	}
 
 	if err := runMakepkg(dir, pkgname, noConfirm, arrow, ok); err != nil {

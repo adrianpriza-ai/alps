@@ -165,9 +165,17 @@ func Filter(lines []string, ctx *MacroContext, op platform.OperationType) (*Exec
 
 // shouldStripEscalation determines if privilege escalation should be stripped
 func shouldStripEscalation(op platform.OperationType, ctx *MacroContext) bool {
-	return (op == platform.OperationInstall || op == platform.OperationUpgrade) &&
-		(ctx.Safety == "strict" || ctx.Safety == "") &&
-		!platform.IsTermux() && !platform.IsMacOS() && !platform.IsRoot()
+	strict := ctx.Safety == "strict" || ctx.Safety == ""
+	unix := !platform.IsTermux() && !platform.IsMacOS()
+	if !strict || !unix || platform.IsRoot() {
+		return false
+	}
+	// Installs/upgrades keep the build unprivileged and route installs through
+	// typed macros. Remove/purge lines are escalated wholesale (after_env with
+	// sudo), so their redundant inner sudo/doas/pkexec is stripped too instead
+	// of being handed to the shell verbatim.
+	return op == platform.OperationInstall || op == platform.OperationUpgrade ||
+		isRemovalOp(op)
 }
 
 // expandPlaceholdersGlobally expands placeholders in all lines

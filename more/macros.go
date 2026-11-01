@@ -206,8 +206,11 @@ func replaceVars(s string, ctx *MacroContext, stripUnknown bool) string {
 	s = strings.ReplaceAll(s, "{OS}", ctx.OS)
 	s = strings.ReplaceAll(s, "{DISTRO}", ctx.Distro)
 	s = strings.ReplaceAll(s, "{VERSION}", ctx.Version)
-	s = strings.ReplaceAll(s, "{PKG_DIR}", ctx.BuildDir)
-	s = strings.ReplaceAll(s, "{SERVER}", ctx.Server)
+	s = strings.ReplaceAll(s, "{PKG_DIR}", shellQuote(ctx.BuildDir))
+	// {SERVER} comes from the manifest's servers list and lands inside an
+	// executed command line; quote it like every other macro-supplied value
+	// so its characters can never become shell syntax.
+	s = strings.ReplaceAll(s, "{SERVER}", shellQuote(ctx.Server))
 	s = strings.ReplaceAll(s, "{PKGNAME}", ctx.PackageName)
 	s = strings.ReplaceAll(s, "{DISVER}", ctx.DistroVersion)
 	if stripUnknown {
@@ -404,9 +407,31 @@ func executeBashRun(macro Macro, ctx *MacroContext) (string, error) {
 			return "", fmt.Errorf("failed to create directory: %w", err)
 		}
 
-		// Write the file (0755 makes the script executable)
-		if err := os.WriteFile(localScript, bodyBytes, 0755); err != nil {
-			return "", fmt.Errorf("failed to write file %s: %w", localScript, err)
+		// Write through a private temp file and rename atomically: a plain
+		// WriteFile would follow a symlink planted at the destination and the
+		// digest was verified over the in-memory bytes, not over whatever a
+		// later `bash` read of this path would return.
+		tmp, err := os.CreateTemp(filepath.Dir(localScript), ".bash-run-*")
+		if err != nil {
+			return "", fmt.Errorf("failed to create temp script file: %w", err)
+		}
+		tmpPath := tmp.Name()
+		if _, err := tmp.Write(bodyBytes); err != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
+			return "", fmt.Errorf("failed to write script %s: %w", localScript, err)
+		}
+		if err := tmp.Close(); err != nil {
+			os.Remove(tmpPath)
+			return "", fmt.Errorf("failed to write script %s: %w", localScript, err)
+		}
+		if err := os.Chmod(tmpPath, 0755); err != nil {
+			os.Remove(tmpPath)
+			return "", fmt.Errorf("failed to set script mode: %w", err)
+		}
+		if err := os.Rename(tmpPath, localScript); err != nil {
+			os.Remove(tmpPath)
+			return "", fmt.Errorf("failed to place script %s: %w", localScript, err)
 		}
 
 		// Return command to execute the script (path quoted).
@@ -475,6 +500,24 @@ func GenerateOwnedItems(ctx *MacroContext) []OwnedItem {
 
 // --- Service macros (ENABLE/DISABLE/START/STOP/RESTART_SERVICE) ---
 
+// validateServiceName checks a systemd unit name before it is recorded for
+// later cleanup. The recorded value is replayed as an exec argument to
+// privileged systemctl and rm during remove/purge, so metacharacters in it
+// are inert, but a dash-prefixed value would be parsed as a systemctl option
+// and an empty one would corrupt the recorded state.
+func validateServiceName(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty service name")
+	}
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("service name must not start with a dash")
+	}
+	if strings.ContainsAny(name, "\x00") {
+		return fmt.Errorf("service name must not contain NUL")
+	}
+	return nil
+}
+
 // executeEnableService enables a systemd service.
 // On Termux and macOS, systemd is not available, so this is a no-op.
 func executeEnableService(macro Macro, ctx *MacroContext) (string, error) {
@@ -488,8 +531,12 @@ func executeEnableService(macro Macro, ctx *MacroContext) (string, error) {
 	service := macro.Args[0]
 	// Track the service for removal (will be disabled and removed)
 	// Store just the service name (basename if it's a path)
+	recorded := filepath.Base(service)
+	if err := validateServiceName(recorded); err != nil {
+		return "", fmt.Errorf("ENABLE_SERVICE: %w", err)
+	}
 	ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
-		Path:      filepath.Base(service),
+		Path:      recorded,
 		Type:      "service",
 		Generated: true,
 	})

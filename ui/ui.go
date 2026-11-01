@@ -403,6 +403,13 @@ func PrintDiagnostic(cfg *config.Config) {
 func PrintRepoEntry(cfg *config.Config, name, version, desc string, arch []string, installedVer string) {
 	s := cfg.Style
 
+	// Manifest names, versions and descriptions are remote input: strip
+	// terminal control sequences before they reach the screen.
+	name = SanitizeRemote(name)
+	version = SanitizeRemote(version)
+	desc = SanitizeRemote(desc)
+	installedVer = SanitizeRemote(installedVer)
+
 	verStr := ""
 	if version != "" {
 		verStr = fmt.Sprintf(" %s%s%s", s.ColorDim, version, s.ColorReset)
@@ -428,6 +435,10 @@ func PrintRepoEntry(cfg *config.Config, name, version, desc string, arch []strin
 // PrintRepoSearchResult prints a repo search result.
 func PrintRepoSearchResult(cfg *config.Config, name, version, desc string) {
 	s := cfg.Style
+
+	name = SanitizeRemote(name)
+	version = SanitizeRemote(version)
+	desc = SanitizeRemote(desc)
 
 	verStr := ""
 	if version != "" {

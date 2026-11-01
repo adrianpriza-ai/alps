@@ -206,8 +206,12 @@ func executeInstallService(macro Macro, ctx *MacroContext) (string, error) {
 			dest = filepath.Join("/etc/systemd/system", dest)
 		}
 		// Store just the service name (basename) for proper cleanup
+		recorded := filepath.Base(dest)
+		if err := validateServiceName(recorded); err != nil {
+			return "", fmt.Errorf("INSTALL_SERVICE: %w", err)
+		}
 		ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
-			Path:      filepath.Base(dest),
+			Path:      recorded,
 			Type:      "service",
 			Generated: true,
 		})
@@ -219,6 +223,9 @@ func executeInstallService(macro Macro, ctx *MacroContext) (string, error) {
 	}
 	// Default to /etc/systemd/system directory, store the absolute path
 	serviceName := filepath.Base(macro.Args[0])
+	if err := validateServiceName(serviceName); err != nil {
+		return "", fmt.Errorf("INSTALL_SERVICE: %w", err)
+	}
 	dest := filepath.Join("/etc/systemd/system", serviceName)
 	ctx.InstalledPaths = append(ctx.InstalledPaths, InstalledPath{
 		Path:      serviceName,
