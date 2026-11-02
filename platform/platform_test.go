@@ -119,6 +119,11 @@ func TestSnapdUsable(t *testing.T) {
 }
 
 func TestTermuxDistroMetadata(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		// Termux detection is gated on linux: faked environment variables
+		// alone must never make darwin look like Termux.
+		t.Skip("Termux metadata only applies on linux")
+	}
 	// Termux detection requires the prefix directory to exist, so the test
 	// fakes a Termux install with a real temporary prefix.
 	prefix := t.TempDir()
@@ -270,6 +275,12 @@ func TestTermuxPrefix(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if runtime.GOOS != "linux" && tc.want != "" {
+				// Termux detection is gated on linux: faked environment
+				// variables alone must never make darwin look like Termux,
+				// so the positive cases cannot be simulated on other OSes.
+				t.Skip("Termux detection only applies on linux")
+			}
 			t.Setenv("TERMUX_VERSION", tc.termuxVer)
 			t.Setenv("PREFIX", tc.prefix)
 			if got := TermuxPrefix(); got != tc.want {
